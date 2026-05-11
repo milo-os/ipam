@@ -51,7 +51,7 @@ jobs:
 
       - uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.62
+          version: v2.1
 
   kustomize:
     name: Validate kustomize overlays
@@ -113,6 +113,8 @@ jobs:
   observability:
     name: Verify observability artifacts
     runs-on: ubuntu-latest
+    env:
+      TASK_X_REMOTE_TASKFILES: "1"
     steps:
       - uses: actions/checkout@v6
 

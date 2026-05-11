@@ -240,8 +240,7 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	// overlap. Reducing the DB pool reduces concurrent allocator
 	// goroutines and so reduces request fan-out.
 	//
-	// Capacity implication: the quota-service ADR
-	// (datum-cloud/quota/docs/adr/0001-postgres-first-architecture.md)
+	// Capacity implication: the quota-service postgres-first ADR
 	// measured ~37 sustained CIDR allocations / second per held DB
 	// connection under SELECT … FOR UPDATE on the pool row. With
 	// MaxConns=10 that puts a soft ceiling of ~370 synchronous
