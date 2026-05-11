@@ -7,7 +7,6 @@ resources:
   - serviceaccount.yaml
   - deployment.yaml
   - service.yaml
-  - secret.yaml
   - pdb.yaml
   - networkpolicy.yaml
   - rbac-auth-reader.yaml
