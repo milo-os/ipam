@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: alloc-claim-reuse
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  prefixRef:
+    name: alloc-parent
+  reclaimPolicy: Delete

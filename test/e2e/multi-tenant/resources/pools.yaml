@@ -1,0 +1,41 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefix
+metadata:
+  name: mt-alpha-pool
+spec:
+  cidr: 10.100.0.0/20
+  ipFamily: IPv4
+  classRef:
+    name: mt-consumer-private
+  allocation:
+    minPrefixLength: 24
+    maxPrefixLength: 28
+    strategy: BestFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefix
+metadata:
+  name: mt-beta-pool
+spec:
+  cidr: 10.101.0.0/20
+  ipFamily: IPv4
+  classRef:
+    name: mt-consumer-private
+  allocation:
+    minPrefixLength: 24
+    maxPrefixLength: 28
+    strategy: BestFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefix
+metadata:
+  name: mt-shared-pool
+spec:
+  cidr: 172.20.0.0/20
+  ipFamily: IPv4
+  classRef:
+    name: mt-consumer-shared
+  allocation:
+    minPrefixLength: 24
+    maxPrefixLength: 28
+    strategy: BestFit
