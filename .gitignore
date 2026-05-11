@@ -1,0 +1,16 @@
+# Compiled binary
+/ipam
+
+# Editor and OS
+.DS_Store
+*.swp
+*.swo
+
+# Go test cache
+*.test
+*.out
+
+# Local dev secrets
+*.pem
+*.key
+.env

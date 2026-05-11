@@ -1,0 +1,30 @@
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: ipam-perf-scale
+  namespace: ipam-system
+spec:
+  parallelism: 1
+  separate: false
+  cleanup: post
+  script:
+    configMap:
+      name: ipam-k6-test-scripts
+      file: pool-scale.js
+  runner:
+    image: grafana/k6:latest
+    serviceAccountName: ipam-k6-runner
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+    env:
+      - name: IPAM_API_URL
+        value: "https://kubernetes.default.svc.cluster.local:443"
+      - name: K6_INSECURE_SKIP_TLS_VERIFY
+        value: "true"
+      - name: PREFIX_STEPS
+        value: "20,22,24,26,28"

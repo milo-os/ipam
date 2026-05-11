@@ -1,0 +1,10 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNPool
+metadata:
+  name: asn-pool
+spec:
+  ranges:
+    - start: 4200000000
+      end: 4200000009
+  classRef:
+    name: asn-private

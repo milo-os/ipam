@@ -1,0 +1,40 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Performance tests run by the k6 operator (https://github.com/grafana/k6-operator).
+# Applied via `task test/load:k6:apply` which uses `kustomize build | kubectl apply -n ipam-system`
+# so the generated ConfigMap lands in ipam-system alongside the runner pods.
+#
+# The ConfigMap below is generated from test/load/src/ via hack/bundle-k6.sh
+# (run via `task -t test/load/Taskfile.yaml generate`). Do not edit the files
+# under generated/ directly — they're auto-generated.
+
+configMapGenerator:
+  - name: ipam-k6-test-scripts
+    files:
+      - generated/setup-pools.js
+      - generated/prefix-claim-throughput.js
+      - generated/asn-claim-throughput.js
+      - generated/pool-exhaustion.js
+      - generated/read-latency.js
+      - generated/pool-scale.js
+      - generated/ipaddress-claim-concurrent.js
+      - generated/concurrent-claims.js
+      - generated/cross-project-claim-throughput.js
+      - generated/watch-latency.js
+      - generated/mixed-load.js
+      - generated/ipv6-claim-throughput.js
+    options:
+      disableNameSuffixHash: true
+
+resources:
+  # RBAC only — TestRun manifests are applied individually via
+  # `task test/load:k6:run TEST=<name>` so they execute sequentially rather
+  # than all firing at once (setup must complete before throughput tests run).
+  - rbac.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: ipam-k6-tests
+      app.kubernetes.io/component: performance-testing
+      app.kubernetes.io/part-of: ipam.miloapis.com

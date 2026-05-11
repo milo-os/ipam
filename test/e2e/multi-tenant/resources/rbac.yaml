@@ -1,0 +1,33 @@
+# Specification of expected RBAC for the cross-project shared-pool flow.
+# Once Milo's multi-tenant authorizer lands, the X-Remote-Extra parent-project
+# headers identify the caller and this binding governs whether project-beta
+# can issue claims against mt-shared-pool (owned by project-alpha).
+#
+# TODO: requires multi-tenant server implementation — today the server does
+# not consult these bindings; they exist as a forward-looking spec only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mt-shared-pool-user
+rules:
+  - apiGroups:
+      - ipam.miloapis.com
+    resources:
+      - ipprefixes
+    resourceNames:
+      - mt-shared-pool
+    verbs:
+      - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mt-shared-pool-user-project-beta
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mt-shared-pool-user
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:project:project-beta

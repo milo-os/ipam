@@ -1,0 +1,10 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNClaim
+metadata:
+  name: asn-claim-1
+  namespace: ($namespace)
+  labels:
+    asn-test: "true"
+spec:
+  poolRef:
+    name: asn-pool

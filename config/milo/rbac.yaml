@@ -1,0 +1,110 @@
+---
+# ipam-platform-admin — full CRUD on the API group. Bound to the IAM
+# platform-admin group; intended for the SREs running the IPAM service
+# and for break-glass operations. Most operator workflows should use
+# ipam-provider instead.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ipam-platform-admin
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipam-platform-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ipam-platform-admin
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: iam.miloapis.com:platform-admin
+---
+# ipam-provider — operator role for the team that manages address pools.
+# Full CRUD on pool resources (IPPrefix, IPPrefixClass, ASNPool,
+# ASNPoolClass), plus read access to claims so providers can see what's
+# currently consuming each pool. Does NOT grant CRUD on claims; consumer
+# projects own their own claims via the ipam-consumer role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ipam-provider
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources:
+      - ipprefixes
+      - ipprefixes/status
+      - ipprefixclasses
+      - ipaddresses
+      - ipaddresses/status
+      - asnpools
+      - asnpools/status
+      - asnpoolclasses
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources:
+      - ipprefixclaims
+      - ipaddressclaims
+      - asnclaims
+    verbs: ["get", "list", "watch"]
+  # "use" is the verb checked by PoolAccessChecker.CanUsePool when a
+  # consumer claims from a shared pool. Granting it on shared pools
+  # implicitly authorises cross-project allocation; providers controlling
+  # the pool grant this verb to the consumer groups they want to admit.
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipprefixes", "asnpools"]
+    verbs: ["use"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipam-provider
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ipam-provider
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: iam.miloapis.com:ipam-provider
+---
+# ipam-consumer — workload owners that file claims. CRUD on the claim
+# resources; read-only on pool resources so consumers can discover what's
+# available without being able to modify the pool definition.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ipam-consumer
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources:
+      - ipprefixclaims
+      - ipaddressclaims
+      - asnclaims
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources:
+      - ipprefixes
+      - ipaddresses
+      - ipprefixclasses
+      - asnpools
+      - asnpoolclasses
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipam-consumer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ipam-consumer
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: iam.miloapis.com:consumer

@@ -1,0 +1,27 @@
+---
+# Grants the ipam-apiserver ServiceAccount the `system:auth-delegator` role.
+#
+# vmagent (and any other Prometheus-style scraper using the in-cluster bearer
+# token) authenticates against the IPAM apiserver's /metrics endpoint via
+# TokenReview / SubjectAccessReview. Without this binding the scrape returns
+# 401 Unauthorized and every metrics-derived alert in this component goes
+# silent.
+#
+# Lives in the observability component (not config/base) because it exists
+# specifically to support metrics scraping; consumers running without the
+# observability stack do not need it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipam-apiserver-auth-delegator
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: apiserver
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: ipam-apiserver
+    namespace: ipam-system

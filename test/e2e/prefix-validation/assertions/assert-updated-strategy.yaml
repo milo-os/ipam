@@ -1,0 +1,7 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefix
+metadata:
+  name: test-valid-prefix
+spec:
+  allocation:
+    strategy: BestFit

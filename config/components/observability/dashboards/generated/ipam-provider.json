@@ -1,0 +1,1398 @@
+{
+   "description": "Provider-facing view covering overview, pool utilization, allocation latency, and watch health. Consolidates the four dashboards named in the spec (ipam-overview, ipam-pool-utilization, ipam-allocation-latency, ipam-watch-health) into a single SRE pane. UID stays `ipam-provider` to preserve existing saved links.",
+   "panels": [
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+         },
+         "id": 1,
+         "title": "Service health",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Number of healthy IPAM apiserver pods scraped by Prometheus.",
+         "fieldConfig": {
+            "defaults": {
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "green",
+                        "value": 1
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 1
+         },
+         "id": 2,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(up{job=\"$job\", instance=~\"$instance\"})"
+            }
+         ],
+         "title": "Apiserver up",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Total apiserver request rate across all verbs/resources.",
+         "fieldConfig": {
+            "defaults": {
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 1
+         },
+         "id": 3,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\"}[5m]))"
+            }
+         ],
+         "title": "Apiserver request rate",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Server-side errors returned by the apiserver.",
+         "fieldConfig": {
+            "defaults": {
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 5
+                     }
+                  ]
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 12,
+            "y": 1
+         },
+         "id": 4,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", code=~\"5..\"}[5m]))"
+            }
+         ],
+         "title": "Apiserver 5xx rate",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Pool-exhausted denials (synchronous allocation rejects with 507).",
+         "fieldConfig": {
+            "defaults": {
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 18,
+            "y": 1
+         },
+         "id": 5,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", code=\"507\"}[5m]))"
+            }
+         ],
+         "title": "507 Insufficient Storage rate",
+         "type": "stat"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 5
+         },
+         "id": 6,
+         "title": "Allocation throughput",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Allocation throughput. result=success|exhausted|error from internal/metrics/metrics.go.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 6
+         },
+         "id": 7,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (resource, result) (rate(ipam_allocation_duration_seconds_count{job=\"$job\", instance=~\"$instance\"}[5m]))",
+               "legendFormat": "{{resource}} / {{result}}"
+            }
+         ],
+         "title": "Allocation rate by resource (req/s)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Failure breakdown: pool_exhausted|pool_not_found|verification_required|tx_error|internal.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 6
+         },
+         "id": 8,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (resource, reason) (rate(ipam_allocation_failures_total{job=\"$job\", instance=~\"$instance\"}[5m]))",
+               "legendFormat": "{{resource}} / {{reason}}"
+            }
+         ],
+         "title": "Allocation failures by reason",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Failures divided by total attempts. Alert at 5% sustained for 2m.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 6,
+            "w": 24,
+            "x": 0,
+            "y": 14
+         },
+         "id": 9,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (resource) (rate(ipam_allocation_failures_total{job=\"$job\", instance=~\"$instance\"}[5m]))\n/\nclamp_min(sum by (resource) (rate(ipam_allocation_duration_seconds_count{job=\"$job\", instance=~\"$instance\"}[5m])), 1e-9)\n",
+               "legendFormat": "{{resource}}"
+            }
+         ],
+         "title": "Allocation failure ratio (errors / total)",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 20
+         },
+         "id": 10,
+         "title": "Allocation latency",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Headline p95 latency across all resources. Alert at 500ms.",
+         "fieldConfig": {
+            "defaults": {
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 0.20000000000000001
+                     },
+                     {
+                        "color": "red",
+                        "value": 0.5
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 0,
+            "y": 21
+         },
+         "id": 11,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95,\n  sum by (le) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=\"success\"}[5m]))\n)\n"
+            }
+         ],
+         "title": "p95 allocation latency",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "SLO panel: p95 < 500ms target. Filtered to result=\"success\" so failures do not skew tail.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 18,
+            "x": 6,
+            "y": 21
+         },
+         "id": 12,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.50,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=\"success\"}[5m]))\n)\n",
+               "legendFormat": "p50 {{resource}}"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=\"success\"}[5m]))\n)\n",
+               "legendFormat": "p95 {{resource}}"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.99,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=\"success\"}[5m]))\n)\n",
+               "legendFormat": "p99 {{resource}}"
+            }
+         ],
+         "title": "Allocation latency quantiles (success only)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Full latency distribution across all resources/results.",
+         "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 29
+         },
+         "id": 13,
+         "options": {
+            "calculate": false,
+            "color": {
+               "mode": "scheme",
+               "scheme": "Spectral"
+            },
+            "yAxis": {
+               "unit": "s"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (le) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\"}[$__rate_interval]))",
+               "format": "heatmap",
+               "legendFormat": "{{le}}"
+            }
+         ],
+         "title": "Allocation latency heatmap (all results)",
+         "type": "heatmap"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 37
+         },
+         "id": 14,
+         "title": "Pool utilization",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Per-pool utilization. Yellow at 80%, red at 90%.",
+         "fieldConfig": {
+            "defaults": {
+               "max": 1,
+               "min": 0,
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 0.80000000000000004
+                     },
+                     {
+                        "color": "red",
+                        "value": 0.90000000000000002
+                     }
+                  ]
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 38
+         },
+         "id": 15,
+         "options": {
+            "showThresholdMarkers": true
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "ipam_pool_utilization_ratio{job=\"$job\", instance=~\"$instance\"}",
+               "instant": true,
+               "legendFormat": "{{pool_key}} ({{ip_family}})"
+            }
+         ],
+         "title": "Pool utilization (current)",
+         "type": "gauge"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Highest-utilization pools right now.",
+         "fieldConfig": {
+            "defaults": {
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 38
+         },
+         "id": 16,
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "topk(10, ipam_pool_utilization_ratio{job=\"$job\", instance=~\"$instance\"})",
+               "format": "table",
+               "instant": true
+            }
+         ],
+         "title": "Top 10 most utilized pools",
+         "type": "table"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Per-pool utilization ratio. Alert thresholds: warning at 80%, critical at 90%.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 46
+         },
+         "id": 17,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "ipam_pool_utilization_ratio{job=\"$job\", instance=~\"$instance\"}",
+               "legendFormat": "{{pool_key}} ({{ip_family}})"
+            }
+         ],
+         "title": "Pool utilization over time",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 54
+         },
+         "id": 18,
+         "title": "Apiserver request mix",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Verb breakdown across IPAM resources. Useful for spotting list/watch hotspots.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 0,
+            "y": 55
+         },
+         "id": 19,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (verb) (rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", resource=~\".*claim.*|ippool|ipprefix|ipaddress|asnpool\"}[5m]))",
+               "legendFormat": "{{verb}}"
+            }
+         ],
+         "title": "Apiserver request rate by verb",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Built-in apiserver latency by verb. Also the substitute for read-path metrics\nuntil dedicated ones are added.\n\nKnown steady-state regression (2026-05-09 perf-tester baseline):\n  - prefix `list` p95 = 544ms (target < 200ms, 2.7× over)\n  - claim   `get` p95 = 311ms (target < 100ms, 3.1× over)\n\nThe `get` and `list` p95 values converge despite very different result-set\nsizes, which points at per-request fixed cost (apiserver auth/admission\nmiddleware or serialization) rather than DB scan time. Write path is fine\n(CREATE p95 = 42ms with 12× headroom) — this is read-side only.\nSee docs/runbooks/ipam-read-latency-high.md.\n",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 8,
+            "y": 55
+         },
+         "id": 20,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95,\n  sum by (le, verb) (rate(apiserver_request_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", resource=~\".*claim.*|ippool|ipprefix|ipaddress|asnpool\"}[5m]))\n)\n",
+               "legendFormat": "{{verb}}"
+            }
+         ],
+         "title": "Apiserver request p95 by verb",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "4xx/5xx breakdown — 507 = pool exhausted, 409 = conflict, 5xx = server error.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 8,
+            "x": 16,
+            "y": 55
+         },
+         "id": 21,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (code) (rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", code=~\"4..|5..\"}[5m]))",
+               "legendFormat": "HTTP {{code}}"
+            }
+         ],
+         "title": "Apiserver responses by code",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 63
+         },
+         "id": 22,
+         "title": "Pod resources",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 0,
+            "y": 64
+         },
+         "id": 23,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "go_goroutines{job=\"$job\", instance=~\"$instance\"}",
+               "legendFormat": "{{instance}}"
+            }
+         ],
+         "title": "Goroutines",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 8,
+            "y": 64
+         },
+         "id": 24,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "rate(process_cpu_seconds_total{job=\"$job\", instance=~\"$instance\"}[5m])",
+               "legendFormat": "{{instance}}"
+            }
+         ],
+         "title": "CPU seconds (rate)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "bytes"
+            }
+         },
+         "gridPos": {
+            "h": 6,
+            "w": 8,
+            "x": 16,
+            "y": 64
+         },
+         "id": 25,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "process_resident_memory_bytes{job=\"$job\", instance=~\"$instance\"}",
+               "legendFormat": "{{instance}}"
+            }
+         ],
+         "title": "Resident memory",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 70
+         },
+         "id": 26,
+         "title": "Dependencies (DB + watch)",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "p95 wall-clock duration of named SQL statements inside the allocation transaction. Spikes in select_pool_for_update typically point to lock contention; spikes in load_existing_allocations point to large pools without an index hit.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 71
+         },
+         "id": 27,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95,\n  sum by (le, query_name) (rate(ipam_postgres_query_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\"}[5m]))\n)\n",
+               "legendFormat": "{{query_name}}"
+            }
+         ],
+         "title": "DB query p95 by query_name",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Postgres connection-pool utilization. acquired/max above 0.90 means new allocation transactions are about to queue on Acquire(). The IPAMDBConnectionPoolSaturated alert fires at idle/max < 0.10.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 71
+         },
+         "id": 28,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "ipam_pgxpool_acquired_connections{job=\"$job\", instance=~\"$instance\"}\n/\nclamp_min(ipam_pgxpool_max_connections{job=\"$job\", instance=~\"$instance\"}, 1)\n",
+               "legendFormat": "acquired/max ({{instance}})"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "ipam_pgxpool_idle_connections{job=\"$job\", instance=~\"$instance\"} / clamp_min(ipam_pgxpool_max_connections{job=\"$job\", instance=~\"$instance\"}, 1)",
+               "legendFormat": "idle/max ({{instance}})"
+            }
+         ],
+         "title": "pgxpool saturation (acquired / max)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "End-to-end lag between an ipam_changelog INSERT (commit_xid stamp) and the watcher handing the resulting watch.Event to its subscriber. p99 above 30s fires IPAMWatchLagHigh.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 78
+         },
+         "id": 29,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.99,\n  sum by (le) (rate(ipam_watch_lag_seconds_bucket{job=\"$job\", instance=~\"$instance\"}[5m]))\n)\n",
+               "legendFormat": "p99"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.50,\n  sum by (le) (rate(ipam_watch_lag_seconds_bucket{job=\"$job\", instance=~\"$instance\"}[5m]))\n)\n",
+               "legendFormat": "p50"
+            }
+         ],
+         "title": "Watch lag p99 (changelog INSERT → dispatch)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Per-resource watch event dispatch rate. A drop to zero with non-zero apiserver write traffic indicates the watcher is stuck or all subscribers have disconnected.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 78
+         },
+         "id": 30,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (kind, event_type) (rate(ipam_watch_events_total{job=\"$job\", instance=~\"$instance\"}[5m]))",
+               "legendFormat": "{{kind}} / {{event_type}}"
+            }
+         ],
+         "title": "Watch events dispatched (by kind)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Rows returned per pollChanges call. Average or p95 hugging the 500-row limit means the watcher is consistently saturating its batch budget — drainChangelog is looping and watch lag will trend up. IPAMWatcherBacklogSaturated fires at avg > 400 over 5m.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 85
+         },
+         "id": 31,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(rate(ipam_watcher_poll_batch_size_sum{job=\"$job\", instance=~\"$instance\"}[5m]))\n/\nclamp_min(sum(rate(ipam_watcher_poll_batch_size_count{job=\"$job\", instance=~\"$instance\"}[5m])), 1e-9)\n",
+               "legendFormat": "avg batch size"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95,\n  sum by (le) (rate(ipam_watcher_poll_batch_size_bucket{job=\"$job\", instance=~\"$instance\"}[5m]))\n)\n",
+               "legendFormat": "p95 batch size"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "vector(500)",
+               "legendFormat": "batch limit (500)"
+            }
+         ],
+         "title": "Watcher poll batch size (avg + p95)",
+         "type": "timeseries"
+      }
+   ],
+   "refresh": "30s",
+   "schemaVersion": 39,
+   "tags": [
+      "ipam",
+      "milo",
+      "platform",
+      "provider",
+      "sre"
+   ],
+   "templating": {
+      "list": [
+         {
+            "label": "Data source",
+            "name": "datasource",
+            "query": "prometheus",
+            "regex": "",
+            "type": "datasource"
+         },
+         {
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "includeAll": false,
+            "label": "Job",
+            "name": "job",
+            "query": "label_values(apiserver_request_total, job)",
+            "refresh": "time",
+            "regex": "/.*ipam.*/",
+            "type": "query"
+         },
+         {
+            "allValue": ".*",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "includeAll": true,
+            "label": "Instance",
+            "multi": true,
+            "name": "instance",
+            "query": "label_values(apiserver_request_total{job=\"$job\"}, instance)",
+            "refresh": "time",
+            "type": "query"
+         }
+      ]
+   },
+   "time": {
+      "from": "now-1h",
+      "to": "now"
+   },
+   "timezone": "utc",
+   "title": "IPAM — Provider",
+   "uid": "ipam-provider"
+}

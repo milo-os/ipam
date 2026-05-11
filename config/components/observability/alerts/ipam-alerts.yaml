@@ -1,0 +1,346 @@
+---
+# IPAM SLO and operational alerts.
+#
+# Authoritative metric source: internal/metrics/metrics.go.
+# Canonical runbook base: https://github.com/miloapis/ipam/blob/main/docs/runbooks/
+# (The module path is go.miloapis.com/ipam; runbooks live in this repo under
+# docs/runbooks/, so all `runbook_url` annotations resolve to the same tree.)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ipam-apiserver
+  namespace: ipam-system
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: apiserver
+spec:
+  groups:
+    # ─────────────────────────────────────────────────────────────────────────
+    # Apiserver availability — pages on pod crash / scrape failure. This is the
+    # outermost backstop: if the apiserver is down, all SLO alerts go quiet
+    # (no series), so this rule must be evaluated independently.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: ipam-availability
+      interval: 30s
+      rules:
+        - alert: IPAMApiserverDown
+          # `absent(...)` covers the case where the scrape target disappears
+          # entirely (pod crashloop, no endpoints behind the Service, scrape
+          # config drift). `up == 0` covers the case where Prometheus can
+          # reach the target but the scrape itself fails. Both are critical.
+          expr: absent(up{job="ipam-apiserver"}) or up{job="ipam-apiserver"} == 0
+          for: 1m
+          labels:
+            severity: critical
+            service: ipam
+            slo: availability
+          annotations:
+            summary: "IPAM apiserver is down"
+            description: |
+              The IPAM apiserver pod has been unreachable for more than 1 minute.
+              All claim CREATE / GET / LIST / WATCH operations are failing.
+              Customer impact is active: workloads requesting IP allocations
+              will hang or error out.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-apiserver-down.md"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Active rules — backed by metrics that exist in internal/metrics/metrics.go
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: ipam-allocation
+      interval: 30s
+      rules:
+        - alert: IPAMClaimLatencyHigh
+          # SLO: p95 of synchronous (postgres-path) claim CREATE under 500ms.
+          # Filter to result="success" so failure-path latency does not skew
+          # the tail; failures are tracked separately via ErrorRate alerts.
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (rate(ipam_allocation_duration_seconds_bucket{result="success"}[5m]))
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: claim_latency
+          annotations:
+            summary: "IPAM claim p95 latency above 500ms"
+            description: |
+              p95 of successful IPAM claim allocation over the last 5m is {{ $value | humanizeDuration }},
+              exceeding the 500ms SLO target. Sustained for 5m. Consumers will see slow CREATE responses;
+              k6 throughput tests will fail their p95 < 500ms threshold.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-claim-latency-high.md"
+
+        - alert: IPAMAllocationErrorRateHigh
+          # Failure ratio = failures / total attempts. Total attempts is
+          # derived from the `_count` series of the duration histogram
+          # because a dedicated `ipam_allocation_attempts_total` does not
+          # exist (audited). clamp_min keeps the ratio defined when there
+          # is zero traffic.
+          expr: |
+            sum(rate(ipam_allocation_failures_total[5m]))
+            /
+            clamp_min(sum(rate(ipam_allocation_duration_seconds_count[5m])), 1e-9)
+            > 0.05
+          for: 2m
+          labels:
+            severity: critical
+            service: ipam
+            slo: error_rate
+          annotations:
+            summary: "IPAM allocation error rate above 5%"
+            description: |
+              IPAM allocation failure ratio is {{ $value | humanizePercentage }} over the last 5m,
+              exceeding the 5% error budget. Sustained for 2m.
+              Break down by `reason` label to determine cause:
+              pool_exhausted (capacity), tx_error (postgres),
+              pool_not_found (config drift), or internal (bug).
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-allocation-error-rate-high.md"
+
+        - alert: IPAMAllocationErrorRateAbsolute
+          # Belt-and-suspenders: triggers when failures absolutely spike even
+          # if total traffic is low (where the ratio alert is noisy).
+          expr: sum(rate(ipam_allocation_failures_total[5m])) > 1
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+          annotations:
+            summary: "IPAM allocation failure rate > 1 req/s"
+            description: |
+              Absolute IPAM allocation failure rate is {{ $value }} req/s over 5m.
+              Investigate even if the ratio alert is silent.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-allocation-error-rate-high.md"
+
+    - name: ipam-pool-capacity
+      interval: 30s
+      rules:
+        - alert: IPAMPoolExhaustionImminent
+          # Headline pool-pressure alert per the spec: utilization > 80%.
+          # 15m hold avoids paging on transient capacity-bookkeeping bumps —
+          # by the time something has been over 80% for a quarter hour, it is
+          # genuinely trending toward exhaustion, not noise.
+          expr: ipam_pool_utilization_ratio > 0.80
+          for: 15m
+          labels:
+            severity: warning
+            service: ipam
+            slo: pool_capacity
+          annotations:
+            summary: "IPAM pool {{ $labels.pool_key }} utilization above 80%"
+            description: |
+              Pool {{ $labels.pool_key }} (ip_family={{ $labels.ip_family }}) is
+              {{ $value | humanizePercentage }} utilized. New claims against this pool
+              are at risk of being denied with HTTP 507 Insufficient Storage.
+              Coordinate with the pool owner to expand ranges or reclaim stale claims.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-pool-exhaustion-imminent.md"
+
+        - alert: IPAMPoolExhausted
+          # Critical companion to the imminent-exhaustion alert. Fires fast (1m)
+          # because at this point CREATEs are already returning 507.
+          expr: ipam_pool_utilization_ratio >= 1.0
+          for: 1m
+          labels:
+            severity: critical
+            service: ipam
+            slo: pool_capacity
+          annotations:
+            summary: "IPAM pool {{ $labels.pool_key }} fully exhausted"
+            description: |
+              Pool {{ $labels.pool_key }} (ip_family={{ $labels.ip_family }}) is at
+              100% utilization. All new claims against this pool are being denied
+              with HTTP 507. Customer impact is active.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-pool-exhaustion-imminent.md"
+
+    - name: ipam-db-capacity
+      interval: 30s
+      rules:
+        - alert: IPAMDBConnectionPoolSaturated
+          # Threshold semantics: idle/max < 0.10 means fewer than 10% of pool slots
+          # are free. Sustained for 3m signals genuine saturation, not transient bursts.
+          # Backed by the ipam_pgxpool_* gauges sampled every 15s by the background
+          # sampler in cmd/ipam/serve.go (postgres backend only).
+          expr: |
+            (ipam_pgxpool_idle_connections / clamp_min(ipam_pgxpool_max_connections, 1))
+            < 0.10
+          for: 3m
+          labels:
+            severity: critical
+            service: ipam
+            slo: db_capacity
+          annotations:
+            summary: "IPAM postgres connection pool < 10% idle"
+            description: |
+              Less than 10% of postgres connections in the pgxpool are idle, sustained
+              for 3m. Allocation transactions will start queueing on connection acquire,
+              driving up CREATE latency. Common causes: a slow query holding connections,
+              pgxpool MaxConns mis-sized, or a leak.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-db-connection-pool-saturated.md"
+
+        - alert: IPAMPgxpoolMetricsStale
+          # Watchdog for the background sampler goroutine in cmd/ipam/serve.go,
+          # which republishes the four ipam_pgxpool_* gauges every 15s. If the
+          # goroutine dies silently the gauges stop updating and every alert
+          # that depends on them (saturation, leak, mis-sizing) goes blind.
+          # The earlier expression `time() - timestamp(<gauge>) > 90` looked
+          # right but did not work — Prometheus' `timestamp()` returns the
+          # evaluation time of the most recent gauge sample, which keeps
+          # advancing as long as scrapes succeed (even if the value is stale).
+          # The sampler now writes its own heartbeat gauge,
+          # `ipam_pgxpool_sampler_last_run_seconds`, set to time.Now().Unix()
+          # on every successful tick. The alert fires when the wall clock has
+          # advanced more than 90s past that heartbeat — i.e. we have missed
+          # at least 6 sampler ticks (15s cadence + 30s scrape grace).
+          # Fires immediately (`for: 0m`) because by the time this trips, the
+          # sampler has already been dead for >90s.
+          expr: time() - ipam_pgxpool_sampler_last_run_seconds > 90
+          for: 0m
+          labels:
+            severity: warning
+            service: ipam
+            slo: db_capacity
+          annotations:
+            summary: "IPAM pgxpool metrics are stale — background sampler may have died"
+            description: |
+              The pgxpool stats sampler goroutine has not stamped its
+              heartbeat (`ipam_pgxpool_sampler_last_run_seconds`) for
+              {{ $value }}s. The 15s sampler in cmd/ipam/serve.go writes that
+              gauge on every successful tick, so a stale heartbeat means the
+              goroutine has exited. Connection-pool alerts that depend on the
+              ipam_pgxpool_* gauges (saturation, leaks, mis-sizing) are now
+              blind.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-db-connection-pool-saturated.md"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Watch / changelog freshness. Backed by ipam_watch_lag_seconds, which is
+    # registered and emitted by the LISTEN/NOTIFY consumer in
+    # internal/watch/postgres.go.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: ipam-dependencies
+      interval: 30s
+      rules:
+        - alert: IPAMWatchLagHigh
+          # `ipam_watch_lag_seconds` is a Histogram. Quantify the tail of the
+          # distribution rather than reading the bare metric name (which would
+          # return no series for a histogram).
+          expr: |
+            histogram_quantile(0.99, rate(ipam_watch_lag_seconds_bucket[5m])) > 30
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: watch_freshness
+          annotations:
+            summary: "IPAM watch consumer is lagging behind by {{ $value }}s"
+            description: |
+              The LISTEN/NOTIFY changelog consumer is more than 30 seconds behind the
+              newest `ipam_changelog` row. Watch subscribers will see stale state.
+              Common causes: long-running transactions blocking the changelog vacuum,
+              postgres connection storm, or the watch goroutine being stuck.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-watch-lag-high.md"
+
+        - alert: IPAMWatcherStuck
+          # Detects the watcher goroutine silently dying / wedged on a NOTIFY
+          # connection: zero events for 5m while allocation traffic is
+          # actively flowing. Without the traffic guard this would page on
+          # every quiet weekend; with it, it only fires when the apiserver is
+          # producing changelog rows that nobody is dispatching.
+          expr: |
+            sum(rate(ipam_watch_events_total[5m])) == 0
+            and
+            sum(rate(ipam_allocation_attempts_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: watch_freshness
+          annotations:
+            summary: "IPAM watcher dispatched no events for 5m despite active allocation traffic"
+            description: |
+              `ipam_watch_events_total` has been flat for 5 minutes while
+              `ipam_allocation_attempts_total` is incrementing — the apiserver is
+              writing changelog rows but the LISTEN/NOTIFY watcher is not
+              dispatching them. Watch consumers (e.g. controllers, kubectl -w)
+              are silently stale.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-watcher-stuck.md"
+
+        - alert: IPAMWatcherBacklogSaturated
+          # `ipam_watcher_poll_batch_size` is a histogram of rows per poll, with
+          # the maximum batch limit at 500 (see internal/watch/postgres.go).
+          # Mean batch size > 400 over 5m means the watcher is consistently
+          # saturating its batch limit — i.e. drainChangelog is looping to
+          # catch up rather than draining in one shot.
+          expr: |
+            sum(rate(ipam_watcher_poll_batch_size_sum[5m]))
+            /
+            clamp_min(sum(rate(ipam_watcher_poll_batch_size_count[5m])), 1e-9)
+            > 400
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: watch_freshness
+          annotations:
+            summary: "IPAM watcher poll batches near the 500-row saturation limit"
+            description: |
+              Average rows-per-poll over the last 5 minutes is {{ $value | humanize }},
+              within striking distance of the 500-row batch limit. The watcher is
+              looping in drainChangelog rather than catching up in a single batch;
+              expect rising watch lag if the trend continues.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-watch-lag-high.md"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Read-path latency. Confirmed failing the consumer-side SLO during the
+    # 2026-05-09 perf-tester baseline run:
+    #   - prefix list  p95 = 544ms (target < 200ms, 2.7× over)
+    #   - claim GET    p95 = 311ms (target < 100ms, 3.1× over)
+    # The failure pattern (claim GET p95 close to prefix list p95, despite the
+    # very different result-set sizes) suggests per-request overhead in
+    # apiserver middleware / serialization rather than DB scan time.
+    # Backed by built-in apiserver_request_duration_seconds histograms.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: ipam-read-path
+      interval: 30s
+      rules:
+        - alert: IPAMReadLatencyHigh
+          # p95 across LIST / GET on IPAM read-path resources. Threshold of
+          # 500ms is permissive (the consumer SLO is 200ms for list, 100ms
+          # for get); set here to alert only on genuine degradation, not on
+          # the known-bad steady state. Tighten once read-path is fixed.
+          #
+          # NOTE (2026-05-09): two corrections vs. the original draft, made
+          # while validating the alert against the live ipam-apiserver scrape:
+          #   1. `verb` is uppercase (LIST/GET) in apiserver_request_duration
+          #      _seconds. The original lowercase `list|get` matched zero
+          #      series and the alert was effectively disabled.
+          #   2. `ippools` is not a real resource on this apiserver; the pool
+          #      parents are `ipprefixes`, which is already in the list.
+          # End-to-end firing was confirmed by patching the live VMRule to
+          # threshold > 0.001 while running task test/load:reads — three
+          # alert instances (ipprefixes/LIST p95 ≈ 124ms, ipprefixes/GET ≈ 20ms,
+          # ipprefixclaims/LIST ≈ 20ms) transitioned from inactive→firing.
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le, verb, resource) (
+                rate(apiserver_request_duration_seconds_bucket{
+                  verb=~"LIST|GET",
+                  resource=~"ipprefixes|ipprefixclaims|ipaddresses|ipaddressclaims|asnpools|asnclaims"
+                }[5m])
+              )
+            ) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: read_latency
+          annotations:
+            summary: "IPAM read-path p95 latency above 500ms ({{ $labels.verb }} {{ $labels.resource }})"
+            description: |
+              p95 latency for {{ $labels.verb }} {{ $labels.resource }} over 5m is
+              {{ $value | humanizeDuration }}, exceeding the 500ms degradation threshold.
+              Consumer-side SLO targets are tighter (list < 200ms, get < 100ms);
+              this alert deliberately fires only on serious regressions.
+              The 2026-05-09 perf-tester baseline already showed read-path overshoot;
+              if this alert fires on top of that, the regression is real.
+              Likely class: apiserver middleware / serialization overhead
+              (per-request cost dominates over result-set size).
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-read-latency-high.md"

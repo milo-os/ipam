@@ -1,0 +1,36 @@
+apiVersion: k6.io/v1alpha1
+kind: TestRun
+metadata:
+  name: ipam-perf-exhaustion
+  namespace: ipam-system
+spec:
+  parallelism: 1
+  separate: false
+  cleanup: post
+  script:
+    configMap:
+      name: ipam-k6-test-scripts
+      file: pool-exhaustion.js
+  runner:
+    image: grafana/k6:latest
+    serviceAccountName: ipam-k6-runner
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+    env:
+      - name: IPAM_API_URL
+        value: "https://kubernetes.default.svc.cluster.local:443"
+      - name: K6_INSECURE_SKIP_TLS_VERIFY
+        value: "true"
+      - name: NAMESPACE_COUNT
+        value: "10"
+      - name: PROJECT_COUNT
+        value: "5"
+      - name: VUS
+        value: "20"
+      - name: DURATION
+        value: "1m"

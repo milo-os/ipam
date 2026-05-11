@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: ipam-system
+
+resources:
+  - serviceaccount.yaml
+  - deployment.yaml
+  - service.yaml
+  - secret.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
+  - rbac-auth-reader.yaml
+  - rbac-cluster.yaml
+
+labels:
+  - includeSelectors: true
+    includeTemplates: true
+    pairs:
+      app.kubernetes.io/name: ipam
+      app.kubernetes.io/instance: ipam-apiserver
+      app.kubernetes.io/component: apiserver
+      app.kubernetes.io/part-of: ipam.miloapis.com
+      app.kubernetes.io/managed-by: kustomize
+
+# Image (overlays override newTag for different environments)
+images:
+  - name: ghcr.io/datum-cloud/ipam-apiserver
+    newTag: latest
+
+# rbac-auth-reader RoleBinding belongs in kube-system. The patch keeps the
+# subject pointing at the SA in ipam-system after the namespace transformer.
+patches:
+  - target:
+      kind: RoleBinding
+      name: ipam-apiserver-auth-reader
+    patch: |-
+      - op: replace
+        path: /metadata/namespace
+        value: kube-system
+      - op: replace
+        path: /subjects/0/namespace
+        value: ipam-system
