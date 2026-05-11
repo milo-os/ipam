@@ -1,0 +1,91 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ipam-apiserver
+  namespace: ipam-system
+spec:
+  podSelector:
+    matchLabels:
+      app: ipam-apiserver
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # Ingress: only the kube-apiserver (front-proxy) and the
+  # Prometheus/VictoriaMetrics scraper need to reach the IPAM apiserver.
+  # The aggregation layer's APIService proxies every IPAM API call through
+  # the front-proxy, so consumers (kubectl, controllers) never connect
+  # directly to this pod.
+  #
+  # We deliberately use namespaceSelector-only (not podSelector) for these
+  # peers because the kustomization.yaml `labels:` transformer with
+  # includeSelectors=true rewrites every selector's matchLabels field —
+  # including peer podSelectors — to inject the IPAM labels. A peer
+  # podSelector targeting kube-dns or postgres ends up requiring those
+  # external pods to ALSO carry IPAM labels, which they don't, and the
+  # rule matches nothing. namespaceSelector matches the namespace's own
+  # labels (kubernetes.io/metadata.name) which kustomize doesn't touch.
+  ingress:
+    # Anything in kube-system can reach 8443. Targets the kube-apiserver
+    # plus any operator/admission webhook callers that proxy through it.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 8443
+    # Prometheus scrape from the observability namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: telemetry-system
+      ports:
+        - protocol: TCP
+          port: 8443
+
+  # Egress: postgres (5432), DNS (53), kube-apiserver (6443/443 in
+  # kube-system for SubjectAccessReview / TokenReview), and NATS (4222 in
+  # any namespace, no-op when nats-streams isn't installed). All cross-
+  # namespace peers are namespaceSelector-only for the kustomize
+  # label-transformer reason explained above.
+  egress:
+    # DNS — both UDP and TCP for large responses.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Postgres in-namespace. Same-namespace peer with no podSelector lets
+    # any pod in ipam-system listening on 5432 receive the connection
+    # (the Bitnami chart's postgresql StatefulSet does).
+    - to:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 5432
+    # NATS for the optional events stream component. Egress to any
+    # namespace on 4222 — selector wide-open because the nats-streams
+    # component lands NATS in a different namespace per-environment and
+    # the IPAM apiserver should not need to encode that.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 4222
+    # Kubernetes apiserver for SubjectAccessReview / TokenReview calls
+    # back to the front-proxy. Cluster's apiserver service is in
+    # kube-system on 6443 (kind/kubeadm) or 443 (some distros).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 6443
+        - protocol: TCP
+          port: 443
