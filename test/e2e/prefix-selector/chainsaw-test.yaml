@@ -1,0 +1,83 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: prefix-selector
+spec:
+  description: |
+    Label-selector-based pool resolution for IPPrefixClaim:
+    - A claim with spec.prefixSelector matchLabels picks the unique matching
+      pool and binds against it (status.boundPrefixRef + allocatedCIDR fall
+      inside that pool's CIDR).
+    - A claim whose selector matches no pool returns HTTP 400 with
+      "no IPPrefix pool matches spec.prefixSelector".
+    - spec.prefixRef and spec.prefixSelector are mutually exclusive at create
+      time.
+
+  steps:
+    - name: setup
+      description: IPPrefixClass + three labelled pools (two consumer, one infra)
+      try:
+        - create:
+            file: test-data/class.yaml
+        - create:
+            file: test-data/pools.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefix
+            name: selector-pool-consumer-b
+            timeout: 30s
+            for:
+              condition:
+                name: Ready
+                value: 'True'
+
+    - name: claim-by-selector
+      description: matchLabels {environment=consumer, region=us-east} → binds to selector-pool-consumer-b
+      try:
+        - create:
+            file: test-data/claim-by-selector.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefixClaim
+            name: selector-claim
+            namespace: ($namespace)
+            timeout: 30s
+            for:
+              jsonPath:
+                path: '{.status.phase}'
+                value: 'Bound'
+        - assert:
+            file: assertions/assert-bound-to-us-east.yaml
+
+    - name: claim-no-match-rejected
+      description: Selector matching no pool returns HTTP 400
+      try:
+        - create:
+            file: test-data/claim-no-match.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'no IPPrefix pool matches')): true
+
+    - name: mutually-exclusive-rejected
+      description: Setting both prefixRef and prefixSelector returns HTTP 400
+      try:
+        - create:
+            file: test-data/claim-both.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'mutually exclusive') || contains($error, '400')): true
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipprefixclaim -n "$NAMESPACE" selector-claim selector-claim-no-match selector-claim-both --ignore-not-found
+              kubectl delete ipprefix selector-pool-consumer-a selector-pool-consumer-b selector-pool-infra --ignore-not-found
+              kubectl delete ipprefixclass selector-class --ignore-not-found
+              echo "selector suite cleanup done"
+            check:
+              ($error == null): true

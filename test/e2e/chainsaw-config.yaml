@@ -1,0 +1,16 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Configuration
+metadata:
+  name: ipam-e2e
+spec:
+  timeouts:
+    apply: 60s
+    assert: 90s
+    cleanup: 120s
+    delete: 60s
+    error: 30s
+    exec: 120s
+  catch:
+    - sleep:
+        duration: 2s
+  failFast: false

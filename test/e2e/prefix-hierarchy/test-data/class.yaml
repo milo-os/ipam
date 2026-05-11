@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClass
+metadata:
+  name: platform-shared
+spec:
+  requiresVerification: false
+  visibility: platform
+  defaultAllocation:
+    minPrefixLength: 12
+    maxPrefixLength: 28
+    strategy: FirstFit
