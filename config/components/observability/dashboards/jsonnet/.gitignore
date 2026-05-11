@@ -1,0 +1,4 @@
+# Vendored Grafonnet libraries — populated by `jb install`.
+# We keep jsonnetfile.json + jsonnetfile.lock.json under version control
+# (so the toolchain is reproducible) but do NOT commit the vendor tree.
+vendor/

@@ -1,0 +1,863 @@
+{
+   "description": "Consumer-facing IPAM dashboard, complement to ipam-provider. Scope by namespace and resource. Shows claim throughput, success rate, latency, and address-space pressure for the selected namespaces. The IPAM dashboard spec names four provider-facing dashboards (ipam-overview, ipam-pool-utilization, ipam-allocation-latency, ipam-watch-health) — those live in ipam-provider; this file is the per-consumer complement.",
+   "panels": [
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 0
+         },
+         "id": 1,
+         "title": "Claim activity",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Aggregate success ratio across the selected namespaces over the last 5m.",
+         "fieldConfig": {
+            "defaults": {
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "red",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 0.90000000000000002
+                     },
+                     {
+                        "color": "green",
+                        "value": 0.94999999999999996
+                     }
+                  ]
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 6,
+            "w": 6,
+            "x": 0,
+            "y": 1
+         },
+         "id": 2,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\", code=~\"2..\"}[5m]))\n/\nclamp_min(sum(rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\"}[5m])), 1e-9)\n"
+            }
+         ],
+         "title": "Aggregate claim success rate",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Successful + failed claim CREATE requests per second, scoped to the selected namespaces.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 6,
+            "w": 18,
+            "x": 6,
+            "y": 1
+         },
+         "id": 3,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (namespace, resource) (rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\"}[5m]))",
+               "legendFormat": "{{namespace}} / {{resource}}"
+            }
+         ],
+         "title": "Claim CREATE rate",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "4xx/5xx tells you which namespaces are seeing denials. 507 = pool exhausted.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 7
+         },
+         "id": 4,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (namespace, code) (rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\"}[5m]))",
+               "legendFormat": "{{namespace}} / HTTP {{code}}"
+            }
+         ],
+         "title": "Claim CREATE responses by code",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Per-namespace claim success ratio (2xx / total). Below 0.95 means the namespace is degraded.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 7
+         },
+         "id": 5,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (namespace, resource) (rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\", code=~\"2..\"}[5m]))\n/\nclamp_min(sum by (namespace, resource) (rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\"}[5m])), 1e-9)\n",
+               "legendFormat": "{{namespace}} / {{resource}}"
+            }
+         ],
+         "title": "Claim CREATE success rate",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Per-project claim success ratio (1 − failures/attempts) from the IPAM-owned counters. Source of truth for SLO conversations with project owners; below 0.95 means the project is degraded.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 14
+         },
+         "id": 6,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "1 -\n(\n  sum by (project, resource) (rate(ipam_allocation_failures_total{job=\"$job\", instance=~\"$instance\", project!=\"\"}[5m]))\n  /\n  clamp_min(sum by (project, resource) (rate(ipam_allocation_attempts_total{job=\"$job\", instance=~\"$instance\", project!=\"\"}[5m])), 1e-9)\n)\n",
+               "legendFormat": "{{project}} / {{resource}}"
+            }
+         ],
+         "title": "Project-scoped claim success rate",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 21
+         },
+         "id": 7,
+         "title": "Claim latency (consumer-observed)",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Aggregate p95 across selected namespaces. Target: < 500ms.",
+         "fieldConfig": {
+            "defaults": {
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 0.20000000000000001
+                     },
+                     {
+                        "color": "red",
+                        "value": 0.5
+                     }
+                  ]
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 6,
+            "x": 0,
+            "y": 22
+         },
+         "id": 8,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95,\n  sum by (le) (rate(apiserver_request_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\"}[5m]))\n)\n"
+            }
+         ],
+         "title": "p95 claim CREATE latency",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "p95 end-to-end CREATE latency observed at the apiserver. Closest available proxy for what the consumer sees.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 18,
+            "x": 6,
+            "y": 22
+         },
+         "id": 9,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95,\n  sum by (le, namespace, resource) (rate(apiserver_request_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\"}[5m]))\n)\n",
+               "legendFormat": "{{namespace}} / {{resource}}"
+            }
+         ],
+         "title": "Claim CREATE p95 latency by namespace (apiserver-side)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 6,
+            "w": 24,
+            "x": 0,
+            "y": 29
+         },
+         "id": 10,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.99,\n  sum by (le, namespace, resource) (rate(apiserver_request_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=\"create\"}[5m]))\n)\n",
+               "legendFormat": "{{namespace}} / {{resource}}"
+            }
+         ],
+         "title": "Claim CREATE p99 latency by namespace",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 35
+         },
+         "id": 11,
+         "title": "Read path (list / get / watch)",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Read-path traffic. High list rates suggest consumers are polling instead of using watch.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "reqps"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 0,
+            "y": 36
+         },
+         "id": 12,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (namespace, verb) (rate(apiserver_request_total{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=~\"list|get|watch\"}[5m]))",
+               "legendFormat": "{{namespace}} / {{verb}}"
+            }
+         ],
+         "title": "List/Get rate by namespace",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 36
+         },
+         "id": 13,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95,\n  sum by (le, namespace, verb) (rate(apiserver_request_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", namespace=~\"$namespace\", resource=~\"$resource\", verb=~\"list|get\"}[5m]))\n)\n",
+               "legendFormat": "{{namespace}} / {{verb}}"
+            }
+         ],
+         "title": "List/Get p95 latency by namespace",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 43
+         },
+         "id": 14,
+         "title": "Address space pressure",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Heads-up indicator: how many pools are nearing exhaustion right now.",
+         "fieldConfig": {
+            "defaults": {
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 5
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 0,
+            "y": 44
+         },
+         "id": 15,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "count(ipam_pool_utilization_ratio{job=\"$job\", instance=~\"$instance\"} > 0.80)"
+            }
+         ],
+         "title": "Pools above 80% utilized",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "fieldConfig": {
+            "defaults": {
+               "thresholds": {
+                  "mode": "absolute",
+                  "steps": [
+                     {
+                        "color": "green",
+                        "value": null
+                     },
+                     {
+                        "color": "orange",
+                        "value": 1
+                     },
+                     {
+                        "color": "red",
+                        "value": 5
+                     }
+                  ]
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 5,
+            "w": 6,
+            "x": 6,
+            "y": 44
+         },
+         "id": 16,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "count(ipam_pool_utilization_ratio{job=\"$job\", instance=~\"$instance\"} > 0.90)"
+            }
+         ],
+         "title": "Pools above 90% utilized",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Per-pool utilization ratio. Pools above 80% are at risk of denying claims with 507. NOTE: pool→namespace mapping is not exported; consumers must consult the platform team to learn which pools serve their workloads.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 12,
+            "x": 12,
+            "y": 44
+         },
+         "id": 17,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "ipam_pool_utilization_ratio{job=\"$job\", instance=~\"$instance\"}",
+               "legendFormat": "{{pool_key}} ({{ip_family}})"
+            }
+         ],
+         "title": "Pool utilization (all pools)",
+         "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 51
+         },
+         "id": 18,
+         "title": "Instrumentation roadmap",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 24,
+            "x": 0,
+            "y": 52
+         },
+         "id": 19,
+         "options": {
+            "content": "Panels not yet present in this dashboard, with the metric work each\nrequires. See `.claude/agents/observability.md` for the canonical\nmetric spec.\n\n| Spec panel | Metric needed | Note |\n|---|---|---|\n| Address space utilization in scope | Per-pool→namespace mapping | Either add a `namespace` / `consumer` label to `ipam_pool_utilization_ratio`, or emit a separate `ipam_pool_consumers` metric. Beware cardinality. |\n\nProject-level claim success rate is now wired up via the `project` label\non `ipam_allocation_attempts_total` / `ipam_allocation_failures_total`\n(populated from `iam.miloapis.com/parent-name` in UserInfo.Extra). See\nthe \"Project-scoped claim success rate\" panel above. The namespace-level\nbreakdowns elsewhere on this dashboard are derived from the built-in\n`apiserver_request_total{namespace=...}` label.\n",
+            "mode": "markdown"
+         },
+         "pluginVersion": "v11.4.0",
+         "title": "Instrumentation roadmap",
+         "type": "text"
+      }
+   ],
+   "refresh": "30s",
+   "schemaVersion": 39,
+   "tags": [
+      "ipam",
+      "milo",
+      "platform",
+      "consumer"
+   ],
+   "templating": {
+      "list": [
+         {
+            "label": "Data source",
+            "name": "datasource",
+            "query": "prometheus",
+            "regex": "",
+            "type": "datasource"
+         },
+         {
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "includeAll": false,
+            "label": "Job",
+            "name": "job",
+            "query": "label_values(apiserver_request_total, job)",
+            "refresh": "time",
+            "regex": "/.*ipam.*/",
+            "type": "query"
+         },
+         {
+            "allValue": ".*",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "includeAll": true,
+            "label": "Instance",
+            "multi": true,
+            "name": "instance",
+            "query": "label_values(apiserver_request_total{job=\"$job\"}, instance)",
+            "refresh": "time",
+            "type": "query"
+         },
+         {
+            "allValue": ".+",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "includeAll": true,
+            "label": "Namespace",
+            "multi": true,
+            "name": "namespace",
+            "query": "label_values(apiserver_request_total{job=\"$job\", resource=~\".*claim.*\"}, namespace)",
+            "refresh": "time",
+            "type": "query"
+         },
+         {
+            "allValue": ".+",
+            "datasource": {
+               "type": "prometheus",
+               "uid": "${datasource}"
+            },
+            "includeAll": true,
+            "label": "Resource",
+            "multi": true,
+            "name": "resource",
+            "query": "label_values(apiserver_request_total{job=\"$job\", resource=~\".*claim.*\"}, resource)",
+            "refresh": "time",
+            "type": "query"
+         }
+      ]
+   },
+   "time": {
+      "from": "now-1h",
+      "to": "now"
+   },
+   "timezone": "utc",
+   "title": "IPAM — Consumer",
+   "uid": "ipam-consumer"
+}

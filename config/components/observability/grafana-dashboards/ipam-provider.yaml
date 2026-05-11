@@ -1,0 +1,29 @@
+---
+# GrafanaDashboard CR — Platform operator (provider) view of IPAM.
+#
+# The dashboard JSON is materialised into a ConfigMap by the configMapGenerator
+# in `kustomization.yaml` (key: dashboard.json) so it stays the single source of
+# truth in `dashboards/generated/ipam-provider.json`.
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: ipam-provider
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: dashboard
+    ipam.miloapis.com/audience: provider
+spec:
+  # Targets the operator-managed Grafana instance labelled
+  # `dashboards: grafana`. Override at overlay level if needed.
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  # The Grafana instance lives in the `monitoring` namespace; this CR lives in
+  # `ipam-system`. Without `allowCrossNamespaceImport: true` the operator
+  # silently skips the dashboard during reconciliation.
+  allowCrossNamespaceImport: true
+  folder: "Platform / IPAM"
+  resyncPeriod: 5m
+  configMapRef:
+    name: ipam-provider-dashboard
+    key: dashboard.json
