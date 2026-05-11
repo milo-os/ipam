@@ -1,0 +1,16 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ipam-apiserver
+  namespace: ipam-system
+spec:
+  # The Deployment runs 2 replicas; minAvailable=1 lets the cluster drain
+  # one pod at a time during voluntary disruption (node drain, rolling
+  # update) without ever taking the apiserver fully down. Pair with the
+  # PreShutdownHook in cmd/ipam/serve.go which closes the allocator pgxpool
+  # AFTER the apiserver stops accepting new requests, so in-flight
+  # transactions on the evicted pod always finish or roll back cleanly.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: ipam-apiserver

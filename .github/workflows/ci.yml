@@ -1,0 +1,154 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Build, vet, and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test -timeout 5m ./pkg/... ./internal/... -count=1
+
+      - name: Verify no forbidden imports
+        run: |
+          if grep -rE "datum-cloud/(milo|quota)" --include='*.go' . ; then
+            echo "FAIL: unwanted imports of datum-cloud/milo or datum-cloud/quota"
+            exit 1
+          fi
+          echo "OK: no forbidden imports"
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v2.1
+
+  kustomize:
+    name: Validate kustomize overlays
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install kustomize
+        run: |
+          curl -sLo /tmp/kustomize.tgz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar -xzf /tmp/kustomize.tgz -C /tmp
+          sudo mv /tmp/kustomize /usr/local/bin/
+
+      - name: Build dev overlay
+        run: kustomize build config/overlays/dev/ > /dev/null
+
+      - name: Build test-infra overlay
+        run: kustomize build config/overlays/test-infra/ > /dev/null
+
+      - name: Build k6 component
+        run: kustomize build config/components/k6-performance-tests/ > /dev/null
+
+  chainsaw-yaml:
+    name: Lint chainsaw YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate chainsaw test YAML files parse
+        run: |
+          set -e
+          for f in test/e2e/*/chainsaw-test.yaml; do
+            python3 -c "import sys, yaml; list(yaml.safe_load_all(open(sys.argv[1])))" "$f"
+            echo "  ok  $f"
+          done
+
+  k6-validate:
+    name: Validate k6 scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
+
+      - name: k6 inspect each script
+        run: |
+          set -e
+          for f in test/load/src/*.js; do
+            k6 inspect "$f" >/dev/null
+            echo "  ok  $f"
+          done
+
+  observability:
+    name: Verify observability artifacts
+    runs-on: ubuntu-latest
+    env:
+      TASK_X_REMOTE_TASKFILES: "1"
+    steps:
+      - uses: actions/checkout@v6
+
+      # go-jsonnet, jb (jsonnet-bundler), kubeconform are installed via
+      # `go install` from the observability Taskfile's install-tooling
+      # target — Go is needed even though the verify step is not Go code.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install kustomize
+        run: |
+          curl -sLo /tmp/kustomize.tgz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar -xzf /tmp/kustomize.tgz -C /tmp
+          sudo mv /tmp/kustomize /usr/local/bin/
+
+      # `task observability:verify-dashboards` depends on `init`, which depends
+      # on `install-tooling` — that chain runs `jb install` against the
+      # committed jsonnetfile.lock.json to vendor Grafonnet under
+      # config/components/observability/dashboards/jsonnet/vendor/. The init
+      # task is idempotent (status check skips if vendor/grafonnet-vX.Y.Z
+      # already exists), so re-runs are a no-op.
+      - name: Verify dashboards (jsonnet → JSON in sync)
+        run: task observability:verify-dashboards
+
+      - name: Verify alerts (promtool check rules)
+        run: task observability:verify-alerts
+
+      - name: Verify rendered manifests (kubeconform)
+        run: task observability:verify-manifests

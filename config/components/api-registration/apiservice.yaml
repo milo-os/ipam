@@ -1,0 +1,14 @@
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.ipam.miloapis.com
+spec:
+  service:
+    name: ipam-apiserver
+    namespace: ipam-system
+    port: 443
+  group: ipam.miloapis.com
+  version: v1alpha1
+  insecureSkipTLSVerify: false
+  groupPriorityMinimum: 1000
+  versionPriority: 15
