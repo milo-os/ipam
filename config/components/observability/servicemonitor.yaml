@@ -1,0 +1,24 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ipam-apiserver
+  namespace: ipam-system
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: apiserver
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ipam
+      app.kubernetes.io/component: apiserver
+  namespaceSelector:
+    matchNames:
+      - ipam-system
+  endpoints:
+    - port: https
+      scheme: https
+      path: /metrics
+      interval: 30s
+      tlsConfig:
+        insecureSkipVerify: true
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token

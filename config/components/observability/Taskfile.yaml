@@ -1,0 +1,221 @@
+version: '3'
+
+# Observability build / verify tasks for the IPAM service.
+#
+# - generate-dashboards : compile Jsonnet dashboards into JSON committed under
+#                        dashboards/generated/. The kustomize configMapGenerator
+#                        in this directory's kustomization.yaml picks them up.
+# - verify-dashboards   : recompile Jsonnet to a temporary directory and diff
+#                        against the committed JSON. Exits non-zero if drift
+#                        is detected — wire into CI to enforce sources-of-truth.
+# - verify-alerts       : run `promtool check rules` against the PrometheusRule
+#                        manifest so we catch PromQL syntax errors before they
+#                        ship to Alertmanager.
+# - verify-manifests    : kustomize build | kubeconform --strict — validates
+#                        every rendered Kubernetes manifest against its schema.
+#
+# Conventions follow the datum-cloud/quota observability Taskfile. We hard-pin
+# go-jsonnet (not the C++ brew binary) because grafonnet's deeply-nested
+# generated trees effectively infinite-loop the C++ interpreter.
+
+vars:
+  # NOTE: paths here are relative to the Taskfile's own directory
+  # (config/components/observability/). Task's go-task/task implementation
+  # mis-joins absolute `dir:` values with the include's dir prefix when this
+  # Taskfile is consumed via an include block in the root Taskfile, so we
+  # stick to relative paths and rely on Task's working-directory semantics.
+  JSONNET_DIR: "dashboards/jsonnet"
+  GENERATED_DIR: "dashboards/generated"
+  ALERTS_FILE: "alerts/ipam-alerts.yaml"
+  COMPONENT_DIR: "."
+  # Pin to go-jsonnet / jb installed under $GOPATH/bin to avoid surprises from
+  # whatever the user has on $PATH (the C++ brew jsonnet hangs on grafonnet).
+  JSONNET_BIN:
+    sh: echo "$(go env GOPATH)/bin/jsonnet"
+  JB_BIN:
+    sh: echo "$(go env GOPATH)/bin/jb"
+  KUBECONFORM_BIN:
+    sh: echo "$(go env GOPATH)/bin/kubeconform"
+  # promtool is NOT installable via `go install` — the upstream prometheus
+  # module has replace directives that go install rejects. Pull the binary
+  # from the official release tarball instead. Pinned version keeps CI
+  # deterministic; bump deliberately.
+  PROMTOOL_VERSION: "2.55.1"
+  PROMTOOL_BIN:
+    sh: echo "$(go env GOPATH)/bin/promtool"
+
+tasks:
+  install-tooling:
+    desc: Install go-jsonnet, jsonnet-bundler, promtool, and kubeconform into $GOPATH/bin
+    cmds:
+      - task: install-go-tooling
+      - task: install-promtool
+
+  install-go-tooling:
+    internal: true
+    status:
+      - test -x "{{.JSONNET_BIN}}"
+      - test -x "{{.JB_BIN}}"
+      - test -x "{{.KUBECONFORM_BIN}}"
+    cmds:
+      - go install github.com/google/go-jsonnet/cmd/jsonnet@latest
+      - go install github.com/jsonnet-bundler/jsonnet-bundler/cmd/jb@latest
+      - go install github.com/yannh/kubeconform/cmd/kubeconform@latest
+
+  install-promtool:
+    internal: true
+    desc: Download promtool {{.PROMTOOL_VERSION}} from prometheus releases
+    status:
+      # Skip if the right version is already installed. promtool prints
+      # `promtool, version X.Y.Z (...)` on the first line of stderr.
+      - test -x "{{.PROMTOOL_BIN}}" && "{{.PROMTOOL_BIN}}" --version 2>&1 | grep -q "version {{.PROMTOOL_VERSION}}"
+    cmds:
+      - |
+        set -e
+        # Detect the right release asset for the current host.
+        os=$(uname -s | tr '[:upper:]' '[:lower:]')
+        arch_raw=$(uname -m)
+        case "$arch_raw" in
+          x86_64|amd64) arch=amd64 ;;
+          aarch64|arm64) arch=arm64 ;;
+          *) echo "unsupported arch: $arch_raw"; exit 1 ;;
+        esac
+        version="{{.PROMTOOL_VERSION}}"
+        bin_dir="$(go env GOPATH)/bin"
+        mkdir -p "$bin_dir"
+        url="https://github.com/prometheus/prometheus/releases/download/v${version}/prometheus-${version}.${os}-${arch}.tar.gz"
+        echo "Downloading promtool ${version} for ${os}/${arch}"
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+        curl -fsSL "$url" -o "$tmp/prom.tar.gz"
+        tar -xzf "$tmp/prom.tar.gz" -C "$tmp"
+        # Tarball lays out at prometheus-<ver>.<os>-<arch>/promtool
+        cp "$tmp/prometheus-${version}.${os}-${arch}/promtool" "$bin_dir/promtool"
+        chmod +x "$bin_dir/promtool"
+        echo "Installed: $("$bin_dir/promtool" --version 2>&1 | head -1)"
+
+  init:
+    desc: Vendor Grafonnet under dashboards/jsonnet/vendor
+    deps: [install-tooling]
+    status:
+      - test -d {{.JSONNET_DIR}}/vendor/grafonnet-v11.4.0
+    cmds:
+      - cd "{{.JSONNET_DIR}}" && "{{.JB_BIN}}" install
+
+  generate-dashboards:
+    desc: Compile Jsonnet dashboard sources into dashboards/generated/*.json
+    deps: [init]
+    cmds:
+      - |
+        set -e
+        echo "Building Grafana dashboards from Jsonnet..."
+        mkdir -p "{{.GENERATED_DIR}}"
+        cd "{{.JSONNET_DIR}}"
+        for file in *.jsonnet; do
+          [ -f "$file" ] || continue
+          output=$(basename "$file" .jsonnet).json
+          echo "  $file -> generated/$output"
+          # JSONNET_DIR is the working directory for the loop, so the
+          # output path is resolved relative to it. We need ../../generated/
+          # because GENERATED_DIR is relative to the Taskfile root.
+          "{{.JSONNET_BIN}}" -J vendor "$file" > "../generated/$output"
+        done
+        echo "Dashboards built into {{.GENERATED_DIR}}"
+
+  verify-dashboards:
+    desc: Fail if dashboards/generated/*.json drifts from the Jsonnet source
+    deps: [init]
+    cmds:
+      - |
+        set -e
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+        echo "Rebuilding dashboards into $tmp..."
+        # Capture absolute path to the committed-output dir before we cd.
+        generated_abs=$(cd "{{.GENERATED_DIR}}" && pwd)
+        cd "{{.JSONNET_DIR}}"
+        for file in *.jsonnet; do
+          [ -f "$file" ] || continue
+          output=$(basename "$file" .jsonnet).json
+          "{{.JSONNET_BIN}}" -J vendor "$file" > "$tmp/$output"
+        done
+        echo "Comparing against $generated_abs..."
+        # Diff every freshly compiled file against the committed copy.
+        # `diff -q` returns 1 when files differ, which we surface as a
+        # human-readable error so CI logs explain the failure.
+        drift=0
+        for fresh in "$tmp"/*.json; do
+          name=$(basename "$fresh")
+          committed="$generated_abs/$name"
+          if [ ! -f "$committed" ]; then
+            echo "ERROR: $name exists from Jsonnet but is not committed under generated/."
+            drift=1
+            continue
+          fi
+          if ! diff -q "$fresh" "$committed" >/dev/null 2>&1; then
+            echo "ERROR: $name is out of sync with Jsonnet source."
+            diff -u "$committed" "$fresh" | head -40 || true
+            drift=1
+          fi
+        done
+        if [ "$drift" -ne 0 ]; then
+          echo ""
+          echo "Run 'task observability:generate-dashboards' and commit the result."
+          exit 1
+        fi
+        echo "Generated dashboards are up to date."
+
+  verify-alerts:
+    desc: Validate PrometheusRule alert syntax with promtool
+    deps: [install-tooling]
+    cmds:
+      - |
+        set -e
+        echo "promtool check rules {{.ALERTS_FILE}}"
+        # promtool understands the inner `groups:` document but our alert
+        # file is wrapped in a PrometheusRule CR. Strip the CR wrapper to
+        # the spec, leaving promtool with the bare `groups:` it expects.
+        tmp=$(mktemp -t ipam-alerts.XXXXXX)
+        trap 'rm -f "$tmp"' EXIT
+        # Use yq if available for robust extraction; otherwise fall back to
+        # awk (the file is hand-curated and the layout is stable).
+        if command -v yq >/dev/null 2>&1; then
+          yq eval '.spec' "{{.ALERTS_FILE}}" > "$tmp"
+        else
+          awk '
+            /^spec:/ { in_spec=1; next }
+            in_spec && /^[^[:space:]]/ { in_spec=0 }
+            in_spec { sub(/^  /, ""); print }
+          ' "{{.ALERTS_FILE}}" > "$tmp"
+        fi
+        "{{.PROMTOOL_BIN}}" check rules "$tmp"
+
+  verify-manifests:
+    desc: Validate rendered Kubernetes manifests with kubeconform
+    deps: [install-tooling]
+    cmds:
+      - |
+        set -e
+        echo "kustomize build {{.COMPONENT_DIR}} | kubeconform --strict"
+        # We pass `--ignore-missing-schemas` only for non-core CRDs whose
+        # schemas kubeconform can't fetch (Grafana operator, prometheus-operator).
+        # `--strict` still applies to everything that does have a schema.
+        kustomize build "{{.COMPONENT_DIR}}" \
+          | "{{.KUBECONFORM_BIN}}" \
+              -strict \
+              -ignore-missing-schemas \
+              -summary \
+              -schema-location default \
+              -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{`{{.Group}}`}}/{{`{{.ResourceKind}}`}}_{{`{{.ResourceAPIVersion}}`}}.json'
+
+  verify:
+    desc: Run all observability verification gates (dashboards, alerts, manifests)
+    cmds:
+      - task: verify-dashboards
+      - task: verify-alerts
+      - task: verify-manifests
+
+  clean:
+    desc: Remove vendored Jsonnet libraries
+    cmds:
+      - rm -rf "{{.JSONNET_DIR}}/vendor"
