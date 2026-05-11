@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - ca-certificate.yaml
+  - issuer.yaml
+
+# Re-point the Deployment's TLS CSI volume at the namespaced CA issuer
+# instead of the cluster-wide selfsigned issuer.
+patches:
+  - target:
+      kind: Deployment
+      name: ipam-apiserver
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/volumes/0/csi/volumeAttributes/csi.cert-manager.io~1issuer-name
+        value: ipam-ca-issuer
+      - op: replace
+        path: /spec/template/spec/volumes/0/csi/volumeAttributes/csi.cert-manager.io~1issuer-kind
+        value: Issuer

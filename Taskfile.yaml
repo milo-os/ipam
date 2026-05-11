@@ -1,0 +1,283 @@
+version: '3'
+
+vars:
+  TOOL_DIR: "{{.USER_WORKING_DIR}}/bin"
+  IPAM_IMAGE_NAME: "ipam-apiserver"
+  IPAM_IMAGE_TAG: "dev"
+  TEST_INFRA_CLUSTER_NAME: "test-infra"
+  TEST_INFRA_REPO_REF: 'v0.6.0'
+
+includes:
+  test-infra:
+    taskfile: https://raw.githubusercontent.com/datum-cloud/test-infra/{{.TEST_INFRA_REPO_REF}}/Taskfile.yml
+    vars:
+      REPO_REF: "{{.TEST_INFRA_REPO_REF}}"
+  load:
+    taskfile: ./test/load/Taskfile.yaml
+    dir: ./test/load
+  # observability: dashboard generation + promtool/kubeconform CI gates.
+  # Tasks defined under config/components/observability/Taskfile.yaml are
+  # exposed here as `observability:<task>`.
+  observability:
+    taskfile: ./config/components/observability/Taskfile.yaml
+    dir: ./config/components/observability
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Build the ipam binary
+    cmds:
+      - |
+        set -e
+        mkdir -p {{.TOOL_DIR}}
+        GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+        VERSION="v0.0.0-dev+${GIT_COMMIT:0:7}"
+        GIT_TREE_STATE="clean"
+        if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+          GIT_TREE_STATE="dirty"
+        fi
+        BUILD_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "unknown")
+        echo "Version: ${VERSION}, Commit: ${GIT_COMMIT:0:7}, Tree: ${GIT_TREE_STATE}"
+        go build \
+          -ldflags="-X 'go.miloapis.com/ipam/internal/version.Version=${VERSION}' \
+                    -X 'go.miloapis.com/ipam/internal/version.GitCommit=${GIT_COMMIT}' \
+                    -X 'go.miloapis.com/ipam/internal/version.GitTreeState=${GIT_TREE_STATE}' \
+                    -X 'go.miloapis.com/ipam/internal/version.BuildDate=${BUILD_DATE}'" \
+          -o {{.TOOL_DIR}}/ipam ./cmd/ipam
+        echo "Binary built: {{.TOOL_DIR}}/ipam"
+    silent: true
+
+  test:
+    desc: Run Go unit tests
+    cmd: go test -timeout 5m ./pkg/... ./internal/... -count=1
+
+  vet:
+    desc: Run go vet
+    cmd: go vet ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmd: golangci-lint run ./...
+
+  generate:
+    desc: Run code generation
+    silent: true
+    cmds:
+      - |
+        if [ -f "./hack/update-codegen.sh" ]; then
+          ./hack/update-codegen.sh
+        else
+          echo "hack/update-codegen.sh not present yet"
+        fi
+
+  migrate:
+    desc: Run database migrations against $POSTGRES_DSN
+    deps: [build]
+    cmd: "{{.TOOL_DIR}}/ipam migrate up"
+
+  # ----- Container & cluster dev workflow -----
+
+  dev:build:
+    desc: Build the IPAM container image
+    silent: true
+    cmds:
+      - |
+        set -e
+        GIT_COMMIT=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+        VERSION="v0.0.0-dev+${GIT_COMMIT:0:7}"
+        GIT_TREE_STATE="clean"
+        if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+          GIT_TREE_STATE="dirty"
+        fi
+        BUILD_DATE=$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "unknown")
+        docker build \
+          --build-arg VERSION="${VERSION}" \
+          --build-arg GIT_COMMIT="${GIT_COMMIT}" \
+          --build-arg GIT_TREE_STATE="${GIT_TREE_STATE}" \
+          --build-arg BUILD_DATE="${BUILD_DATE}" \
+          -t "{{.IPAM_IMAGE_NAME}}:{{.IPAM_IMAGE_TAG}}" .
+        echo "Built {{.IPAM_IMAGE_NAME}}:{{.IPAM_IMAGE_TAG}}"
+
+  dev:load:
+    desc: Load the IPAM image into the kind cluster
+    cmd: kind load docker-image "{{.IPAM_IMAGE_NAME}}:{{.IPAM_IMAGE_TAG}}" --name "{{.TEST_INFRA_CLUSTER_NAME}}"
+
+  dev:install-dependencies:
+    desc: Install infra dependencies for dev (postgres via component)
+    silent: true
+    cmds:
+      - task test-infra:kubectl -- apply -k config/components/postgres
+
+  dev:deploy:
+    desc: Deploy IPAM via the dev overlay
+    silent: true
+    cmds:
+      - |
+        set -e
+        task test-infra:kubectl -- apply -k config/overlays/dev
+        task test-infra:kubectl -- wait --for=condition=ready pod -l app=ipam-apiserver -n ipam-system --timeout=180s || echo "apiserver pods not ready yet"
+        task test-infra:kubectl -- wait --for=condition=Available apiservice/v1alpha1.ipam.miloapis.com --timeout=180s || echo "APIService not Available yet"
+
+  dev:setup:
+    desc: Full dev setup (cluster + build + load + deploy)
+    silent: true
+    cmds:
+      - task: test-infra:cluster-up
+      - task: dev:install-dependencies
+      - task: dev:build
+      - task: dev:load
+      - task: dev:deploy
+
+  dev:redeploy:
+    desc: Quick rebuild and rollout
+    deps: [dev:build, dev:load]
+    silent: true
+    cmds:
+      - task test-infra:kubectl -- rollout restart -n ipam-system deployment/ipam-apiserver
+      - task test-infra:kubectl -- rollout status  -n ipam-system deployment/ipam-apiserver --timeout=180s
+
+  install-observability:
+    desc: Install the test-infra observability stack
+    cmds:
+      - task: test-infra:install-observability
+
+  # ----- E2E -----
+
+  e2e:
+    desc: Run all chainsaw e2e suites
+    cmd: chainsaw test test/e2e/
+
+  e2e:suite:
+    desc: 'Run a single suite. Var: SUITE=prefix-validation|prefix-allocation|prefix-selector|prefix-hierarchy|prefix-exhaustion|prefix-overlap|asn-allocation|multi-tenant'
+    cmd: chainsaw test test/e2e/{{.SUITE}}
+
+  # ----- k6 load tests (delegated to test/load/Taskfile.yaml) -----
+
+  test/load:setup:
+    desc: Provision pools and namespaces for perf tests
+    cmds:
+      - task: load:setup
+
+  test/load:throughput:
+    desc: Run prefix-claim throughput load test
+    cmds:
+      - task: load:throughput
+
+  test/load:asn-throughput:
+    desc: Run ASN-claim throughput load test
+    cmds:
+      - task: load:asn-throughput
+
+  test/load:address-concurrent:
+    desc: Run IPAddressClaim concurrency + uniqueness load test
+    cmds:
+      - task: load:address-concurrent
+
+  test/load:validate:
+    desc: Lint all k6 scripts with k6 inspect
+    cmds:
+      - task: load:validate
+
+  test/load:exhaustion:
+    desc: Run pool-exhaustion deny-path load test
+    cmds:
+      - task: load:exhaustion
+
+  test/load:reads:
+    desc: Run read-latency load test
+    cmds:
+      - task: load:reads
+
+  test/load:mixed:
+    desc: Run mixed read+write production-traffic load test
+    cmds:
+      - task: load:mixed
+
+  test/load:scale:
+    desc: Run pool-scale load test
+    cmds:
+      - task: load:scale
+
+  test/load:scale-setup:
+    desc: Provision 1000-project scale test pools (20 parallel VUs)
+    cmds:
+      - task: load:scale-setup
+
+  test/load:scale-throughput:
+    desc: 'Throughput test at 1000-project scale. Vars: VUS, DURATION'
+    cmds:
+      - task: load:scale-throughput
+
+  test/load:cleanup:
+    desc: Delete all perf namespaces and pool resources
+    cmds:
+      - task: load:cleanup
+
+  test/load:generate:
+    desc: Bundle k6 scripts for the in-cluster k6-performance-tests component
+    cmds:
+      - task: load:generate
+
+  # ----- k6 in-cluster operator workflow -----
+
+  test/load:k6:install-operator:
+    desc: Install the k6 operator into the cluster (one-time setup)
+    cmds:
+      - task: load:k6:install-operator
+
+  test/load:k6:apply:
+    desc: Push k6 ConfigMap + RBAC + TestRun manifests to the cluster
+    cmds:
+      - task: load:k6:apply
+
+  test/load:k6:run:
+    desc: 'Trigger a single in-cluster TestRun. Var: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load'
+    cmds:
+      - task: load:k6:run
+        vars:
+          TEST: '{{.TEST}}'
+
+  test/load:k6:logs:
+    desc: 'Tail logs from an in-cluster TestRun. Var: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load'
+    cmds:
+      - task: load:k6:logs
+        vars:
+          TEST: '{{.TEST}}'
+
+  # ----- Verification gates -----
+
+  verify:
+    desc: Run all build/test/lint gates
+    cmds:
+      - task: build
+      - task: test
+      - task: vet
+      - task: lint
+      - task: verify:imports
+      - task: verify:kustomize
+      # Observability: dashboard drift, PromQL syntax, manifest schema.
+      - task: observability:verify
+
+  verify:imports:
+    desc: Ensure no datum-cloud/milo or datum-cloud/quota imports
+    silent: true
+    cmd: |
+      if grep -rE "datum-cloud/(milo|quota)" --include='*.go' .; then
+        echo "FAIL: unwanted imports"
+        exit 1
+      else
+        echo "OK: no forbidden imports"
+      fi
+
+  verify:kustomize:
+    desc: Verify all kustomize overlays render cleanly
+    silent: true
+    cmds:
+      - kustomize build config/overlays/dev/   > /dev/null && echo "  ok  config/overlays/dev"
+      - kustomize build config/overlays/test-infra/ > /dev/null && echo "  ok  config/overlays/test-infra"
+      - kustomize build config/components/k6-performance-tests/ > /dev/null && echo "  ok  config/components/k6-performance-tests"
