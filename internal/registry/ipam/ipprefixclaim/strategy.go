@@ -123,9 +123,6 @@ func validateIPPrefixClaim(c *ipam.IPPrefixClaim) field.ErrorList {
 	if c.Spec.PrefixRef != nil && c.Spec.PrefixSelector != nil {
 		allErrs = append(allErrs, field.Forbidden(specPath, "prefixRef and prefixSelector are mutually exclusive"))
 	}
-	if c.Spec.CreateChildPrefix && c.Spec.ChildPrefixTemplate == nil {
-		allErrs = append(allErrs, field.Required(specPath.Child("childPrefixTemplate"), "childPrefixTemplate is required when createChildPrefix is true"))
-	}
 	return allErrs
 }
 

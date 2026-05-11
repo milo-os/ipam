@@ -7,7 +7,7 @@ spec:
     Happy-path allocation tests for IPPrefixClaim:
     - Synchronous CIDR in status on Bound
     - Non-overlapping concurrent allocations
-    - createChildPrefix=true atomic delegation
+    - childPrefixTemplate atomic delegation
     - Release on delete and re-allocation
 
   steps:
@@ -102,7 +102,7 @@ spec:
 
     - name: allocate-with-create-child-prefix
       description: |
-        Claim with createChildPrefix=true creates child IPPrefix atomically
+        Claim with childPrefixTemplate creates child IPPrefix atomically
         with parentRef. The shell follow-up additionally verifies the child
         IPPrefix's spec.cidr exactly matches the parent claim's
         status.allocatedCIDR — they must be the same CIDR, since the child

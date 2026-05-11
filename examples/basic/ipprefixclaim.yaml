@@ -9,5 +9,4 @@ spec:
   prefixLength: 24
   prefixRef:
     name: example-prefix
-  createChildPrefix: false
   reclaimPolicy: Delete

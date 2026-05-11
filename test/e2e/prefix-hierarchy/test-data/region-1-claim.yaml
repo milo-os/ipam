@@ -8,7 +8,6 @@ spec:
   prefixLength: 12
   prefixRef:
     name: hier-env
-  createChildPrefix: true
   childPrefixTemplate:
     metadata:
       name: hier-region-1

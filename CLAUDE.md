@@ -57,7 +57,7 @@ BEGIN
   -- FindFirstAvailableBlock(parents, existing, claimPrefixLen, strategy) in Go
   -- Returns error → HTTP 507 Insufficient Storage if pool is full
   INSERT INTO ipam_prefix_allocations (pool_key, allocated_cidr, claim_key, ...)
-  IF createChildPrefix:
+  IF childPrefixTemplate != nil:
     INSERT INTO ipam_objects (key, kind='IPPrefix', data=childPrefixJSON, ...)
     INSERT INTO ipam_changelog (key, event_type='ADDED', ...)
   UPDATE ipam_objects SET data=$claimWithStatus WHERE key=$claimKey
@@ -129,7 +129,7 @@ dual-write mode.
 3. **Pool-level `SELECT ... FOR UPDATE`.** O(1) lock regardless of pool utilization.
 4. **CIDR arithmetic in Go, not SQL.** GiST index on `(pool_key, allocated_cidr)` is a secondary overlap check, not the primary mechanism.
 5. **PostgreSQL is the only backend.** Synchronous allocation in the request path is the whole point of the service; no etcd or dual-write mode.
-6. **Atomic child prefix creation.** `createChildPrefix=true` inserts the child IPPrefix in the same transaction as the claim.
+6. **Atomic child prefix creation.** A non-nil `childPrefixTemplate` inserts the child IPPrefix in the same transaction as the claim.
 7. **Single address family per resource.** IPv4 and IPv6 are never mixed; dual-stack = two resources.
 
 ## Multi-Agent Teams
@@ -203,7 +203,7 @@ The Taskfile includes the test-infra remote Taskfile (`datum-cloud/test-infra v0
 - IPPrefixClaim CREATE returns allocated CIDR in status synchronously
 - Concurrent IPPrefixClaim CREATEs produce non-overlapping CIDRs under load
 - IPPrefixClaim against exhausted pool returns HTTP 507
-- `createChildPrefix=true` creates the child IPPrefix atomically in the same transaction
+- `childPrefixTemplate` set creates the child IPPrefix atomically in the same transaction
 - `kustomize build config/overlays/dev/` renders valid manifests
 - `chainsaw test test/e2e/` passes all suites
 - k6 `prefix-claim-throughput.js`: p95 < 500ms, success rate > 0.95

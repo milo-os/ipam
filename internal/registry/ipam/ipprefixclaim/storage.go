@@ -136,7 +136,7 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 // Create runs the standard create pipeline (system-metadata fill, strategy
 // PrepareForCreate, validation), then drives the allocator inside a
 // short-lived transaction. The allocator is expected to persist the claim
-// row, the allocation row, and (when CreateChildPrefix is set) the child
+// row, the allocation row, and (when ChildPrefixTemplate is set) the child
 // IPPrefix object inside that transaction.
 func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
 	claim, ok := obj.(*ipam.IPPrefixClaim)
@@ -261,7 +261,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		// Storage key has the form "/ipam.miloapis.com/ipprefixes/<name>" or
 		// "project/<id>/ipam.miloapis.com/ipprefixes/<name>"; the last
 		// segment after the final '/' is the pool name. We need it for
-		// status.boundPrefixRef and (when createChildPrefix is true) the
+		// status.boundPrefixRef and (when ChildPrefixTemplate is set) the
 		// child's ParentRef.
 		poolName = poolKey[strings.LastIndex(poolKey, "/")+1:]
 	}
@@ -329,12 +329,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, fmt.Errorf("set resource version: %w", err)
 	}
 
-	if claim.Spec.CreateChildPrefix {
-		if claim.Spec.ChildPrefixTemplate == nil {
-			_ = tx.Rollback(ctx)
-			metrics.RecordAllocationFailure("ipprefixclaim", "internal", ipFamily, project, org)
-			return nil, apierrors.NewBadRequest("createChildPrefix=true requires childPrefixTemplate")
-		}
+	if claim.Spec.ChildPrefixTemplate != nil {
 		child := &ipam.IPPrefix{
 			ObjectMeta: claim.Spec.ChildPrefixTemplate.Metadata,
 			Spec:       claim.Spec.ChildPrefixTemplate.Spec,
@@ -530,7 +525,7 @@ func claimObjectKey(namespace, name string) string {
 }
 
 // childPrefixObjectKey is the storage key for a child IPPrefix materialised
-// from a claim's CreateChildPrefix template. IPPrefix is cluster-scoped, so
+// from a claim's ChildPrefixTemplate. IPPrefix is cluster-scoped, so
 // the namespace argument from the template is ignored at the key layer.
 func childPrefixObjectKey(_, name string) string {
 	return fmt.Sprintf("/ipam.miloapis.com/ipprefixes/%s", name)

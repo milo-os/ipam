@@ -203,7 +203,6 @@ type IPPrefixClaimSpec struct {
     PrefixLength        int
     PrefixRef           *PrefixRef      // updated: carries optional ProjectRef
     PrefixSelector      *PrefixSelector // updated: carries optional ProjectRef
-    CreateChildPrefix   bool
     ChildPrefixTemplate *IPPrefixTemplate
     ReclaimPolicy       ReclaimPolicy
     OwnerRef            *ObjectRef

@@ -47,17 +47,17 @@ Releasing is just `kubectl delete ipprefixclaim my-service-prefix`. With
 `reclaimPolicy: Delete`, the underlying allocation row is removed and the
 CIDR returns to the parent's pool.
 
-## Hierarchical delegation (createChildPrefix)
+## Hierarchical delegation
 
 When a consumer needs to delegate further (e.g. a regional block to be
-sub-allocated), set `createChildPrefix: true`:
+sub-allocated), set `childPrefixTemplate`. Its presence is the signal — no
+separate boolean needed:
 
 ```yaml
 spec:
   prefixLength: 16
   prefixRef:
     name: env-prefix
-  createChildPrefix: true
   childPrefixTemplate:
     metadata:
       name: us-west-region

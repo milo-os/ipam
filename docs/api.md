@@ -48,8 +48,7 @@ The claim's CREATE response body contains the allocated CIDR or ASN.
 | `spec.prefixLength`          | int             | yes      | Within parent's min/max            |
 | `spec.prefixRef.name`        | string          | one of   | Pin to a specific parent           |
 | `spec.prefixSelector`        | LabelSelector   | one of   | Pick a parent by labels            |
-| `spec.createChildPrefix`     | bool            | no       | Atomically create a child IPPrefix |
-| `spec.childPrefixTemplate`   | object          | iff above| metadata + spec for the child      |
+| `spec.childPrefixTemplate`   | object          | no       | If set, atomically creates a child IPPrefix |
 | `spec.reclaimPolicy`         | ReclaimPolicy   | no       | `Delete` (default) or `Retain`     |
 | `spec.ownerRef`              | ObjectRef       | no       | Opaque consumer reference          |
 | `status.phase`               | ClaimPhase      | -        | `Bound` after sync allocation      |

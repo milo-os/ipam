@@ -276,8 +276,6 @@ type IPPrefixClaimSpec struct {
 	// +optional
 	PrefixRef *NamespacedRef `json:"prefixRef,omitempty"`
 	// +optional
-	CreateChildPrefix bool `json:"createChildPrefix,omitempty"`
-	// +optional
 	ChildPrefixTemplate *IPPrefixTemplate `json:"childPrefixTemplate,omitempty"`
 	// +optional
 	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`

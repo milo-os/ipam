@@ -8,7 +8,6 @@ spec:
   prefixLength: 24
   prefixRef:
     name: alloc-parent
-  createChildPrefix: true
   childPrefixTemplate:
     metadata:
       name: alloc-child-prefix

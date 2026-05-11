@@ -360,7 +360,7 @@ type IPPrefixList struct {
 
 // IPPrefix represents a CIDR block that can be subdivided via IPPrefixClaims.
 // It may be cluster-scoped (for platform pools) or namespace-scoped (for
-// consumer-owned or child prefixes created by createChildPrefix).
+// consumer-owned or child prefixes created via childPrefixTemplate).
 type IPPrefix struct {
 	metav1.TypeMeta
 	metav1.ObjectMeta
@@ -489,14 +489,14 @@ type IPPrefixClaimSpec struct {
 	// +optional
 	ParentRef *ParentReference
 
-	// CreateChildPrefix, when true, creates a new IPPrefix resource populated
+	// ChildPrefixTemplate, when set, creates a new IPPrefix resource populated
 	// with the allocated CIDR. This child prefix can then receive further
 	// IPPrefixClaims (hierarchical delegation).
 	// +optional
-	CreateChildPrefix bool
+	ChildPrefixTemplate *IPPrefixTemplate
 
 	// ChildPrefixTemplate specifies metadata and spec for the child IPPrefix
-	// created when CreateChildPrefix is true.
+	// created when ChildPrefixTemplate is set.
 	// +optional
 	ChildPrefixTemplate *IPPrefixTemplate
 }
@@ -512,7 +512,7 @@ type ParentReference struct {
 }
 
 // IPPrefixTemplate is the template used to create a child IPPrefix when
-// CreateChildPrefix is true. The allocated CIDR is populated automatically.
+// ChildPrefixTemplate is set. The allocated CIDR is populated automatically.
 type IPPrefixTemplate struct {
 	// Standard object metadata for the child IPPrefix.
 	// +optional
@@ -550,8 +550,8 @@ type IPPrefixClaimStatus struct {
 	// +optional
 	ParentRef *ParentReference
 
-	// ChildPrefixRef identifies the IPPrefix created when CreateChildPrefix
-	// was true.
+	// ChildPrefixRef identifies the IPPrefix created when ChildPrefixTemplate
+	// is set.
 	// +optional
 	ChildPrefixRef *LocalObjectReference
 
@@ -1373,7 +1373,7 @@ Defined in `internal/storage/postgres/allocator.go`:
 // Claims targeting disjoint parents run fully in parallel.
 type Allocator interface {
 	// AllocatePrefix allocates a sub-prefix for the claim, optionally creating
-	// a child IPPrefix if claim.Spec.CreateChildPrefix is true.
+	// a child IPPrefix if claim.Spec.ChildPrefixTemplate is set.
 	// Returns the persisted claim with AllocatedCIDR populated in status.
 	AllocatePrefix(ctx context.Context, claim *ipam.IPPrefixClaim) (*ipam.IPPrefixClaim, error)
 
@@ -1470,7 +1470,7 @@ AllocatePrefix(ctx, claim):
      - Decode each child claim's status.allocatedCIDR into []*net.IPNet.
      - Call allocation.FindFreePrefix(parentCIDR, usedCIDRs, claim.Spec.PrefixLength, strategy).
      - Populate claim.Status.AllocatedCIDR, claim.Status.ParentRef.
-     - If claim.Spec.CreateChildPrefix: prepare childPrefix object with CIDR set.
+     - If claim.Spec.ChildPrefixTemplate != nil: prepare childPrefix object with CIDR set.
      - Encode claim bytes (and optionally childPrefix bytes) via codec.
 
    Batch 2 (one round-trip):
@@ -1514,7 +1514,7 @@ AllocatePrefix(ctx, claim):
          SELECT $claimKey, resource_version, 'ADDED', $claimData FROM claim_ins
          RETURNING resource_version
        )
-       -- Optionally, if createChildPrefix: add child_ins + child_log CTEs here.
+       -- Optionally, if childPrefixTemplate set: add child_ins + child_log CTEs here.
        SELECT (SELECT resource_version FROM claim_ins)
      COMMIT
 
@@ -1524,7 +1524,7 @@ AllocatePrefix(ctx, claim):
 **Key invariants:**
 - The parent row is locked BEFORE reading existing claims. This ensures no concurrent allocation can insert a new claim between reading the used set and inserting the new one.
 - The CTE's `parent_upd` runs the capacity arithmetic entirely in SQL, identical to the quota approach. The Go side only calls `FindFreePrefix`; it does not decode/re-encode the parent's capacity counters.
-- `CreateChildPrefix` adds two extra CTE arms (`child_ins`, `child_log`) and an additional RETURNING column. The child prefix row is inserted atomically with the claim row.
+- A non-nil `ChildPrefixTemplate` adds two extra CTE arms (`child_ins`, `child_log`) and an additional RETURNING column. The child prefix row is inserted atomically with the claim row.
 - Lock order: when a claim references multiple parents (via `PrefixSelector` matching multiple results), the allocator locks them in lexicographic key order before attempting allocation. This matches the quota service's deadlock-avoidance rule.
 
 ### AllocateASN: Flow
@@ -1632,7 +1632,7 @@ func (r *AllocatingREST) Create(ctx, obj, createValidation, options) (runtime.Ob
     //    Strategy validates:
     //      - Exactly one of PrefixSelector or ParentRef is set.
     //      - PrefixLength is in valid range for the IPFamily.
-    //      - If CreateChildPrefix, ChildPrefixTemplate is present.
+    //      - ChildPrefixTemplate is set.
     //      - Status fields are cleared (consumers cannot pre-set status).
     // 3. createValidation webhook call
     // 4. r.allocator.AllocatePrefix(ctx, claim)
@@ -1918,8 +1918,7 @@ Network CREATE webhook / controller:
                 environment: ${env}
                 region: ${region}
                 purpose: consumer-vpc
-            createChildPrefix: true
-            childPrefixTemplate:
+                        childPrefixTemplate:
               spec:
                 allocation:
                   minPrefixLength: 24
@@ -1952,8 +1951,7 @@ Cluster PROVISION flow:
            matchLabels:
              region: ${cluster.region}
              purpose: srv6
-         createChildPrefix: true
-         childPrefixTemplate:
+                  childPrefixTemplate:
            metadata:
              labels:
                cluster: ${cluster.name}
@@ -2130,22 +2128,22 @@ A flat model (claim directly against a named pool) would require consumers to
 know which specific CIDR block to claim from and would make capacity management
 manual (no ability to drain or replace a prefix pool without updating all consumers).
 
-### 8.6 `createChildPrefix` Pattern for Hierarchical Delegation
+### 8.6 `childPrefixTemplate` Pattern for Hierarchical Delegation
 
-**Choice:** IPPrefixClaim can optionally create a child IPPrefix (via
-`createChildPrefix: true + childPrefixTemplate`), atomically with the allocation.
+**Choice:** IPPrefixClaim can optionally create a child IPPrefix by setting
+`childPrefixTemplate`, atomically with the allocation.
 
 **Reason:** The platform's address hierarchy (environment → region → cluster)
 requires each level to receive an address budget that can be sub-allocated by
-the next level. Without `createChildPrefix`, two resources would need to be
+the next level. Without `childPrefixTemplate`, two resources would need to be
 created separately: first the IPPrefixClaim (to get a CIDR), then an IPPrefix
 populated with that CIDR (to make it claimable). This creates a window where the
 CIDR exists as an allocation but is not yet a prefix — during which the operator
 cannot create further claims against it.
 
-`createChildPrefix` collapses this into a single atomic operation: the claim
-and the child prefix are created in the same CTE, in the same transaction. The
-caller receives `status.childPrefixRef` pointing to the newly-created prefix,
+Setting `childPrefixTemplate` collapses this into a single atomic operation: the
+claim and the child prefix are created in the same CTE, in the same transaction.
+The caller receives `status.childPrefixRef` pointing to the newly-created prefix,
 which is immediately available for further claims. This is the exact operation
 fleet-operations needs when provisioning a new region.
 

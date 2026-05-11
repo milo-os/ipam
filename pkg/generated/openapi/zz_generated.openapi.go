@@ -1201,12 +1201,6 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimSpec(ref common.ReferenceCallbac
 							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef"),
 						},
 					},
-					"createChildPrefix": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"boolean"},
-							Format: "",
-						},
-					},
 					"childPrefixTemplate": {
 						SchemaProps: spec.SchemaProps{
 							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixTemplate"),

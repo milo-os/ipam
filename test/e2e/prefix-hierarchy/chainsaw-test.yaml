@@ -5,7 +5,7 @@ metadata:
 spec:
   description: |
     Hierarchical delegation: environment -> region -> leaf.
-    - createChildPrefix builds nested IPPrefix tree
+    - childPrefixTemplate builds nested IPPrefix tree
     - Concurrent regional claims get non-overlapping blocks
     - Leaf claim against child resolves within child range
     - DELETE of regional IPPrefix is rejected with HTTP 409 while the
@@ -40,7 +40,7 @@ spec:
                 value: 'True'
 
     - name: claim-region-1
-      description: Claim regional block /12 with createChildPrefix=true; assert child IPPrefix exists
+      description: Claim regional block /12 with childPrefixTemplate; assert child IPPrefix exists
       try:
         - create:
             file: test-data/region-1-claim.yaml

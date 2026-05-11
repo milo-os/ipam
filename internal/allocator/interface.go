@@ -50,9 +50,8 @@ type PrefixAllocator interface {
 	InsertObject(ctx context.Context, tx pgx.Tx, key, kind, namespace, name string, data []byte) (int64, error)
 
 	// InsertChildPrefix writes a child IPPrefix object row into ipam_objects
-	// inside the supplied transaction. Used by IPPrefixClaim creates with
-	// CreateChildPrefix=true so the child pool object materialises atomically
-	// with the parent allocation.
+	// inside the supplied transaction. Used when ChildPrefixTemplate is set so
+	// the child pool materialises atomically with the parent allocation.
 	InsertChildPrefix(ctx context.Context, tx pgx.Tx, key, namespace, name string, data []byte) error
 
 	// Release removes the prefix allocation record matching claimKey.

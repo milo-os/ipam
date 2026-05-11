@@ -40,14 +40,14 @@ Run one suite: `task e2e:suite SUITE=<name>`
 1. Create IPPrefixClass (`consumer-private`), IPPrefix (`10.128.0.0/20`, allowPrefixLength 24–28).
 2. Create IPPrefixClaim (`prefixLength: 24`) → wait `Bound` → assert `status.allocatedCIDR` is a /24 within `10.128.0.0/20` → assert `status.boundPrefixRef` is set.
 3. Create second IPPrefixClaim (`prefixLength: 24`) → wait `Bound` → assert non-overlapping with first.
-4. Create IPPrefixClaim with `createChildPrefix: true` and `childPrefixTemplate` → wait `Bound` → assert child IPPrefix exists with `status.phase: Ready` and `spec.parentRef` pointing to parent.
+4. Create IPPrefixClaim with `childPrefixTemplate` set → wait `Bound` → assert child IPPrefix exists with `status.phase: Ready` and `spec.parentRef` pointing to parent.
 5. Delete first IPPrefixClaim → verify `status.phase` becomes `Releasing` then object deleted → verify CIDR no longer tracked in parent capacity.
 6. Create new IPPrefixClaim → assert it gets a valid /24 (pool not exhausted).
 
 ### `prefix-hierarchy` — 5 steps
 
 1. Create environment-level IPPrefix (`10.128.0.0/9`, allow /12–/16).
-2. Create IPPrefixClaim for region (`prefixLength: 12`, `createChildPrefix: true`, `childPrefixTemplate` with allow /16–/28) → wait `Bound` → assert child IPPrefix exists.
+2. Create IPPrefixClaim for region (`prefixLength: 12`, `childPrefixTemplate` with allow /16–/28) → wait `Bound` → assert child IPPrefix exists.
 3. Create second region IPPrefixClaim (`prefixLength: 12`) → wait `Bound` → assert non-overlapping with first region.
 4. Create IPPrefixClaim against child regional prefix (`prefixLength: 24`) → wait `Bound` → assert CIDR is within the regional block.
 5. Delete regional IPPrefixClaim → assert child IPPrefix transitions to `Terminating` → assert leaf claim transitions to `Error` with `reason: ParentReleased`.

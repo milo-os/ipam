@@ -199,7 +199,6 @@ type IPPrefixClaimSpec struct {
 	PrefixLength        int
 	PrefixSelector      *PrefixSelector
 	PrefixRef           *NamespacedRef
-	CreateChildPrefix   bool
 	ChildPrefixTemplate *IPPrefixTemplate
 	ReclaimPolicy       ReclaimPolicy
 	OwnerRef            *ObjectRef
