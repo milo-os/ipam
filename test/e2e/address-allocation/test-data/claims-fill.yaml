@@ -1,0 +1,79 @@
+# Six additional claims. Combined with claim-1 and claim-2 these saturate the
+# /29 (8 addresses), leaving the pool fully allocated for the exhaustion step.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPAddressClaim
+metadata:
+  name: addr-claim-3
+  namespace: ($namespace)
+  labels:
+    addr-test: "true"
+spec:
+  ipFamily: IPv4
+  prefixRef:
+    name: addr-pool
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPAddressClaim
+metadata:
+  name: addr-claim-4
+  namespace: ($namespace)
+  labels:
+    addr-test: "true"
+spec:
+  ipFamily: IPv4
+  prefixRef:
+    name: addr-pool
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPAddressClaim
+metadata:
+  name: addr-claim-5
+  namespace: ($namespace)
+  labels:
+    addr-test: "true"
+spec:
+  ipFamily: IPv4
+  prefixRef:
+    name: addr-pool
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPAddressClaim
+metadata:
+  name: addr-claim-6
+  namespace: ($namespace)
+  labels:
+    addr-test: "true"
+spec:
+  ipFamily: IPv4
+  prefixRef:
+    name: addr-pool
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPAddressClaim
+metadata:
+  name: addr-claim-7
+  namespace: ($namespace)
+  labels:
+    addr-test: "true"
+spec:
+  ipFamily: IPv4
+  prefixRef:
+    name: addr-pool
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPAddressClaim
+metadata:
+  name: addr-claim-8
+  namespace: ($namespace)
+  labels:
+    addr-test: "true"
+spec:
+  ipFamily: IPv4
+  prefixRef:
+    name: addr-pool
+  reclaimPolicy: Delete

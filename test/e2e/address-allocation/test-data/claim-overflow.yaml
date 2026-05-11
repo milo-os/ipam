@@ -1,0 +1,10 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPAddressClaim
+metadata:
+  name: addr-claim-overflow
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv4
+  prefixRef:
+    name: addr-pool
+  reclaimPolicy: Delete

@@ -1,0 +1,46 @@
+# Three ASNPools sharing classRef: asn-selector-class. The class-based resolver
+# (allocator.ResolveASNPool) lists pools that match the class and selects the
+# first by storage key. Ranges are intentionally disjoint (private 16-bit,
+# public 16-bit, private 32-bit) so any allocated ASN can be attributed back
+# to a specific pool.
+#
+# NOTE: asn-selector-pool-private32 (4200000000-4200000010) overlaps with the
+# range used by the `asn-allocation` suite (4200000000-4200000009). This is
+# intentional — both suites use ASNs from the same RFC 6996 32-bit private
+# block and chainsaw cleans cluster-scoped objects in each suite's finally:.
+# Parallel execution of these two suites would race; suites MUST run
+# sequentially (chainsaw's default behavior). If the runner adds
+# --parallel for ASN suites in the future, give one of these pools a
+# disjoint range.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNPool
+metadata:
+  name: asn-selector-pool-private16
+spec:
+  ranges:
+    - start: 64512
+      end: 64520
+  classRef:
+    name: asn-selector-class
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNPool
+metadata:
+  name: asn-selector-pool-public
+spec:
+  ranges:
+    - start: 65000
+      end: 65010
+  classRef:
+    name: asn-selector-class
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNPool
+metadata:
+  name: asn-selector-pool-private32
+spec:
+  ranges:
+    - start: 4200000000
+      end: 4200000010
+  classRef:
+    name: asn-selector-class

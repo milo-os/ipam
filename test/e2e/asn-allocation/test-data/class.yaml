@@ -1,0 +1,7 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNPoolClass
+metadata:
+  name: asn-private
+spec:
+  requiresVerification: false
+  visibility: consumer

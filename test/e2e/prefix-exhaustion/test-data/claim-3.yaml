@@ -1,0 +1,10 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPAddressClaim
+metadata:
+  name: exhaust-claim-3
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv4
+  prefixRef:
+    name: exhaust-pool
+  reclaimPolicy: Delete

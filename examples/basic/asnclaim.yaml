@@ -1,0 +1,28 @@
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNPoolClass
+metadata:
+  name: private-asn
+spec:
+  requiresVerification: false
+  visibility: consumer
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNPool
+metadata:
+  name: example-asn-pool
+spec:
+  ranges:
+    - start: 4200000000
+      end: 4200000099
+  classRef:
+    name: private-asn
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: ASNClaim
+metadata:
+  name: example-asn-claim
+  namespace: default
+spec:
+  poolRef:
+    name: example-asn-pool

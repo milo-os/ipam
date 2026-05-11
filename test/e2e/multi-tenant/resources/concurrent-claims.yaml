@@ -1,0 +1,64 @@
+# Four IPPrefixClaims applied simultaneously across two projects' private pools.
+# Once multi-tenant is implemented, the alpha-* claims should carry project-alpha
+# headers and the beta-* claims should carry project-beta headers. Today the
+# server treats them all as platform-level, so we apply them without headers
+# and assert non-overlap based on each pool's CIDR range.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: mt-concurrent-alpha-1
+  namespace: ($namespace)
+  labels:
+    mt-concurrent: "true"
+    mt-tenant: alpha
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  prefixRef:
+    name: mt-alpha-pool
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: mt-concurrent-alpha-2
+  namespace: ($namespace)
+  labels:
+    mt-concurrent: "true"
+    mt-tenant: alpha
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  prefixRef:
+    name: mt-alpha-pool
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: mt-concurrent-beta-1
+  namespace: ($namespace)
+  labels:
+    mt-concurrent: "true"
+    mt-tenant: beta
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  prefixRef:
+    name: mt-beta-pool
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: mt-concurrent-beta-2
+  namespace: ($namespace)
+  labels:
+    mt-concurrent: "true"
+    mt-tenant: beta
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  prefixRef:
+    name: mt-beta-pool
+  reclaimPolicy: Delete
