@@ -1,6 +1,9 @@
 # Compiled binary
 /ipam
 
+# Local test infrastructure (kind cluster, kind managed by task test-infra:cluster-up)
+/.test-infra/
+
 # Editor and OS
 .DS_Store
 *.swp
