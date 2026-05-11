@@ -13,6 +13,12 @@
 *.test
 *.out
 
+# Task remote taskfile cache
+/.task/
+
+# k6 load test result artifacts
+/test/load/results/
+
 # Local dev secrets
 *.pem
 *.key
