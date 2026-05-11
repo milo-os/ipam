@@ -107,60 +107,6 @@ func RegisterConversions(s *runtime.Scheme) error {
 				return convert_ipam_IPAddressClaimList_To_v1alpha1(a.(*ipam.IPAddressClaimList), b.(*IPAddressClaimList))
 			},
 		},
-		{
-			(*ipam.ASNPoolClass)(nil), (*ASNPoolClass)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_ASNPoolClass_To_ipam(a.(*ASNPoolClass), b.(*ipam.ASNPoolClass))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_ASNPoolClass_To_v1alpha1(a.(*ipam.ASNPoolClass), b.(*ASNPoolClass))
-			},
-		},
-		{
-			(*ipam.ASNPoolClassList)(nil), (*ASNPoolClassList)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_ASNPoolClassList_To_ipam(a.(*ASNPoolClassList), b.(*ipam.ASNPoolClassList))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_ASNPoolClassList_To_v1alpha1(a.(*ipam.ASNPoolClassList), b.(*ASNPoolClassList))
-			},
-		},
-		{
-			(*ipam.ASNPool)(nil), (*ASNPool)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_ASNPool_To_ipam(a.(*ASNPool), b.(*ipam.ASNPool))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_ASNPool_To_v1alpha1(a.(*ipam.ASNPool), b.(*ASNPool))
-			},
-		},
-		{
-			(*ipam.ASNPoolList)(nil), (*ASNPoolList)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_ASNPoolList_To_ipam(a.(*ASNPoolList), b.(*ipam.ASNPoolList))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_ASNPoolList_To_v1alpha1(a.(*ipam.ASNPoolList), b.(*ASNPoolList))
-			},
-		},
-		{
-			(*ipam.ASNClaim)(nil), (*ASNClaim)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_ASNClaim_To_ipam(a.(*ASNClaim), b.(*ipam.ASNClaim))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_ASNClaim_To_v1alpha1(a.(*ipam.ASNClaim), b.(*ASNClaim))
-			},
-		},
-		{
-			(*ipam.ASNClaimList)(nil), (*ASNClaimList)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_ASNClaimList_To_ipam(a.(*ASNClaimList), b.(*ipam.ASNClaimList))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_ASNClaimList_To_v1alpha1(a.(*ipam.ASNClaimList), b.(*ASNClaimList))
-			},
-		},
 	}
 	for _, p := range pairs {
 		if err := s.AddGeneratedConversionFunc(p.external, p.internal, p.toInternal); err != nil {

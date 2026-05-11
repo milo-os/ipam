@@ -12,9 +12,6 @@ import (
 
 type IpamV1alpha1Interface interface {
 	RESTClient() rest.Interface
-	ASNClaimsGetter
-	ASNPoolsGetter
-	ASNPoolClassesGetter
 	IPAddressesGetter
 	IPAddressClaimsGetter
 	IPPrefixesGetter
@@ -25,18 +22,6 @@ type IpamV1alpha1Interface interface {
 // IpamV1alpha1Client is used to interact with features provided by the ipam.miloapis.com group.
 type IpamV1alpha1Client struct {
 	restClient rest.Interface
-}
-
-func (c *IpamV1alpha1Client) ASNClaims(namespace string) ASNClaimInterface {
-	return newASNClaims(c, namespace)
-}
-
-func (c *IpamV1alpha1Client) ASNPools() ASNPoolInterface {
-	return newASNPools(c)
-}
-
-func (c *IpamV1alpha1Client) ASNPoolClasses() ASNPoolClassInterface {
-	return newASNPoolClasses(c)
 }
 
 func (c *IpamV1alpha1Client) IPAddresses(namespace string) IPAddressInterface {

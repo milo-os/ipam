@@ -1,10 +1,10 @@
 // Package apiserver wires the IPAM aggregated API server. It assembles
 // generic apiserver configuration with the IPAM-specific REST storages for
-// all 9 resources under ipam.miloapis.com/v1alpha1.
+// IP prefix and address resources under ipam.miloapis.com/v1alpha1.
 //
 // Postgres is the only supported storage backend. Claim creates run
 // synchronously inside a Postgres transaction so the response body includes
-// the allocated CIDR / IP / ASN.
+// the allocated CIDR / IP.
 package apiserver
 
 import (
@@ -23,8 +23,6 @@ import (
 	_ "go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
-	"go.miloapis.com/ipam/internal/registry/ipam/asnclaim"
-	"go.miloapis.com/ipam/internal/registry/ipam/asnpool"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipaddress"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipaddressclaim"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipprefix"
@@ -62,9 +60,6 @@ type ExtraConfig struct {
 	// PrefixAllocator drives synchronous CIDR/single-address allocation for
 	// IPPrefixClaim and IPAddressClaim creates. Required.
 	PrefixAllocator allocator.PrefixAllocator
-	// ASNAllocator drives synchronous ASN allocation for ASNClaim creates.
-	// Required.
-	ASNAllocator allocator.ASNAllocator
 	// AllocatorPool is the pgx pool the allocators commit against. The claim
 	// REST handlers open transactions on this pool. Required.
 	AllocatorPool *pgxpool.Pool
@@ -124,7 +119,7 @@ func (c completedConfig) New() (*IPAMServer, error) {
 
 	// Watch exclusions are intentionally NOT configured on the postgres
 	// RESTOptionsGetter for the *claim resources (ipprefixclaims,
-	// ipaddressclaims, asnclaims). At first glance the AllocatingREST
+	// ipaddressclaims). At first glance the AllocatingREST
 	// pattern looks like it might double-emit watch events — Create writes
 	// the claim row + ADDED changelog entry directly via
 	// allocator.InsertObject (bypassing the embedded Store.Create), and
@@ -211,36 +206,6 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	}
 	v1alpha1Storage["ipaddressclaims"] = addrClaimStore
 	v1alpha1Storage["ipaddressclaims/status"] = addrClaimStatusStore
-
-	// ASNPoolClass — cluster-scoped, no status subresource.
-	asnPoolClassStore, err := asnpool.NewClassStorage(Scheme, c.GenericConfig.RESTOptionsGetter)
-	if err != nil {
-		return nil, fmt.Errorf("create ASNPoolClass storage: %w", err)
-	}
-	v1alpha1Storage["asnpoolclasses"] = asnPoolClassStore
-
-	// ASNPool — cluster-scoped, with status subresource. Delete-protection
-	// requires the allocator pool so it can count active allocations.
-	asnPoolStore, asnPoolStatusStore, err := asnpool.NewPoolStorage(Scheme, c.GenericConfig.RESTOptionsGetter, c.ExtraConfig.AllocatorPool)
-	if err != nil {
-		return nil, fmt.Errorf("create ASNPool storage: %w", err)
-	}
-	v1alpha1Storage["asnpools"] = asnPoolStore
-	v1alpha1Storage["asnpools/status"] = asnPoolStatusStore
-
-	// ASNClaim — namespaced, with status subresource.
-	asnClaimStore, asnClaimStatusStore, err := asnclaim.NewAllocatingStorage(
-		Scheme,
-		c.GenericConfig.RESTOptionsGetter,
-		c.ExtraConfig.ASNAllocator,
-		c.ExtraConfig.AllocatorPool,
-		allocCodec,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create ASNClaim storage: %w", err)
-	}
-	v1alpha1Storage["asnclaims"] = asnClaimStore
-	v1alpha1Storage["asnclaims/status"] = asnClaimStatusStore
 
 	apiGroupInfo.VersionedResourcesStorageMap["v1alpha1"] = v1alpha1Storage
 

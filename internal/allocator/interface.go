@@ -74,31 +74,3 @@ type PrefixAllocator interface {
 	UpdateObject(ctx context.Context, tx pgx.Tx, key string, data []byte) (int64, error)
 }
 
-// ASNAllocator atomically reserves an ASN from an ASNPool.
-//
-// ownerProject scopes the allocation to a single tenant project so per-project
-// capacity queries can sum allocations belonging to a given project. Pass ""
-// for platform-scoped allocations.
-type ASNAllocator interface {
-	AllocateASN(ctx context.Context, tx pgx.Tx, poolKey string, claimKey string, ownerProject string) (int64, error)
-
-	// InsertObject writes a generic API object row into ipam_objects inside
-	// the supplied transaction and returns the assigned resource_version.
-	InsertObject(ctx context.Context, tx pgx.Tx, key, kind, namespace, name string, data []byte) (int64, error)
-
-	Release(ctx context.Context, tx pgx.Tx, claimKey string) error
-
-	// DeleteObject removes the API object row at key from ipam_objects and
-	// records a DELETED changelog entry inside the supplied transaction.
-	// Returns the resource_version stamped on the DELETED changelog row, or
-	// 0 if the object was already gone.
-	DeleteObject(ctx context.Context, tx pgx.Tx, key string) (int64, error)
-
-	// UpdateObject rewrites the API object row at key with a fresh
-	// resource_version and records a MODIFIED changelog entry inside the
-	// supplied transaction. Used by the AllocatingREST Delete handlers to
-	// publish phase=Releasing as a discrete watch event before the object is
-	// removed. Returns the assigned resource_version, or an error if the row
-	// does not exist.
-	UpdateObject(ctx context.Context, tx pgx.Tx, key string, data []byte) (int64, error)
-}

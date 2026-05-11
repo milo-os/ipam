@@ -76,8 +76,7 @@ type PrefixSelector struct {
 	ProjectRef *LocalRef `json:"projectRef,omitempty"`
 }
 
-// Pool visibility constants for IPPrefixClass.spec.visibility and
-// ASNPoolClass.spec.visibility.
+// Pool visibility constants for IPPrefixClass.spec.visibility.
 const (
 	VisibilityPlatform string = "platform"
 	VisibilityConsumer string = "consumer"
@@ -104,26 +103,6 @@ type PrefixCapacity struct {
 	Total     int64 `json:"total"`
 	Allocated int64 `json:"allocated"`
 	Available int64 `json:"available"`
-}
-
-// ASNCapacity reports utilization for an ASNPool.
-type ASNCapacity struct {
-	Total     int64 `json:"total"`
-	Allocated int64 `json:"allocated"`
-	Available int64 `json:"available"`
-}
-
-// ASNRange is an inclusive [Start, End] ASN range.
-type ASNRange struct {
-	// Start is the inclusive lower bound of the range. 4-byte ASNs are
-	// supported (RFC 6793) so the maximum is 4_294_967_295.
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=4294967295
-	Start int64 `json:"start"`
-	// End is the inclusive upper bound of the range.
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=4294967295
-	End int64 `json:"end"`
 }
 
 // IPPrefixTemplate is the metadata + spec used to materialise an IPPrefix
@@ -403,136 +382,3 @@ type IPAddressClaimList struct {
 	Items           []IPAddressClaim `json:"items"`
 }
 
-// ----------------------------------------------------------------------------
-// ASNPoolClass
-// ----------------------------------------------------------------------------
-
-// +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=asnpc
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Visibility",type=string,JSONPath=`.spec.visibility`
-// +kubebuilder:printcolumn:name="ReqVerify",type=boolean,JSONPath=`.spec.requiresVerification`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +genclient
-// +genclient:nonNamespaced
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type ASNPoolClass struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec ASNPoolClassSpec `json:"spec,omitempty"`
-}
-
-type ASNPoolClassSpec struct {
-	// Visibility — see IPPrefixClassSpec.Visibility for semantics.
-	// +optional
-	// +kubebuilder:validation:Enum=platform;consumer;shared
-	Visibility string `json:"visibility,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type ASNPoolClassList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ASNPoolClass `json:"items"`
-}
-
-// ----------------------------------------------------------------------------
-// ASNPool
-// ----------------------------------------------------------------------------
-
-// +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=asnp
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Class",type=string,JSONPath=`.spec.classRef.name`
-// +kubebuilder:printcolumn:name="Total",type=integer,JSONPath=`.status.capacity.total`
-// +kubebuilder:printcolumn:name="Allocated",type=integer,JSONPath=`.status.capacity.allocated`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +genclient
-// +genclient:nonNamespaced
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type ASNPool struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   ASNPoolSpec   `json:"spec,omitempty"`
-	Status ASNPoolStatus `json:"status,omitempty"`
-}
-
-type ASNPoolSpec struct {
-	// +listType=atomic
-	Ranges   []ASNRange `json:"ranges"`
-	ClassRef LocalRef   `json:"classRef"`
-}
-
-type ASNPoolStatus struct {
-	// +optional
-	Capacity ASNCapacity `json:"capacity,omitempty"`
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type ASNPoolList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ASNPool `json:"items"`
-}
-
-// ----------------------------------------------------------------------------
-// ASNClaim
-// ----------------------------------------------------------------------------
-
-// +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName=asnc
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="ASN",type=integer,JSONPath=`.status.asn`
-// +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.status.boundPoolRef.name`
-// +kubebuilder:printcolumn:name="Class",type=string,JSONPath=`.spec.classRef.name`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +genclient
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type ASNClaim struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   ASNClaimSpec   `json:"spec,omitempty"`
-	Status ASNClaimStatus `json:"status,omitempty"`
-}
-
-type ASNClaimSpec struct {
-	// +optional
-	ClassRef *LocalRef `json:"classRef,omitempty"`
-	// +optional
-	PoolRef *LocalRef `json:"poolRef,omitempty"`
-	// +optional
-	OwnerRef *ObjectRef `json:"ownerRef,omitempty"`
-}
-
-type ASNClaimStatus struct {
-	// +optional
-	Phase ClaimPhase `json:"phase,omitempty"`
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=4294967295
-	ASN int64 `json:"asn,omitempty"`
-	// +optional
-	BoundPoolRef *LocalRef `json:"boundPoolRef,omitempty"`
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type ASNClaimList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ASNClaim `json:"items"`
-}

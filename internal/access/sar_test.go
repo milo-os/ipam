@@ -6,7 +6,7 @@ import "testing"
 // every key shape the IPAM apiserver actually produces. The previous parser
 // expected `project/<id>/<kind-singular>/<name>` — a shape that never appears
 // in storage — so every SAR ran against `ipprefixes` regardless of the actual
-// pool kind. This test guards against the same regression.
+// pool kind. This test guards against that regression.
 func TestResourceAndNameFromPoolKey(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -21,22 +21,10 @@ func TestResourceAndNameFromPoolKey(t *testing.T) {
 			expected: "my-pool",
 		},
 		{
-			name:     "platform-scoped ASNPool",
-			key:      "/ipam.miloapis.com/asnpools/my-asn-pool",
-			resource: "asnpools",
-			expected: "my-asn-pool",
-		},
-		{
 			name:     "project-scoped IPPrefix",
 			key:      "project/team-alpha/ipam.miloapis.com/ipprefixes/edge-prefix",
 			resource: "ipprefixes",
 			expected: "edge-prefix",
-		},
-		{
-			name:     "project-scoped ASNPool",
-			key:      "project/team-alpha/ipam.miloapis.com/asnpools/edge-asn",
-			resource: "asnpools",
-			expected: "edge-asn",
 		},
 		{
 			name:     "unknown kind falls back to last segment as name and ipprefixes as resource",

@@ -2,12 +2,6 @@
 
 package v1alpha1
 
-type ASNClaimExpansion interface{}
-
-type ASNPoolExpansion interface{}
-
-type ASNPoolClassExpansion interface{}
-
 type IPAddressExpansion interface{}
 
 type IPAddressClaimExpansion interface{}

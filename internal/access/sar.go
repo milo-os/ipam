@@ -64,12 +64,11 @@ func (c *sarChecker) CanUsePool(ctx context.Context, poolKey string) (bool, erro
 //	"/ipam.miloapis.com/<plural>/<name>"                        (platform-scoped)
 //	"project/<id>/ipam.miloapis.com/<plural>/<name>"            (tenant-scoped)
 //
-// The plural ("ipprefixes" or "asnpools") sits two segments before the end
-// in both shapes; the name is always the last segment. Unknown plurals fall
-// back to "ipprefixes" so the SAR fails closed at the apiserver's RBAC layer
-// rather than here. A bare "<name>" (no slashes) is treated as an
-// "ipprefixes/<name>" reference for defensive symmetry with older callers
-// that may pass an unqualified name.
+// The plural ("ipprefixes") sits two segments before the end in both shapes;
+// the name is always the last segment. Unknown plurals fall back to "ipprefixes"
+// so the SAR fails closed at the apiserver's RBAC layer rather than here. A
+// bare "<name>" (no slashes) is treated as an "ipprefixes/<name>" reference
+// for defensive symmetry with older callers that may pass an unqualified name.
 func resourceAndNameFromPoolKey(poolKey string) (resource, name string) {
 	parts := strings.Split(poolKey, "/")
 	// Drop empty leading segment from "/ipam.miloapis.com/..." so indexing
@@ -83,8 +82,6 @@ func resourceAndNameFromPoolKey(poolKey string) (resource, name string) {
 	plural := parts[len(parts)-2]
 	name = parts[len(parts)-1]
 	switch plural {
-	case "asnpools":
-		return "asnpools", name
 	case "ipprefixes":
 		return "ipprefixes", name
 	default:

@@ -47,23 +47,3 @@ func (in *IPAddressClaim) Unmarshal(data []byte) error     { return json.Unmarsh
 func (in *IPAddressClaimList) Marshal() ([]byte, error)    { return json.Marshal(in) }
 func (in *IPAddressClaimList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
 
-// --- ASNPoolClass ---
-
-func (in *ASNPoolClass) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *ASNPoolClass) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *ASNPoolClassList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *ASNPoolClassList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
-
-// --- ASNPool ---
-
-func (in *ASNPool) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *ASNPool) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *ASNPoolList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *ASNPoolList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
-
-// --- ASNClaim ---
-
-func (in *ASNClaim) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *ASNClaim) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *ASNClaimList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *ASNClaimList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }

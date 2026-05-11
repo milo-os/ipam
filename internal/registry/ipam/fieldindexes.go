@@ -2,8 +2,6 @@ package ipamregistry
 
 import (
 	"go.miloapis.com/ipam/internal/fieldindex"
-	"go.miloapis.com/ipam/internal/registry/ipam/asnclaim"
-	"go.miloapis.com/ipam/internal/registry/ipam/asnpool"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipaddress"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipaddressclaim"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipprefix"
@@ -16,9 +14,7 @@ func AllFieldIndexes() []fieldindex.FieldIndex {
 	var all []fieldindex.FieldIndex
 	all = append(all, ipprefixclaim.FieldIndexes...)
 	all = append(all, ipaddressclaim.FieldIndexes...)
-	all = append(all, asnclaim.FieldIndexes...)
 	all = append(all, ipaddress.FieldIndexes...)
 	all = append(all, ipprefix.FieldIndexes...)
-	all = append(all, asnpool.FieldIndexes...)
 	return all
 }

@@ -12,18 +12,6 @@ type FakeIpamV1alpha1 struct {
 	*testing.Fake
 }
 
-func (c *FakeIpamV1alpha1) ASNClaims(namespace string) v1alpha1.ASNClaimInterface {
-	return newFakeASNClaims(c, namespace)
-}
-
-func (c *FakeIpamV1alpha1) ASNPools() v1alpha1.ASNPoolInterface {
-	return newFakeASNPools(c)
-}
-
-func (c *FakeIpamV1alpha1) ASNPoolClasses() v1alpha1.ASNPoolClassInterface {
-	return newFakeASNPoolClasses(c)
-}
-
 func (c *FakeIpamV1alpha1) IPAddresses(namespace string) v1alpha1.IPAddressInterface {
 	return newFakeIPAddresses(c, namespace)
 }

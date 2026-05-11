@@ -269,7 +269,6 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		return nil, fmt.Errorf("create pgx pool: %w", err)
 	}
 	prefixAllocator := allocator.NewPostgresPrefixAllocator()
-	asnAllocator := allocator.NewPostgresASNAllocator()
 
 	// Wire postgres + pgxpool readiness into /readyz so the load balancer
 	// drains the pod when either path can no longer serve requests. The
@@ -311,7 +310,6 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		GenericConfig: genericConfig,
 		ExtraConfig: ipamapiserver.ExtraConfig{
 			PrefixAllocator: prefixAllocator,
-			ASNAllocator:    asnAllocator,
 			AllocatorPool:   allocatorPool,
 			PoolChecker:     poolChecker,
 		},

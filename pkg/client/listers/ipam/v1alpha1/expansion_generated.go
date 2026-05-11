@@ -2,22 +2,6 @@
 
 package v1alpha1
 
-// ASNClaimListerExpansion allows custom methods to be added to
-// ASNClaimLister.
-type ASNClaimListerExpansion interface{}
-
-// ASNClaimNamespaceListerExpansion allows custom methods to be added to
-// ASNClaimNamespaceLister.
-type ASNClaimNamespaceListerExpansion interface{}
-
-// ASNPoolListerExpansion allows custom methods to be added to
-// ASNPoolLister.
-type ASNPoolListerExpansion interface{}
-
-// ASNPoolClassListerExpansion allows custom methods to be added to
-// ASNPoolClassLister.
-type ASNPoolClassListerExpansion interface{}
-
 // IPAddressListerExpansion allows custom methods to be added to
 // IPAddressLister.
 type IPAddressListerExpansion interface{}

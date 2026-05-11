@@ -62,37 +62,6 @@ func ResolvePrefixPool(ctx context.Context, tx pgx.Tx, selector *metav1.LabelSel
 	return "", ErrPoolNotFound
 }
 
-// ResolveASNPool returns the storage key of an ASNPool whose
-// `spec.classRef.name` matches className. Pools are listed within the
-// caller's project scope (or platform scope when ownerProject is empty);
-// the first match by storage key wins.
-//
-// Returns ErrPoolNotFound if no pool of the requested class exists.
-func ResolveASNPool(ctx context.Context, tx pgx.Tx, className, ownerProject string) (string, error) {
-	defer metrics.ObserveQuery("resolve_asn_pool", time.Now())
-
-	if className == "" {
-		return "", fmt.Errorf("className is required")
-	}
-
-	keys, datas, err := listPools(ctx, tx, "ASNPool", ownerProject)
-	if err != nil {
-		return "", err
-	}
-
-	for i, key := range keys {
-		var pool ipamv1alpha1.ASNPool
-		if err := json.Unmarshal(datas[i], &pool); err != nil {
-			return "", fmt.Errorf("decode ASNPool %q: %w", key, err)
-		}
-		if pool.Spec.ClassRef.Name != className {
-			continue
-		}
-		return key, nil
-	}
-	return "", ErrPoolNotFound
-}
-
 // listPools loads (key, data) for every ipam_objects row of the given kind
 // belonging to the supplied project. Platform-scoped requests
 // (ownerProject == "") see only platform pools; project-scoped requests see
@@ -148,8 +117,6 @@ func plural(kind string) string {
 	switch kind {
 	case "IPPrefix":
 		return "ipprefixes"
-	case "ASNPool":
-		return "asnpools"
 	}
 	// Conservative fallback — lowercase + "s" — never reached for the kinds
 	// this resolver supports today, but defends against future kinds being

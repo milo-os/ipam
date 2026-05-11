@@ -8,12 +8,6 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
-	// ASNClaims returns a ASNClaimInformer.
-	ASNClaims() ASNClaimInformer
-	// ASNPools returns a ASNPoolInformer.
-	ASNPools() ASNPoolInformer
-	// ASNPoolClasses returns a ASNPoolClassInformer.
-	ASNPoolClasses() ASNPoolClassInformer
 	// IPAddresses returns a IPAddressInformer.
 	IPAddresses() IPAddressInformer
 	// IPAddressClaims returns a IPAddressClaimInformer.
@@ -35,21 +29,6 @@ type version struct {
 // New returns a new Interface.
 func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakListOptions internalinterfaces.TweakListOptionsFunc) Interface {
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
-}
-
-// ASNClaims returns a ASNClaimInformer.
-func (v *version) ASNClaims() ASNClaimInformer {
-	return &aSNClaimInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
-}
-
-// ASNPools returns a ASNPoolInformer.
-func (v *version) ASNPools() ASNPoolInformer {
-	return &aSNPoolInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
-}
-
-// ASNPoolClasses returns a ASNPoolClassInformer.
-func (v *version) ASNPoolClasses() ASNPoolClassInformer {
-	return &aSNPoolClassInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // IPAddresses returns a IPAddressInformer.
