@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClass
+metadata:
+  name: consumer-private
+spec:
+  requiresVerification: false
+  visibility: consumer
+  defaultAllocation:
+    minPrefixLength: 24
+    maxPrefixLength: 28
+    strategy: FirstFit

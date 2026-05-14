@@ -1,0 +1,14 @@
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: selector-claim
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  prefixSelector:
+    matchLabels:
+      environment: consumer
+      region: us-east
+  reclaimPolicy: Delete
