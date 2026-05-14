@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+namespace: ipam-system
+
+resources:
+  - servicemonitor.yaml
+  # PrometheusRule with IPAM SLO alerts. Replaces the previous top-level
+  # prometheusrule.yaml (which referenced a non-existent metric) and consolidates
+  # all alert rules under alerts/.
+  - alerts/ipam-alerts.yaml
+  # ClusterRoleBinding granting the ipam-apiserver ServiceAccount the
+  # `system:auth-delegator` role so vmagent's bearer-token scrapes of /metrics
+  # authenticate (TokenReview / SubjectAccessReview). Without this, scrapes
+  # return 401 and all metrics-derived alerts go silent.
+  - clusterrolebinding-auth-delegator.yaml
+  # Grafana dashboards (managed by the Grafana operator via GrafanaDashboard CRs).
+  - grafana-dashboards/ipam-provider.yaml
+  - grafana-dashboards/ipam-consumer.yaml
+
+# Each dashboard JSON in dashboards/generated/ becomes a ConfigMap whose
+# `dashboard.json` key is referenced by the corresponding GrafanaDashboard CR.
+# The JSON files in dashboards/generated/ are compiled from the Jsonnet
+# sources under dashboards/jsonnet/ — never hand-edit the JSON.
+configMapGenerator:
+  - name: ipam-provider-dashboard
+    files:
+      - dashboard.json=dashboards/generated/ipam-provider.json
+    options:
+      labels:
+        app.kubernetes.io/name: ipam
+        app.kubernetes.io/component: dashboard
+        ipam.miloapis.com/audience: provider
+  - name: ipam-consumer-dashboard
+    files:
+      - dashboard.json=dashboards/generated/ipam-consumer.json
+    options:
+      labels:
+        app.kubernetes.io/name: ipam
+        app.kubernetes.io/component: dashboard
+        ipam.miloapis.com/audience: consumer
+
+# Generated ConfigMaps get a content hash suffix by default, which busts the
+# GrafanaDashboard configMapRef. Disable hashing so the CR's static reference
+# remains valid across re-renders.
+generatorOptions:
+  disableNameSuffixHash: true
