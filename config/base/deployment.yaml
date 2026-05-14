@@ -1,0 +1,201 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-apiserver
+  namespace: ipam-system
+spec:
+  # Two replicas + a PodDisruptionBudget(minAvailable=1) keeps the apiserver
+  # available across rolling updates and voluntary node drains. Single-replica
+  # was the v1alpha1 default and is unsafe for the synchronous allocation
+  # path: a kubelet eviction during a claim CREATE returns 503 to the caller
+  # with no second pod to absorb the request.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ipam-apiserver
+  template:
+    metadata:
+      labels:
+        app: ipam-apiserver
+    spec:
+      serviceAccountName: ipam-apiserver
+      # Soft (preferred) anti-affinity on zone so the two replicas land in
+      # different failure domains when the cluster has multi-zone nodes;
+      # falls back to packing onto one zone in single-zone clusters (kind,
+      # dev) rather than refusing to schedule. Use podAntiAffinity instead
+      # of topologySpreadConstraints because we want a single hard preference,
+      # not a continuous balancing rule.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: ipam-apiserver
+                topologyKey: topology.kubernetes.io/zone
+            - weight: 50
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: ipam-apiserver
+                topologyKey: kubernetes.io/hostname
+      # 30s grace lets in-flight allocation transactions either commit or
+      # rollback cleanly via the PreShutdownHook in serve.go before the
+      # kubelet sends SIGKILL. Default 30s is fine — synchronous allocation
+      # transactions complete in < 100ms p99.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: migrate
+          image: ghcr.io/datum-cloud/ipam-apiserver:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /ipam
+            - migrate
+            - up
+          args:
+            - --postgres-dsn=$(POSTGRES_DSN)
+          env:
+            - name: POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: dsn
+                  optional: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      containers:
+        - name: apiserver
+          image: ghcr.io/datum-cloud/ipam-apiserver:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 8443
+              name: https
+              protocol: TCP
+          command:
+            - /ipam
+            - serve
+          args:
+            - --secure-port=$(SECURE_PORT)
+            - --tls-cert-file=$(TLS_CERT_FILE)
+            - --tls-private-key-file=$(TLS_PRIVATE_KEY_FILE)
+            - --postgres-dsn=$(POSTGRES_DSN)
+            - --authentication-skip-lookup=$(AUTHENTICATION_SKIP_LOOKUP)
+            - --authentication-tolerate-lookup-failure=$(AUTHENTICATION_TOLERATE_LOOKUP_FAILURE)
+            - --authorization-always-allow-paths=$(AUTHORIZATION_ALWAYS_ALLOW_PATHS)
+            - --requestheader-username-headers=$(REQUESTHEADER_USERNAME_HEADERS)
+            - --requestheader-group-headers=$(REQUESTHEADER_GROUP_HEADERS)
+            - --requestheader-uid-headers=$(REQUESTHEADER_UID_HEADERS)
+            - --requestheader-extra-headers-prefix=$(REQUESTHEADER_EXTRA_HEADERS_PREFIX)
+            - --logging-format=$(LOGGING_FORMAT)
+            - -v=$(LOG_LEVEL)
+          env:
+            - name: SECURE_PORT
+              value: "8443"
+            - name: TLS_CERT_FILE
+              value: "/var/run/ipam-apiserver/tls/tls.crt"
+            - name: TLS_PRIVATE_KEY_FILE
+              value: "/var/run/ipam-apiserver/tls/tls.key"
+            - name: POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: dsn
+                  optional: true
+            - name: AUTHENTICATION_SKIP_LOOKUP
+              value: "false"
+            - name: AUTHENTICATION_TOLERATE_LOOKUP_FAILURE
+              value: "false"
+            - name: AUTHORIZATION_ALWAYS_ALLOW_PATHS
+              value: "/healthz,/readyz,/livez"
+            - name: REQUESTHEADER_USERNAME_HEADERS
+              value: "X-Remote-User"
+            - name: REQUESTHEADER_GROUP_HEADERS
+              value: "X-Remote-Group"
+            - name: REQUESTHEADER_UID_HEADERS
+              value: "X-Remote-Uid"
+            - name: REQUESTHEADER_EXTRA_HEADERS_PREFIX
+              value: "X-Remote-Extra-"
+            - name: LOGGING_FORMAT
+              value: "json"
+            - name: LOG_LEVEL
+              value: "2"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 2000m
+              memory: 4Gi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 6
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /var/run/ipam-apiserver/tls
+              readOnly: true
+            - name: control-plane-ca
+              mountPath: /etc/kubernetes/pki/requestheader
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tls-certs
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-name: selfsigned-cluster-issuer
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/common-name: ipam-apiserver.ipam-system.svc
+              csi.cert-manager.io/dns-names: "ipam-apiserver,ipam-apiserver.ipam-system,ipam-apiserver.ipam-system.svc,ipam-apiserver.ipam-system.svc.cluster.local"
+              csi.cert-manager.io/duration: "8760h"
+              csi.cert-manager.io/renew-before: "720h"
+              csi.cert-manager.io/fs-group: "65532"
+        - name: control-plane-ca
+          configMap:
+            name: control-plane-ca
+            optional: true
+        - name: tmp
+          emptyDir: {}

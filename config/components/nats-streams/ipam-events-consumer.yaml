@@ -1,0 +1,12 @@
+apiVersion: jetstream.nats.io/v1beta2
+kind: Consumer
+metadata:
+  name: ipam-events-archive
+  namespace: ipam-system
+spec:
+  streamName: IPAM_EVENTS
+  durableName: ipam-events-archive
+  deliverPolicy: all
+  ackPolicy: explicit
+  filterSubject: "ipam.events.>"
+  maxDeliver: 5

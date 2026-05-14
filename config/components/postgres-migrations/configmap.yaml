@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ipam-postgres-migrations
+  namespace: ipam-system
+  labels:
+    app.kubernetes.io/name: ipam-postgres-migrations
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: ipam.miloapis.com
+data:
+  migrate.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    echo "Starting IPAM database migrations..."
+
+    until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
+      echo "Waiting for PostgreSQL..."
+      sleep 2
+    done
+
+    echo "PostgreSQL is ready. Running migrations..."
+
+    psql "$POSTGRES_DSN" -c "
+      CREATE TABLE IF NOT EXISTS applied_migrations (
+        version TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    "
+
+    for migration in /migrations/*.sql; do
+      [ -f "$migration" ] || continue
+      version=$(basename "$migration")
+      applied=$(psql "$POSTGRES_DSN" -t -c "SELECT COUNT(*) FROM applied_migrations WHERE version = '$version';" | tr -d ' ')
+      if [ "$applied" = "0" ]; then
+        echo "Applying migration: $version"
+        psql "$POSTGRES_DSN" -f "$migration"
+        psql "$POSTGRES_DSN" -c "INSERT INTO applied_migrations (version) VALUES ('$version');"
+        echo "Applied: $version"
+      else
+        echo "Already applied: $version"
+      fi
+    done
+
+    echo "All migrations applied."
+
+  001_initial_schema.sql: |
+    -- IPAM service initial schema
+    -- Mirrors migrations/001_initial_schema.sql at repo root.
+
+    CREATE TABLE IF NOT EXISTS ipam_objects (
+        key              TEXT PRIMARY KEY,
+        resource_version BIGINT NOT NULL DEFAULT 0,
+        kind             TEXT NOT NULL,
+        namespace        TEXT NOT NULL DEFAULT '',
+        name             TEXT NOT NULL,
+        data             BYTEA NOT NULL,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE SEQUENCE IF NOT EXISTS ipam_resource_version_seq;
+    CREATE INDEX IF NOT EXISTS idx_ipam_objects_kind ON ipam_objects(kind);
+    CREATE INDEX IF NOT EXISTS idx_ipam_objects_kind_ns ON ipam_objects(kind, namespace);
+    CREATE INDEX IF NOT EXISTS idx_ipam_objects_key_prefix ON ipam_objects(key text_pattern_ops);
+
+    CREATE TABLE IF NOT EXISTS ipam_prefix_allocations (
+        id             BIGSERIAL PRIMARY KEY,
+        pool_key       TEXT NOT NULL,
+        allocated_cidr CIDR NOT NULL,
+        claim_key      TEXT NOT NULL UNIQUE,
+        ip_family      TEXT NOT NULL CHECK (ip_family IN ('IPv4', 'IPv6')),
+        is_child_pool  BOOLEAN NOT NULL DEFAULT FALSE,
+        reclaim_policy TEXT NOT NULL DEFAULT 'Delete',
+        allocated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ipam_prefix_alloc_pool_key
+        ON ipam_prefix_allocations (pool_key);
+    CREATE INDEX IF NOT EXISTS idx_ipam_prefix_alloc_gist
+        ON ipam_prefix_allocations USING GIST (pool_key, allocated_cidr);
+
+    CREATE TABLE IF NOT EXISTS ipam_asn_allocations (
+        id             BIGSERIAL PRIMARY KEY,
+        pool_key       TEXT NOT NULL,
+        asn            BIGINT NOT NULL,
+        claim_key      TEXT NOT NULL UNIQUE,
+        reclaim_policy TEXT NOT NULL DEFAULT 'Delete',
+        UNIQUE (pool_key, asn)
+    );
+
+    CREATE TABLE IF NOT EXISTS ipam_changelog (
+        id               BIGSERIAL PRIMARY KEY,
+        key              TEXT NOT NULL,
+        resource_version BIGINT NOT NULL,
+        event_type       TEXT NOT NULL CHECK (event_type IN ('ADDED', 'MODIFIED', 'DELETED')),
+        data             BYTEA,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ipam_changelog_rv ON ipam_changelog (resource_version);
+    CREATE INDEX IF NOT EXISTS idx_ipam_changelog_key ON ipam_changelog (key);
+
+  002_listen_notify.sql: |
+    -- LISTEN/NOTIFY trigger so the apiserver can wake watchers without polling.
+    CREATE OR REPLACE FUNCTION ipam_notify_changelog() RETURNS trigger AS $$
+    BEGIN
+        PERFORM pg_notify('ipam_changes', NEW.resource_version::text);
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql;
+
+    DROP TRIGGER IF EXISTS ipam_changelog_notify ON ipam_changelog;
+    CREATE TRIGGER ipam_changelog_notify
+        AFTER INSERT ON ipam_changelog
+        FOR EACH ROW EXECUTE FUNCTION ipam_notify_changelog();

@@ -1,0 +1,17 @@
+apiVersion: jetstream.nats.io/v1beta2
+kind: Stream
+metadata:
+  name: ipam-events
+  namespace: ipam-system
+spec:
+  name: IPAM_EVENTS
+  description: IPAM allocation and verification events
+  subjects:
+    - "ipam.events.>"
+  retention: limits
+  discard: old
+  maxAge: 168h   # 7d
+  maxMsgs: 10000000
+  maxBytes: 1073741824 # 1Gi
+  storage: file
+  replicas: 1

@@ -1,0 +1,15 @@
+---
+# Dev-only: grant anonymous users read access via the apiservice so kubectl
+# proxy / curl loops work without bearer tokens. Do NOT apply outside dev.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipam-dev-anonymous
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: system:anonymous
