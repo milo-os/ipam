@@ -1,0 +1,57 @@
+# Forward-looking RBAC: once Milo's multi-tenant authorizer lands, these
+# bindings let project-beta `use` the cross-project IP host pool and ASN pool
+# owned by project-alpha. Today the server does not consult them; they exist
+# as a spec, mirroring resources/rbac.yaml for the IPPrefixClaim path.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mt-host-shared-pool-user
+rules:
+  - apiGroups:
+      - ipam.miloapis.com
+    resources:
+      - ipprefixes
+    resourceNames:
+      - mt-host-shared-pool
+    verbs:
+      - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mt-host-shared-pool-user-project-beta
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mt-host-shared-pool-user
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:project:project-beta
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mt-asn-shared-pool-user
+rules:
+  - apiGroups:
+      - ipam.miloapis.com
+    resources:
+      - asnpools
+    resourceNames:
+      - mt-asn-shared-pool
+    verbs:
+      - use
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mt-asn-shared-pool-user-project-beta
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mt-asn-shared-pool-user
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:project:project-beta

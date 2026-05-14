@@ -1,0 +1,5 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: alloc-claim-1
+  namespace: ($namespace)

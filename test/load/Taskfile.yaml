@@ -1,0 +1,373 @@
+version: '3'
+
+vars:
+  ROOT_DIR: '{{.TASKFILE_DIR}}/../..'
+  K6_SRC_DIR: '{{.ROOT_DIR}}/test/load/src'
+  RESULTS_DIR: '{{.ROOT_DIR}}/test/load/results'
+  KUBECONFIG: '{{.KUBECONFIG | default ".test-infra/kubeconfig"}}'
+  PROXY_PORT: '{{.PROXY_PORT | default "8001"}}'
+  IPAM_API_URL: '{{.IPAM_API_URL | default "http://localhost:8001"}}'
+  # PROJECT_COUNT drives setup loops AND the cleanup teardown loops below.
+  # Must match the value used in setup-pools.js so cleanup hits every
+  # per-project resource that setup created.
+  PROJECT_COUNT: '{{.PROJECT_COUNT | default "5"}}'
+
+tasks:
+  default:
+    desc: List load test tasks
+    cmds:
+      - task --list
+    silent: true
+
+  validate:
+    desc: Lint all k6 scripts with k6 inspect
+    silent: true
+    cmds:
+      - |
+        set -e
+        if ! command -v k6 >/dev/null 2>&1; then
+          echo "ERROR: k6 not installed. brew install k6 (macOS) or see https://k6.io/docs/get-started/installation/" >&2
+          exit 1
+        fi
+        for f in {{.K6_SRC_DIR}}/*.js; do
+          name=$(basename "$f")
+          if k6 inspect "$f" >/dev/null 2>&1; then
+            echo "  ok  $name"
+          else
+            echo "  FAIL $name"
+            k6 inspect "$f"
+            exit 1
+          fi
+        done
+
+  generate:
+    desc: Bundle k6 scripts and refresh the kustomize component
+    silent: true
+    cmds:
+      - ROOT_DIR={{.ROOT_DIR}} {{.ROOT_DIR}}/hack/bundle-k6.sh
+      - |
+        echo ""
+        echo "Validating bundled scripts..."
+        for f in {{.ROOT_DIR}}/config/components/k6-performance-tests/generated/*.js; do
+          name=$(basename "$f")
+          if k6 inspect "$f" >/dev/null 2>&1; then
+            echo "  ok  $name"
+          else
+            echo "  FAIL $name"
+            k6 inspect "$f"
+            exit 1
+          fi
+        done
+
+  k6:install-operator:
+    desc: Install the k6 operator into the cluster (one-time setup)
+    silent: true
+    cmds:
+      - |
+        set -e
+        echo "Installing k6 operator..."
+        KUBECONFIG={{.KUBECONFIG}} kubectl apply --server-side -f https://raw.githubusercontent.com/grafana/k6-operator/main/bundle.yaml
+        KUBECONFIG={{.KUBECONFIG}} kubectl wait --for=condition=Available deployment/k6-operator-controller-manager -n k6-operator-system --timeout=120s
+
+  k6:apply:
+    desc: Apply the k6 performance tests component to the running cluster
+    silent: true
+    cmds:
+      - |
+        kustomize build {{.ROOT_DIR}}/config/components/k6-performance-tests/ \
+          | KUBECONFIG={{.KUBECONFIG}} kubectl apply -n ipam-system -f -
+
+  k6:run:
+    desc: 'Trigger a single TestRun. Vars: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput'
+    silent: true
+    cmds:
+      - |
+        set -e
+        TEST="{{.TEST | default "throughput"}}"
+        case "$TEST" in
+          setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput) ;;
+          *) echo "ERROR: TEST must be one of: setup, throughput, asn-throughput, exhaustion, reads, scale, address-concurrent, mixed-load, concurrent, cross-project-throughput, watch-latency, ipv6-throughput" >&2; exit 1 ;;
+        esac
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete testrun.k6.io/ipam-perf-${TEST} -n ipam-system --ignore-not-found
+        KUBECONFIG={{.KUBECONFIG}} kubectl apply -f {{.ROOT_DIR}}/config/components/k6-performance-tests/testruns/${TEST}.yaml
+        echo ""
+        echo "TestRun ipam-perf-${TEST} created. Watch progress with:"
+        echo "  kubectl get testrun -n ipam-system -w"
+        echo "  kubectl logs -n ipam-system -l k6_cr=ipam-perf-${TEST} -f"
+
+  k6:logs:
+    desc: 'Tail logs from a TestRun. Vars: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput'
+    silent: true
+    cmds:
+      - |
+        TEST="{{.TEST | default "throughput"}}"
+        KUBECONFIG={{.KUBECONFIG}} kubectl logs -n ipam-system -l k6_cr=ipam-perf-${TEST} -f --tail=200
+
+  proxy:
+    desc: Run kubectl proxy in foreground
+    cmds:
+      - KUBECONFIG={{.KUBECONFIG}} kubectl proxy --port={{.PROXY_PORT}}
+
+  setup:
+    desc: 'Provision pools/namespaces for performance testing. Vars: PROJECT_COUNT, NAMESPACE_COUNT, SETUP_VUS'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          -e SETUP_VUS={{.SETUP_VUS | default "1"}} \
+          --summary-export={{.RESULTS_DIR}}/setup.json \
+          {{.K6_SRC_DIR}}/setup-pools.js
+
+  scale-setup:
+    desc: 'Provision 1000-project scale test pools (20 parallel VUs)'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT=100 \
+          -e PROJECT_COUNT=1000 \
+          -e SETUP_VUS=20 \
+          --summary-export={{.RESULTS_DIR}}/scale-setup.json \
+          {{.K6_SRC_DIR}}/setup-pools.js
+
+  scale-throughput:
+    desc: 'Throughput test at 1000-project scale. Vars: VUS (default 100), DURATION (default 2m)'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT=100 \
+          -e PROJECT_COUNT=1000 \
+          -e VUS={{.VUS | default "100"}} \
+          -e DURATION={{.DURATION | default "2m"}} \
+          --summary-export={{.RESULTS_DIR}}/scale-throughput.json \
+          {{.K6_SRC_DIR}}/prefix-claim-throughput.js
+
+  throughput:
+    desc: 'Measure prefix-claim creation throughput. Vars: VUS, DURATION, PROJECT_COUNT, NAMESPACE_COUNT'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          -e VUS={{.VUS | default "10"}} \
+          -e DURATION={{.DURATION | default "2m"}} \
+          --summary-export={{.RESULTS_DIR}}/prefix-throughput.json \
+          {{.K6_SRC_DIR}}/prefix-claim-throughput.js
+
+  asn-throughput:
+    desc: 'Measure ASN-claim creation throughput via classRef. Vars: VUS, DURATION'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          -e VUS={{.VUS | default "10"}} \
+          -e DURATION={{.DURATION | default "2m"}} \
+          --summary-export={{.RESULTS_DIR}}/asn-throughput.json \
+          {{.K6_SRC_DIR}}/asn-claim-throughput.js
+
+  address-concurrent:
+    desc: 'Stress-test IPAddressClaim concurrency + uniqueness. Vars: VUS, DURATION, POOL_CIDR'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e VUS={{.VUS | default "50"}} \
+          -e DURATION={{.DURATION | default "2m"}} \
+          -e POOL_CIDR={{.POOL_CIDR | default "10.250.0.0/22"}} \
+          --summary-export={{.RESULTS_DIR}}/address-concurrent.json \
+          {{.K6_SRC_DIR}}/ipaddress-claim-concurrent.js
+
+  exhaustion:
+    desc: 'Measure deny-path latency under pool exhaustion'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e VUS={{.VUS | default "20"}} \
+          -e DURATION={{.DURATION | default "1m"}} \
+          --summary-export={{.RESULTS_DIR}}/exhaustion.json \
+          {{.K6_SRC_DIR}}/pool-exhaustion.js
+
+  reads:
+    desc: 'Measure read-path latency'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          --summary-export={{.RESULTS_DIR}}/reads.json \
+          {{.K6_SRC_DIR}}/read-latency.js
+
+  mixed:
+    desc: 'Simulate mixed read+write production traffic (writes + reads + burst + spike). Vars: NAMESPACE_COUNT, PROJECT_COUNT'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          --summary-export={{.RESULTS_DIR}}/mixed.json \
+          {{.K6_SRC_DIR}}/mixed-load.js
+
+  concurrent:
+    desc: 'Concurrent burst + uniqueness IPPrefixClaim test. Vars: VUS, DURATION'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          -e VUS={{.VUS | default "50"}} \
+          -e DURATION={{.DURATION | default "1m"}} \
+          --summary-export={{.RESULTS_DIR}}/concurrent.json \
+          {{.K6_SRC_DIR}}/concurrent-claims.js
+
+  cross-project:
+    desc: 'Cross-project IPPrefixClaim throughput. Vars: VUS, DURATION'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          -e VUS={{.VUS | default "10"}} \
+          -e DURATION={{.DURATION | default "2m"}} \
+          --summary-export={{.RESULTS_DIR}}/cross-project-throughput.json \
+          {{.K6_SRC_DIR}}/cross-project-claim-throughput.js
+
+  watch-latency:
+    desc: 'Measure watch event lag (TTFB-anchored). Vars: ITERATIONS, WATCH_TIMEOUT'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e ITERATIONS={{.ITERATIONS | default "30"}} \
+          -e WATCH_TIMEOUT={{.WATCH_TIMEOUT | default "5"}} \
+          --summary-export={{.RESULTS_DIR}}/watch-latency.json \
+          {{.K6_SRC_DIR}}/watch-latency.js
+
+  ipv6-throughput:
+    desc: 'IPv6 /48 prefix-claim throughput across 5 projects (PRIMARY load test). Vars: VUS, DURATION, PROJECT_COUNT'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          -e VUS={{.VUS | default "50"}} \
+          -e DURATION={{.DURATION | default "2m"}} \
+          -e CROSS_RATIO={{.CROSS_RATIO | default "0.1"}} \
+          -e CLAIM_PREFIX_LENGTH={{.CLAIM_PREFIX_LENGTH | default "48"}} \
+          --summary-export={{.RESULTS_DIR}}/ipv6-throughput.json \
+          {{.K6_SRC_DIR}}/ipv6-claim-throughput.js
+
+  scale:
+    desc: 'Walk through prefix-length depths and measure latency'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e PREFIX_STEPS={{.PREFIX_STEPS | default "20,22,24,26,28"}} \
+          --summary-export={{.RESULTS_DIR}}/scale.json \
+          --out json={{.RESULTS_DIR}}/scale-raw.json \
+          {{.K6_SRC_DIR}}/pool-scale.js
+
+  cleanup:
+    desc: 'Delete all perf namespaces and pool resources. Var: PROJECT_COUNT (default 5)'
+    silent: true
+    cmds:
+      - |
+        set -e
+        PROJECT_COUNT={{.PROJECT_COUNT}}
+        LAST=$((PROJECT_COUNT - 1))
+
+        echo "Deleting perf namespaces..."
+        KUBECONFIG={{.KUBECONFIG}} kubectl get ns -o name | grep '^namespace/ipam-perf-' | xargs -r KUBECONFIG={{.KUBECONFIG}} kubectl delete --wait=false || true
+
+        echo "Deleting per-project IPv4 prefixes (perf-prefix-0..${LAST})..."
+        for n in $(seq 0 ${LAST}); do
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-prefix-${n} --ignore-not-found || true
+        done
+
+        echo "Deleting per-project IPv6 prefixes (perf-ipv6-prefix-0..${LAST})..."
+        for n in $(seq 0 ${LAST}); do
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-ipv6-prefix-${n} --ignore-not-found || true
+        done
+
+        echo "Deleting per-project ASN pools (perf-asn-pool-0..${LAST})..."
+        for n in $(seq 0 ${LAST}); do
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-pool-${n} --ignore-not-found || true
+        done
+
+        echo "Deleting platform-level perf pool..."
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-prefix --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-private --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-pool --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpoolclass.ipam.miloapis.com perf-asn --ignore-not-found || true
+
+        echo "Deleting IPv4 shared cross-project pool + RBAC..."
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-shared-prefix --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-shared --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-shared-pool-user --ignore-not-found || true
+        for n in $(seq 0 ${LAST}); do
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-shared-pool-user-ipam-perf-${n} --ignore-not-found || true
+        done
+
+        echo "Deleting IPv6 shared cross-project pool + RBAC..."
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-ipv6-shared --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-ipv6-shared-class --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-ipv6-shared-pool-user --ignore-not-found || true
+        for n in $(seq 0 ${LAST}); do
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-ipv6-shared-pool-user-ipam-perf-${n} --ignore-not-found || true
+        done
+
+        echo "Deleting exhaust pool + RBAC (pool-exhaustion.js setup leaks)..."
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-exhaust-pool --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-exhaust-class --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-exhaust-pool-user --ignore-not-found || true
+        for n in $(seq 0 ${LAST}); do
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-exhaust-pool-user-ipam-perf-${n} --ignore-not-found || true
+        done
+
+        echo "Deleting per-test scratch pools (asn classref + ipaddress concurrent)..."
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-classref-pool --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpoolclass.ipam.miloapis.com perf-asn-classref --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-ipaddr-concurrent-pool --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-ipaddr-concurrent --ignore-not-found || true
+
+        echo "Cleanup complete."

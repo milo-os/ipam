@@ -1,0 +1,21 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: hier-region-2-claim
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv4
+  prefixLength: 12
+  prefixRef:
+    name: hier-env
+  childPrefixTemplate:
+    metadata:
+      name: hier-region-2
+    spec:
+      classRef:
+        name: platform-shared
+      allocation:
+        minPrefixLength: 16
+        maxPrefixLength: 28
+        strategy: FirstFit
+  reclaimPolicy: Delete

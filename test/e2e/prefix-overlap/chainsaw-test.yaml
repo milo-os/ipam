@@ -1,0 +1,95 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: prefix-overlap
+spec:
+  description: |
+    Uniqueness test for IPPrefixClaim allocation:
+    - 10 claims applied in a single apply block against the same parent
+    - All must succeed with unique, non-overlapping /24 CIDRs
+
+    NOTE: This suite validates UNIQUENESS of allocated CIDRs across a batch of
+    claims posted via a single Chainsaw `create:` step. Chainsaw applies the
+    manifests sequentially within that step, so this is not a true concurrency
+    stress test of the `SELECT ... FOR UPDATE` lock — it confirms the
+    allocator returns distinct, non-overlapping blocks across back-to-back
+    requests. True concurrent contention (many parallel CREATEs hitting the
+    same parent row) is covered by `test/load/concurrent-claims.js`, which
+    drives N parallel virtual users against the API server.
+
+  steps:
+    - name: setup-pool
+      description: Create class + IPPrefix (10.64.0.0/16, /24 only — 256 possible /24s)
+      try:
+        - create:
+            file: test-data/class.yaml
+        - create:
+            file: test-data/parent.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefix
+            name: overlap-parent
+            timeout: 30s
+            for:
+              condition:
+                name: Ready
+                value: 'True'
+
+    - name: apply-10-claims-simultaneously
+      description: Create 10 claims in a single apply block; all must reach Bound
+      try:
+        - create:
+            file: test-data/claims-10.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefixClaim
+            namespace: ($namespace)
+            selector: overlap-test=true
+            timeout: 60s
+            for:
+              jsonPath:
+                path: '{.status.phase}'
+                value: 'Bound'
+
+    - name: assert-unique-non-overlapping
+      description: All 10 allocatedCIDR values must be unique
+      try:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl get ipprefixclaim -n "$NAMESPACE" -l overlap-test=true \
+                -o jsonpath='{.items[*].status.allocatedCIDR}' | tr ' ' '\n' | sort -u | awk 'END{print NR}'
+            check:
+              ($stdout): "10\n"
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              cidrs=$(kubectl get ipprefixclaim -n "$NAMESPACE" -l overlap-test=true \
+                -o jsonpath='{.items[*].status.allocatedCIDR}')
+              for c in $cidrs; do
+                if ! echo "$c" | grep -qE '^10\.64\.[0-9]+\.0/24$'; then
+                  echo "FAIL: CIDR $c is not a /24 in 10.64.0.0/16"
+                  exit 1
+                fi
+              done
+              echo "OK: all 10 CIDRs are /24 within 10.64.0.0/16"
+            check:
+              ($stdout): "OK: all 10 CIDRs are /24 within 10.64.0.0/16\n"
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipprefixclaim -n "$NAMESPACE" -l overlap-test=true --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipprefix overlap-parent --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipprefixclass overlap-class --ignore-not-found >/dev/null 2>&1 || true
+              echo "prefix-overlap cleanup done"
+            check:
+              ($error == null): true
