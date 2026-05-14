@@ -1,0 +1,15 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-apiserver
+  namespace: ipam-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: apiserver
+          imagePullPolicy: Never
+          env:
+            - name: LOG_LEVEL
+              value: "4"

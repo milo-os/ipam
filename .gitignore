@@ -1,0 +1,25 @@
+# Compiled binary
+/ipam
+
+# Local test infrastructure (kind cluster, kind managed by task test-infra:cluster-up)
+/.test-infra/
+
+# Editor and OS
+.DS_Store
+*.swp
+*.swo
+
+# Go test cache
+*.test
+*.out
+
+# Task remote taskfile cache
+/.task/
+
+# k6 load test result artifacts
+/test/load/results/
+
+# Local dev secrets
+*.pem
+*.key
+.env

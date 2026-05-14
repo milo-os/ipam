@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Milo IAM integration: ClusterRoleBindings that map IAM roles to the
+# IPAM API. Apply these on top of an overlay that already includes
+# Milo's IAM resources.
+
+namespace: ipam-system
+
+resources:
+  - rbac.yaml

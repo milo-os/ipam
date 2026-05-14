@@ -1,0 +1,85 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ipam-postgres-migrate
+  namespace: ipam-system
+  labels:
+    app: ipam-postgres-migrations
+    app.kubernetes.io/component: database
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: ipam-postgres-migrations
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
+                echo "Waiting for PostgreSQL..."
+                sleep 2
+              done
+          env:
+            - name: POSTGRES_HOST
+              value: "postgres-postgresql.ipam-system.svc.cluster.local"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: "ipam"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+      containers:
+        - name: migrate
+          image: postgres:16-alpine
+          command: ["/bin/bash", "/scripts/migrate.sh"]
+          env:
+            - name: POSTGRES_HOST
+              value: "postgres-postgresql.ipam-system.svc.cluster.local"
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: "ipam"
+            - name: POSTGRES_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: dsn
+            - name: MIGRATIONS_DIR
+              value: "/migrations"
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+              readOnly: true
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+      volumes:
+        - name: migrations
+          configMap:
+            name: ipam-postgres-migrations
+        - name: scripts
+          configMap:
+            name: ipam-postgres-migrations
+            defaultMode: 0755
+            items:
+              - key: migrate.sh
+                path: migrate.sh
