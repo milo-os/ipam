@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClass
+metadata:
+  name: overlap-class
+spec:
+  requiresVerification: false
+  visibility: consumer
+  defaultAllocation:
+    minPrefixLength: 24
+    maxPrefixLength: 24
+    strategy: FirstFit

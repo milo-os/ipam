@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefixClaim
+metadata:
+  name: claim-zero-length
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv4
+  prefixLength: 0
+  prefixRef:
+    name: test-valid-prefix
+  reclaimPolicy: Delete
