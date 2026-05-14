@@ -1,0 +1,13 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPrefix
+metadata:
+  name: test-invalid-cidr
+spec:
+  cidr: "not-a-cidr"
+  ipFamily: IPv4
+  classRef:
+    name: validation-class
+  allocation:
+    minPrefixLength: 24
+    maxPrefixLength: 28
+    strategy: FirstFit
