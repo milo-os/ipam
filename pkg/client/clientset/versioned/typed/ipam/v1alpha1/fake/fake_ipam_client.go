@@ -12,14 +12,6 @@ type FakeIpamV1alpha1 struct {
 	*testing.Fake
 }
 
-func (c *FakeIpamV1alpha1) IPAddresses(namespace string) v1alpha1.IPAddressInterface {
-	return newFakeIPAddresses(c, namespace)
-}
-
-func (c *FakeIpamV1alpha1) IPAddressClaims(namespace string) v1alpha1.IPAddressClaimInterface {
-	return newFakeIPAddressClaims(c, namespace)
-}
-
 func (c *FakeIpamV1alpha1) IPPrefixes() v1alpha1.IPPrefixInterface {
 	return newFakeIPPrefixes(c)
 }

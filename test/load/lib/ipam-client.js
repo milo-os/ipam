@@ -103,12 +103,6 @@ export function prefixClaimPath(ns, name) {
     : `/namespaces/${ns}/ipprefixclaims`;
 }
 
-export function ipAddressClaimPath(ns, name) {
-  return name
-    ? `/namespaces/${ns}/ipaddressclaims/${name}`
-    : `/namespaces/${ns}/ipaddressclaims`;
-}
-
 export function asnClaimPath(ns, name) {
   return name
     ? `/namespaces/${ns}/asnclaims/${name}`
@@ -181,19 +175,6 @@ export function ipPrefixClaim(ns, name, prefixRef, prefixLength, { ipFamily = 'I
   };
 }
 
-export function ipAddressClaim(ns, name, prefixRef, { ipFamily = 'IPv4', reclaimPolicy = 'Delete' } = {}) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'IPAddressClaim',
-    metadata: { name, namespace: ns },
-    spec: {
-      ipFamily,
-      prefixRef: { name: prefixRef },
-      reclaimPolicy,
-    },
-  };
-}
-
 export function asnPoolClass(name, { visibility = 'consumer' } = {}) {
   return {
     apiVersion: `${API_GROUP}/${API_VERSION}`,
@@ -249,14 +230,6 @@ export function getPrefixClaim(ns, name) {
 
 export function listPrefixClaims(ns) {
   return ipamList(prefixClaimPath(ns), 'prefix_claim_list');
-}
-
-export function createIPAddressClaim(ns, name, prefixRef, opts) {
-  return ipamPost(ipAddressClaimPath(ns), ipAddressClaim(ns, name, prefixRef, opts), 'ip_addr_claim_create');
-}
-
-export function deleteIPAddressClaim(ns, name) {
-  return ipamDelete(ipAddressClaimPath(ns, name), 'ip_addr_claim_delete');
 }
 
 export function createASNClaim(ns, name, poolRef) {
@@ -447,19 +420,6 @@ export function createASNClaimWithClassRefForProject(ns, name, classRefName, pro
   const body = asnClaimWithClassRef(ns, name, classRefName);
   const params = withProjectTagged(projectID, 'asn_claim_create');
   return http.post(`${API_BASE}${asnClaimPath(ns)}`, JSON.stringify(body), params);
-}
-
-// IPAddressClaim helpers scoped by project tenant headers — used by the
-// concurrent IPAddressClaim test.
-export function createIPAddressClaimForProject(ns, name, prefixRef, projectID, opts = {}) {
-  const body = ipAddressClaim(ns, name, prefixRef, opts);
-  const params = withProjectTagged(projectID, 'ip_addr_claim_create');
-  return http.post(`${API_BASE}${ipAddressClaimPath(ns)}`, JSON.stringify(body), params);
-}
-
-export function deleteIPAddressClaimForProject(ns, name, projectID) {
-  const params = withProjectTagged(projectID, 'ip_addr_claim_delete');
-  return http.del(`${API_BASE}${ipAddressClaimPath(ns, name)}`, null, params);
 }
 
 // LIST helpers used by the read-latency scenarios. All accept the project

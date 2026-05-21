@@ -5,7 +5,7 @@ metadata:
 spec:
   description: |
     Pool exhaustion path:
-    - Two IPAddressClaims fill the /31 pool (2 addresses)
+    - Two IPPrefixClaims (prefixLength: 32) fill the /31 pool (2 host addresses)
     - Third claim returns HTTP 507 (Insufficient Storage)
     - Releasing one claim re-opens the slot
 
@@ -28,7 +28,7 @@ spec:
                 value: 'True'
 
     - name: fill-pool
-      description: Create two IPAddressClaims; both must reach Bound
+      description: Create two IPPrefixClaims (prefixLength 32); both must reach Bound
       try:
         - create:
             file: test-data/claim-1.yaml
@@ -36,7 +36,7 @@ spec:
             file: test-data/claim-2.yaml
         - wait:
             apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPAddressClaim
+            kind: IPPrefixClaim
             name: exhaust-claim-1
             namespace: ($namespace)
             timeout: 30s
@@ -46,7 +46,7 @@ spec:
                 value: 'Bound'
         - wait:
             apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPAddressClaim
+            kind: IPPrefixClaim
             name: exhaust-claim-2
             namespace: ($namespace)
             timeout: 30s
@@ -71,7 +71,7 @@ spec:
         - delete:
             ref:
               apiVersion: ipam.miloapis.com/v1alpha1
-              kind: IPAddressClaim
+              kind: IPPrefixClaim
               name: exhaust-claim-1
               namespace: ($namespace)
         - error:
@@ -80,7 +80,7 @@ spec:
             file: test-data/claim-3.yaml
         - wait:
             apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPAddressClaim
+            kind: IPPrefixClaim
             name: exhaust-claim-3
             namespace: ($namespace)
             timeout: 30s
@@ -95,7 +95,7 @@ spec:
               - name: NAMESPACE
                 value: ($namespace)
             content: |
-              kubectl delete ipaddressclaim -n "$NAMESPACE" \
+              kubectl delete ipprefixclaim -n "$NAMESPACE" \
                 exhaust-claim-1 exhaust-claim-2 exhaust-claim-3 --ignore-not-found >/dev/null 2>&1 || true
               kubectl delete ipprefix exhaust-pool --ignore-not-found >/dev/null 2>&1 || true
               kubectl delete ipprefixclass exhaust-class --ignore-not-found >/dev/null 2>&1 || true

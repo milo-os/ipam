@@ -42,7 +42,7 @@ type iPPrefixes struct {
 // newIPPrefixes returns a IPPrefixes
 func newIPPrefixes(c *IpamV1alpha1Client) *iPPrefixes {
 	return &iPPrefixes{
-		gentype.NewClientWithList[*ipamv1alpha1.IPPrefix, *ipamv1alpha1.IPPrefixList](
+		gentype.NewClientWithList(
 			"ipprefixes",
 			c.RESTClient(),
 			scheme.ParameterCodec,

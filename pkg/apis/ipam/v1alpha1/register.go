@@ -27,8 +27,6 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&IPPrefixClass{}, &IPPrefixClassList{},
 		&IPPrefix{}, &IPPrefixList{},
 		&IPPrefixClaim{}, &IPPrefixClaimList{},
-		&IPAddress{}, &IPAddressList{},
-		&IPAddressClaim{}, &IPAddressClaimList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

@@ -2,12 +2,8 @@
 
 package v1alpha1
 
-type IPAddressExpansion interface{}
+type IPPrefixExpansion any
 
-type IPAddressClaimExpansion interface{}
+type IPPrefixClaimExpansion any
 
-type IPPrefixExpansion interface{}
-
-type IPPrefixClaimExpansion interface{}
-
-type IPPrefixClassExpansion interface{}
+type IPPrefixClassExpansion any

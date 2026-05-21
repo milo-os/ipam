@@ -535,12 +535,14 @@ spec:
 
     - name: cross-project-address-claim-beta-from-shared
       description: |
-        Project beta posts an IPAddressClaim against project-alpha's host pool
-        (mt-host-shared-pool) carrying project-beta headers and a
-        prefixRef.projectRef hint pointing at project-alpha. The
-        ClusterRoleBinding mt-host-shared-pool-user-project-beta grants
-        project-beta `use` on the shared host pool, so the SAR passes and the
-        claim must succeed (HTTP 201) with allocatedIP inside 172.21.0.0/29.
+        Project beta posts an IPPrefixClaim with prefixLength: 32 against
+        project-alpha's host pool (mt-host-shared-pool) carrying project-beta
+        headers and prefixRef.projectRef pointing at project-alpha. Single-IP
+        allocation is now performed via IPPrefixClaim /32 — IPAddressClaim has
+        been removed from the service. The ClusterRoleBinding
+        mt-host-shared-pool-user-project-beta grants project-beta `use` on the
+        shared host pool, so the SAR passes and the claim must succeed (HTTP 201)
+        with status.allocatedCIDR being a /32 inside 172.21.0.0/29.
       try:
         - script:
             timeout: 60s
@@ -557,10 +559,10 @@ spec:
                 curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
               done
 
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPAddressClaim","metadata":{"name":"mt-cross-addr-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross-addr":"true"}},"spec":{"ipFamily":"IPv4","prefixRef":{"name":"mt-host-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
+              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPrefixClaim","metadata":{"name":"mt-cross-addr-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross-addr":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":32,"prefixRef":{"name":"mt-host-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
 
               code=$(curl -s -o /tmp/mt-cross-addr.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipaddressclaims \
+                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipprefixclaims \
                 -H "Content-Type: application/json" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
@@ -573,22 +575,22 @@ spec:
                 exit 1
               fi
 
-              # Wait for Bound and verify IP
+              # Wait for Bound and verify the allocated CIDR is a /32 within 172.21.0.0/29.
               for i in $(seq 1 60); do
-                phase=$(kubectl get ipaddressclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
                 if [ "$phase" = "Bound" ]; then break; fi
                 sleep 0.5
               done
-              ip=$(kubectl get ipaddressclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.allocatedIP}')
-              if [ -z "$ip" ]; then
-                echo "FAIL: empty allocatedIP"
+              cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$cidr" ]; then
+                echo "FAIL: empty allocatedCIDR"
                 exit 1
               fi
-              if ! echo "$ip" | grep -qE '^172\.21\.0\.[0-7]$'; then
-                echo "FAIL: $ip not in 172.21.0.0/29"
+              if ! echo "$cidr" | grep -qE '^172\.21\.0\.[0-7]/32$'; then
+                echo "FAIL: $cidr not a /32 inside 172.21.0.0/29"
                 exit 1
               fi
-              echo "OK cross-project address claim accepted (201), ip=$ip"
+              echo "OK cross-project address claim accepted (201), cidr=$cidr"
             check:
               ($error == null): true
               (contains($stdout, 'OK cross-project address claim accepted')): true
@@ -598,7 +600,7 @@ spec:
               - name: NAMESPACE
                 value: ($namespace)
             content: |
-              kubectl delete ipaddressclaim -n "$NAMESPACE" mt-cross-addr-claim --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim --ignore-not-found=true >/dev/null 2>&1 || true
               echo "address cross-project cleanup done"
             check:
               ($error == null): true

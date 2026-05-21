@@ -1,0 +1,270 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: host-address-allocation
+spec:
+  description: |
+    Host-route allocation via IPPrefixClaim with prefixLength: 32 (IPv4) or
+    prefixLength: 128 (IPv6). Single-address allocation no longer uses a
+    dedicated IPAddressClaim resource; callers use IPPrefixClaim instead.
+
+    Tests:
+    1. IPv4 /32 bind    — /29 pool (10.50.1.0/29, 8 addresses); claim /32;
+                          assert Bound and allocatedCIDR in 10.50.1.[0-7]/32.
+    2. IPv4 /32 unique  — second /32 from the same pool is distinct.
+    3. Pool exhaustion   — fill all 8 slots; ninth claim fails HTTP 507;
+                          pool status.availableAddresses == 0.
+    4. IPv6 /128 bind   — /126 pool (2001:db8::/126, 4 addresses); claim /128;
+                          assert Bound and a /128 allocatedCIDR.
+
+  steps:
+    # ── Setup ───────────────────────────────────────────────────────────────
+    - name: setup-pools
+      description: |
+        Create IPPrefixClass + two pools:
+          host-pool-v4 (10.50.1.0/29, IPv4, /32 only)
+          host-pool-v6 (2001:db8::/126, IPv6, /128 only)
+      try:
+        - apply:
+            file: 00-setup.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefix
+            name: host-pool-v4
+            timeout: 30s
+            for:
+              condition:
+                name: Ready
+                value: 'True'
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefix
+            name: host-pool-v6
+            timeout: 30s
+            for:
+              condition:
+                name: Ready
+                value: 'True'
+
+    # ── Step 1: IPv4 /32 bind ────────────────────────────────────────────────
+    - name: ipv4-host-claim-bound
+      description: |
+        IPPrefixClaim with prefixLength: 32 binds synchronously.
+        status.allocatedCIDR must be a /32 within 10.50.1.0/29.
+      try:
+        - apply:
+            file: 01-ipv4-host-claim.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefixClaim
+            name: host-claim-v4-1
+            namespace: ($namespace)
+            timeout: 30s
+            for:
+              jsonPath:
+                path: '{.status.phase}'
+                value: 'Bound'
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" host-claim-v4-1 \
+                -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$cidr" ]; then
+                echo "FAIL: empty allocatedCIDR"; exit 1
+              fi
+              # Verify the prefix length is /32
+              prefix_len=$(echo "$cidr" | cut -d/ -f2)
+              if [ "$prefix_len" != "32" ]; then
+                echo "FAIL: expected /32, got /$prefix_len (cidr=$cidr)"; exit 1
+              fi
+              # Verify it is within 10.50.1.0/29 (10.50.1.0 .. 10.50.1.7)
+              host=$(echo "$cidr" | cut -d/ -f1)
+              python3 -c "
+              import ipaddress, sys
+              child = ipaddress.ip_network('$cidr')
+              parent = ipaddress.ip_network('10.50.1.0/29')
+              if not child.subnet_of(parent):
+                  print(f'FAIL: {child} not in 10.50.1.0/29')
+                  sys.exit(1)
+              print(f'OK {child} is in 10.50.1.0/29')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK ')): true
+
+    # ── Step 2: IPv4 /32 uniqueness ──────────────────────────────────────────
+    - name: ipv4-host-uniqueness
+      description: |
+        Second IPPrefixClaim with prefixLength: 32 receives a distinct /32
+        from the same pool; the two allocatedCIDRs must not overlap.
+      try:
+        - apply:
+            file: 02-ipv4-uniqueness.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefixClaim
+            name: host-claim-v4-2
+            namespace: ($namespace)
+            timeout: 30s
+            for:
+              jsonPath:
+                path: '{.status.phase}'
+                value: 'Bound'
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              cidr1=$(kubectl get ipprefixclaim -n "$NAMESPACE" host-claim-v4-1 \
+                -o jsonpath='{.status.allocatedCIDR}')
+              cidr2=$(kubectl get ipprefixclaim -n "$NAMESPACE" host-claim-v4-2 \
+                -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$cidr2" ]; then
+                echo "FAIL: empty allocatedCIDR for host-claim-v4-2"; exit 1
+              fi
+              if [ "$cidr1" = "$cidr2" ]; then
+                echo "FAIL: both claims got the same CIDR $cidr1"; exit 1
+              fi
+              python3 -c "
+              import ipaddress, sys
+              n1 = ipaddress.ip_network('$cidr1')
+              n2 = ipaddress.ip_network('$cidr2')
+              if n1.overlaps(n2):
+                  print(f'FAIL: {n1} and {n2} overlap')
+                  sys.exit(1)
+              print(f'OK {n1} and {n2} are distinct')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK ')): true
+
+    # ── Step 3: Pool exhaustion → HTTP 507 ───────────────────────────────────
+    - name: exhaustion-507
+      description: |
+        Fill all 8 host slots in the /29 pool, then assert the ninth claim
+        fails with HTTP 507 (Insufficient Storage). Also asserts that the
+        pool reports status.availableAddresses == 0.
+      try:
+        - apply:
+            file: 03-exhaustion.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefixClaim
+            namespace: ($namespace)
+            selector: host-test=true
+            timeout: 60s
+            for:
+              jsonPath:
+                path: '{.status.phase}'
+                value: 'Bound'
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              count=$(kubectl get ipprefixclaim -n "$NAMESPACE" -l host-test=true \
+                -o jsonpath='{.items[*].status.allocatedCIDR}' \
+                | tr ' ' '\n' | awk 'NF>0' | sort -u | awk 'END{print NR}')
+              if [ "$count" != "8" ]; then
+                echo "FAIL: expected 8 unique /32 CIDRs, got $count"
+                kubectl get ipprefixclaim -n "$NAMESPACE" -l host-test=true \
+                  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatedCIDR}{"\n"}{end}'
+                exit 1
+              fi
+              echo "OK 8 unique /32 addresses allocated across the /29"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK 8 unique /32 addresses')): true
+        - script:
+            content: |
+              set -e
+              avail=$(kubectl get ipprefix host-pool-v4 \
+                -o jsonpath='{.status.availableAddresses}' 2>/dev/null || echo "")
+              echo "pool status.availableAddresses=${avail}"
+              if [ -n "$avail" ] && [ "$avail" != "0" ]; then
+                echo "FAIL: expected availableAddresses=0, got $avail"
+                exit 1
+              fi
+              echo "OK pool availableAddresses is 0 (or unset — pool exhausted)"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK pool availableAddresses')): true
+        - create:
+            file: test-data/claim-overflow.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, '507') || contains($error, 'Insufficient Storage') || contains($error, 'pool exhausted')): true
+
+    # ── Step 4: IPv6 /128 bind ───────────────────────────────────────────────
+    - name: ipv6-host-claim-bound
+      description: |
+        IPPrefixClaim with prefixLength: 128 and ipFamily: IPv6 binds
+        synchronously from the 2001:db8::/126 pool (4 addresses).
+        status.allocatedCIDR must be a /128 subnet of 2001:db8::/126.
+      try:
+        - apply:
+            file: 04-ipv6-host-claim.yaml
+        - wait:
+            apiVersion: ipam.miloapis.com/v1alpha1
+            kind: IPPrefixClaim
+            name: host-claim-v6-1
+            namespace: ($namespace)
+            timeout: 30s
+            for:
+              jsonPath:
+                path: '{.status.phase}'
+                value: 'Bound'
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" host-claim-v6-1 \
+                -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$cidr" ]; then
+                echo "FAIL: empty allocatedCIDR"; exit 1
+              fi
+              prefix_len=$(echo "$cidr" | cut -d/ -f2)
+              if [ "$prefix_len" != "128" ]; then
+                echo "FAIL: expected /128, got /$prefix_len (cidr=$cidr)"; exit 1
+              fi
+              python3 -c "
+              import ipaddress, sys
+              child = ipaddress.ip_network('$cidr')
+              parent = ipaddress.ip_network('2001:db8::/126')
+              if not child.subnet_of(parent):
+                  print(f'FAIL: {child} not in 2001:db8::/126')
+                  sys.exit(1)
+              print(f'OK {child} is in 2001:db8::/126')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK ')): true
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipprefixclaim -n "$NAMESPACE" \
+                host-claim-v4-1 host-claim-v4-2 \
+                host-claim-v4-3 host-claim-v4-4 host-claim-v4-5 \
+                host-claim-v4-6 host-claim-v4-7 host-claim-v4-8 \
+                host-claim-v4-overflow \
+                host-claim-v6-1 \
+                --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipprefix host-pool-v4 host-pool-v6 \
+                --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipprefixclass host-class-v4 host-class-v6 \
+                --ignore-not-found >/dev/null 2>&1 || true
+              echo "host-address-allocation cleanup done"
+            check:
+              ($error == null): true

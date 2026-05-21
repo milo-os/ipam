@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/generic"
@@ -487,6 +488,42 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 	klog.V(2).InfoS("claim released and deleted", "claim", name)
 	metrics.RecordRelease("ipprefixclaim")
 	return releasing, true, nil
+}
+
+// DeleteCollection overrides the embedded genericregistry.Store.DeleteCollection so that
+// each individual claim is deleted through AllocatingREST.Delete rather than the store's
+// own Delete. This is necessary because the embedded Store's method set uses Go's static
+// dispatch: Store.DeleteCollection calls Store.Delete (not our override), so allocations
+// would never be released when the namespace controller sends a bulk DELETE for a
+// namespace being terminated.
+func (r *AllocatingREST) DeleteCollection(ctx context.Context, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions, listOptions *metainternalversion.ListOptions) (runtime.Object, error) {
+	listObj, err := r.List(ctx, listOptions)
+	if err != nil {
+		return nil, fmt.Errorf("list claims for deletecollection: %w", err)
+	}
+	claimList, ok := listObj.(*ipam.IPPrefixClaimList)
+	if !ok {
+		return nil, fmt.Errorf("expected *ipam.IPPrefixClaimList from List, got %T", listObj)
+	}
+
+	deletedList := &ipam.IPPrefixClaimList{}
+	var errs []error
+	for i := range claimList.Items {
+		deleted, _, err := r.Delete(ctx, claimList.Items[i].Name, deleteValidation, options.DeepCopy())
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("delete claim %s: %w", claimList.Items[i].Name, err))
+			}
+			continue
+		}
+		if c, ok := deleted.(*ipam.IPPrefixClaim); ok {
+			deletedList.Items = append(deletedList.Items, *c)
+		}
+	}
+	if len(errs) > 0 {
+		return deletedList, errors.Join(errs...)
+	}
+	return deletedList, nil
 }
 
 // releaseAndDelete is a single attempt of TX2: release the allocation row(s)

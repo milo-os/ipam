@@ -91,52 +91,6 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	return cidr.String(), nil
 }
 
-// AllocateSingleAddress implements PrefixAllocator.AllocateSingleAddress.
-func (a *PostgresPrefixAllocator) AllocateSingleAddress(ctx context.Context, tx pgx.Tx, poolKey string, ipFamily string, claimKey string, ownerProject string) (string, error) {
-	pool, err := lockAndDecodePool(ctx, tx, poolKey)
-	if err != nil {
-		return "", err
-	}
-
-	parents, err := parsePoolCIDR(pool)
-	if err != nil {
-		return "", err
-	}
-
-	existing, err := loadExistingAllocations(ctx, tx, poolKey)
-	if err != nil {
-		return "", err
-	}
-
-	hostBits := 32
-	if ipFamily == "IPv6" {
-		hostBits = 128
-	}
-
-	strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
-	if strategy == "" {
-		strategy = allocation.FirstFit
-	}
-
-	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, hostBits, strategy)
-	if err != nil {
-		if errors.Is(err, allocation.ErrPoolExhausted) {
-			return "", ErrPoolExhausted
-		}
-		return "", fmt.Errorf("compute next address: %w", err)
-	}
-
-	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, false, ownerProject); err != nil {
-		return "", err
-	}
-
-	updated := append(append([]net.IPNet(nil), existing...), *cidr)
-	publishPrefixUtilization(poolKey, ipFamily, parents, updated)
-
-	klog.V(2).InfoS("Allocated single address", "pool", poolKey, "addr", cidr.IP.String(), "claim", claimKey, "ownerProject", ownerProject)
-	return cidr.IP.String(), nil
-}
-
 // InsertObject implements PrefixAllocator.InsertObject.
 func (a *PostgresPrefixAllocator) InsertObject(ctx context.Context, tx pgx.Tx, key, kind, namespace, name string, data []byte) (int64, error) {
 	return insertObject(ctx, tx, key, kind, namespace, name, data)
