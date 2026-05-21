@@ -420,7 +420,7 @@ func allocationFailureReason(err error) string {
 // released by an aborted attempt, but no allocation is leaked because Release
 // is idempotent on the claim_key.
 func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
-	existing, err := r.IPPrefixClaimStorage.Get(ctx, name, &metav1.GetOptions{})
+	existing, err := r.Get(ctx, name, &metav1.GetOptions{})
 	if err != nil {
 		return nil, false, err
 	}

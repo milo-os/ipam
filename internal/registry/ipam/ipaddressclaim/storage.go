@@ -311,7 +311,7 @@ func allocationFailureReason(err error) string {
 // the IPPrefixClaim Delete handler for the full rationale; this is the same
 // pattern adapted to IPAddressClaim.
 func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
-	existing, err := r.IPAddressClaimStorage.Get(ctx, name, &metav1.GetOptions{})
+	existing, err := r.Get(ctx, name, &metav1.GetOptions{})
 	if err != nil {
 		return nil, false, err
 	}
