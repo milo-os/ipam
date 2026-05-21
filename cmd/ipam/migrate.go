@@ -57,7 +57,7 @@ func NewMigrateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			if err := setupGoose(db); err != nil {
 				return err
 			}
@@ -84,7 +84,7 @@ func NewMigrateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			if err := setupGoose(db); err != nil {
 				return err
 			}
@@ -103,7 +103,7 @@ func NewMigrateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			if err := setupGoose(db); err != nil {
 				return err
 			}
@@ -116,16 +116,15 @@ func NewMigrateCommand() *cobra.Command {
 				return fmt.Errorf("get db version: %w", err)
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "VERSION\tSTATUS\tFILE")
+			_, _ = fmt.Fprintln(w, "VERSION\tSTATUS\tFILE")
 			for _, m := range migrations {
 				status := "pending"
 				if m.Version <= current {
 					status = "applied"
 				}
-				fmt.Fprintf(w, "%d\t%s\t%s\n", m.Version, status, m.Source)
+				_, _ = fmt.Fprintf(w, "%d\t%s\t%s\n", m.Version, status, m.Source)
 			}
-			w.Flush()
-			return nil
+			return w.Flush()
 		},
 	})
 
@@ -137,7 +136,7 @@ func NewMigrateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			ctx := cmd.Context()
 			if ctx == nil {
 				ctx = context.Background()

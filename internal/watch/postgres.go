@@ -709,6 +709,7 @@ func (w *postgresWatch) sendInitialEventList(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to query objects for initial events: %w", err)
 	}
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var key string
@@ -716,7 +717,6 @@ func (w *postgresWatch) sendInitialEventList(ctx context.Context) error {
 		var data []byte
 
 		if err := rows.Scan(&key, &rv, &data); err != nil {
-			rows.Close()
 			return fmt.Errorf("failed to scan object row: %w", err)
 		}
 
@@ -743,15 +743,12 @@ func (w *postgresWatch) sendInitialEventList(ctx context.Context) error {
 				w.lastRV = rv
 			}
 		case <-w.done:
-			rows.Close()
 			return nil
 		}
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return err
 	}
-	rows.Close()
 
 	// Commit the snapshot tx. After this point we're no longer pinning the
 	// snapshot's xmin so new transactions can advance the horizon, letting
@@ -903,7 +900,7 @@ func (w *postgresWatch) pollChanges(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to query changelog: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var n int
 	for rows.Next() {

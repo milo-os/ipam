@@ -45,10 +45,9 @@ spec:
           port: 8443
 
   # Egress: postgres (5432), DNS (53), kube-apiserver (6443/443 in
-  # kube-system for SubjectAccessReview / TokenReview), and NATS (4222 in
-  # any namespace, no-op when nats-streams isn't installed). All cross-
-  # namespace peers are namespaceSelector-only for the kustomize
-  # label-transformer reason explained above.
+  # kube-system for SubjectAccessReview / TokenReview). All cross-namespace
+  # peers are namespaceSelector-only for the kustomize label-transformer
+  # reason explained above.
   egress:
     # DNS — both UDP and TCP for large responses.
     - to:
@@ -68,15 +67,6 @@ spec:
       ports:
         - protocol: TCP
           port: 5432
-    # NATS for the optional events stream component. Egress to any
-    # namespace on 4222 — selector wide-open because the nats-streams
-    # component lands NATS in a different namespace per-environment and
-    # the IPAM apiserver should not need to encode that.
-    - to:
-        - namespaceSelector: {}
-      ports:
-        - protocol: TCP
-          port: 4222
     # Kubernetes apiserver for SubjectAccessReview / TokenReview calls
     # back to the front-proxy. Cluster's apiserver service is in
     # kube-system on 6443 (kind/kubeadm) or 443 (some distros).
