@@ -49,9 +49,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1
+          version: v2.12
 
   kustomize:
     name: Validate kustomize overlays
@@ -145,10 +145,10 @@ jobs:
       # task is idempotent (status check skips if vendor/grafonnet-vX.Y.Z
       # already exists), so re-runs are a no-op.
       - name: Verify dashboards (jsonnet → JSON in sync)
-        run: task observability:verify-dashboards
+        run: task --yes observability:verify-dashboards
 
       - name: Verify alerts (promtool check rules)
-        run: task observability:verify-alerts
+        run: task --yes observability:verify-alerts
 
       - name: Verify rendered manifests (kubeconform)
-        run: task observability:verify-manifests
+        run: task --yes observability:verify-manifests
