@@ -292,7 +292,7 @@ func (s *Store) GetList(ctx context.Context, key string, opts storage.ListOption
 	if err != nil {
 		return storage.NewInternalError(fmt.Errorf("failed to list objects: %w", err))
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		var data []byte
