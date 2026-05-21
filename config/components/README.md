@@ -11,7 +11,6 @@ and order-insensitive within an overlay (with a few documented exceptions).
 | `cert-manager-ca`        | Namespaced CA `Issuer` + `Certificate` (overrides selfsigned default)    |
 | `postgres`               | Bitnami PostgreSQL `HelmRelease` (the only supported storage backend)    |
 | `postgres-migrations`    | Job + ConfigMap that applies `migrations/*.sql`                          |
-| `nats-streams`           | NATS JetStream stream + consumer for IPAM events                         |
 | `observability`          | `ServiceMonitor` + `GrafanaDashboard` resources                          |
 | `k6-performance-tests`   | k6 SA/RBAC + `TestRun` resources for the perf suite                      |
 
