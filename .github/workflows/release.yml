@@ -2,66 +2,40 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
   release:
     types: ["published"]
 
 jobs:
   validate-kustomize:
-    name: Validate kustomize manifests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Install kustomize
-        run: |
-          curl -sLo /tmp/kustomize.tgz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
-          tar -xzf /tmp/kustomize.tgz -C /tmp
-          sudo mv /tmp/kustomize /usr/local/bin/
-      - run: kustomize build config/overlays/dev/ > /dev/null
-      - run: kustomize build config/overlays/test-infra/ > /dev/null
+    uses: datum-cloud/actions/.github/workflows/validate-kustomize.yaml@v1.14.0
 
   publish-container-image:
-    name: Publish container image
-    needs: [validate-kustomize]
-    runs-on: ubuntu-latest
+    needs:
+      - validate-kustomize
     permissions:
       id-token: write
       contents: read
       packages: write
       attestations: write
-    steps:
-      - uses: actions/checkout@v6
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
+    with:
+      image-name: ipam-apiserver
+      registry-organization: milo-os
+      platforms: linux/amd64,linux/arm64
+    secrets: inherit
 
-      - uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/ipam-apiserver
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=,format=short
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ github.ref_name }}
-            GIT_COMMIT=${{ github.sha }}
-            GIT_TREE_STATE=clean
+  publish-kustomize-bundle:
+    needs:
+      - validate-kustomize
+      - publish-container-image
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.14.0
+    with:
+      bundle-name: ghcr.io/milo-os/ipam-kustomize
+      bundle-path: config
+      image-overlays: config/base
+      image-name: ghcr.io/milo-os/ipam-apiserver
+    secrets: inherit
