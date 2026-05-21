@@ -900,7 +900,7 @@ func (w *postgresWatch) pollChanges(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("failed to query changelog: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var n int
 	for rows.Next() {

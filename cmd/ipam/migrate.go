@@ -136,7 +136,7 @@ func NewMigrateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer db.Close()
+			defer func() { _ = db.Close() }()
 			ctx := cmd.Context()
 			if ctx == nil {
 				ctx = context.Background()
