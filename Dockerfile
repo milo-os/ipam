@@ -10,6 +10,10 @@ ARG BUILD_DATE=unknown
 # RACE: pass --build-arg RACE=-race to produce a race-instrumented binary.
 # Empty (default) builds the normal static binary.
 ARG RACE=""
+# Cross-compilation targets — set automatically by docker buildx for
+# multi-platform builds, enabling native Go cross-compilation without QEMU.
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 
 WORKDIR /workspace
 
@@ -27,17 +31,26 @@ COPY internal/ internal/
 COPY migrations/ migrations/
 
 # Build the binary. Race builds need CGO (and a real libc at runtime); the
-# default build keeps CGO_ENABLED=0 and is statically linked. GOARCH is left
-# unset so Go targets the buildx target architecture — race builds need a
-# cgo toolchain that matches, and the kind cluster on Apple Silicon runs
-# arm64 not amd64.
-RUN CGO_ENABLED=$([ -n "$RACE" ] && echo 1 || echo 0) GOOS=linux \
-    go build ${RACE} \
-    -ldflags="-X 'go.miloapis.com/ipam/internal/version.Version=${VERSION}' \
-              -X 'go.miloapis.com/ipam/internal/version.GitCommit=${GIT_COMMIT}' \
-              -X 'go.miloapis.com/ipam/internal/version.GitTreeState=${GIT_TREE_STATE}' \
-              -X 'go.miloapis.com/ipam/internal/version.BuildDate=${BUILD_DATE}'" \
-    -a -o ipam ./cmd/ipam
+# default build keeps CGO_ENABLED=0 and is statically linked.
+# For non-race builds, GOARCH=$TARGETARCH enables native Go cross-compilation
+# on the amd64 build host — no QEMU needed for arm64.
+RUN if [ -n "$RACE" ]; then \
+      CGO_ENABLED=1 GOOS=linux \
+      go build ${RACE} \
+        -ldflags="-X 'go.miloapis.com/ipam/internal/version.Version=${VERSION}' \
+                  -X 'go.miloapis.com/ipam/internal/version.GitCommit=${GIT_COMMIT}' \
+                  -X 'go.miloapis.com/ipam/internal/version.GitTreeState=${GIT_TREE_STATE}' \
+                  -X 'go.miloapis.com/ipam/internal/version.BuildDate=${BUILD_DATE}'" \
+        -o ipam ./cmd/ipam ; \
+    else \
+      CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+      go build \
+        -ldflags="-X 'go.miloapis.com/ipam/internal/version.Version=${VERSION}' \
+                  -X 'go.miloapis.com/ipam/internal/version.GitCommit=${GIT_COMMIT}' \
+                  -X 'go.miloapis.com/ipam/internal/version.GitTreeState=${GIT_TREE_STATE}' \
+                  -X 'go.miloapis.com/ipam/internal/version.BuildDate=${BUILD_DATE}'" \
+        -o ipam ./cmd/ipam ; \
+    fi
 
 # Runtime stage. distroless/base ships glibc so it works for both the default
 # CGO_ENABLED=0 static build and the CGO_ENABLED=1 race build.
