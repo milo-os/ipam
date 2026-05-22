@@ -78,3 +78,9 @@ func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 
 	return &IPAllocationStorage{store}, &IPAllocationStatusStorage{store: &statusStore}, nil
 }
+
+// Compile-time interface assertions.
+var (
+	_ rest.Storage = (*IPAllocationStorage)(nil)
+	_ rest.Storage = (*IPAllocationStatusStorage)(nil)
+)

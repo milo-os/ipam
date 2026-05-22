@@ -27,18 +27,18 @@ func tenantsFromPoolKey(poolKey string) (project, org string) {
 }
 
 // PostgresPrefixAllocator implements PrefixAllocator atop ipam_objects and
-// ipam_prefix_allocations. It performs the synchronous allocation sequence
+// ipam_cidr_allocations. It performs the synchronous allocation sequence
 // described in the architecture:
 //
 //	BEGIN
 //	  SELECT data FROM ipam_objects WHERE key=$poolKey FOR UPDATE
-//	  SELECT allocated_cidr FROM ipam_prefix_allocations WHERE pool_key=$poolKey
+//	  SELECT allocated_cidr FROM ipam_cidr_allocations WHERE pool_key=$poolKey
 //	  -- in-Go: FindFirstAvailableBlock(parents, existing, prefixLen, strategy)
-//	  INSERT INTO ipam_prefix_allocations (...)
+//	  INSERT INTO ipam_cidr_allocations (...)
 //	COMMIT
 //
 // The pool row's lock is what serialises concurrent claims; the
-// ipam_prefix_allocations rows are not individually locked, so the work is
+// ipam_cidr_allocations rows are not individually locked, so the work is
 // O(existing) per allocation rather than O(pool size).
 type PostgresPrefixAllocator struct{}
 
@@ -72,7 +72,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", fmt.Errorf("compute next prefix: %w", err)
 	}
 
-	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, false, ownerProject); err != nil {
+	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, ownerProject); err != nil {
 		return "", err
 	}
 
@@ -149,7 +149,7 @@ func labelsFromData(data []byte) []byte {
 // rows from RETURNING; in that case the gauge update is silently skipped.
 func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimKey string) error {
 	rows, err := tx.Query(ctx,
-		`DELETE FROM ipam_prefix_allocations WHERE claim_key = $1
+		`DELETE FROM ipam_cidr_allocations WHERE claim_key = $1
 		 RETURNING pool_key, ip_family`, claimKey,
 	)
 	if err != nil {
@@ -353,7 +353,7 @@ func loadExistingAllocations(ctx context.Context, tx pgx.Tx, poolKey string) ([]
 	defer metrics.ObserveQuery("load_existing_allocations", time.Now())
 	rows, err := tx.Query(ctx,
 		`SELECT host(allocated_cidr) || '/' || masklen(allocated_cidr)
-		   FROM ipam_prefix_allocations
+		   FROM ipam_cidr_allocations
 		  WHERE pool_key = $1`,
 		poolKey,
 	)
@@ -423,13 +423,13 @@ func publishPrefixUtilization(poolKey, ipFamily string, parents, allocated []net
 }
 
 // insertPrefixAllocation records a new allocation row.
-func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, poolKey, cidr, claimKey, ipFamily string, isChildPool bool, ownerProject string) error {
+func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, poolKey, cidr, claimKey, ipFamily string, ownerProject string) error {
 	defer metrics.ObserveQuery("insert_allocation", time.Now())
 	_, err := tx.Exec(ctx,
-		`INSERT INTO ipam_prefix_allocations
-		    (pool_key, allocated_cidr, claim_key, ip_family, is_child_pool, reclaim_policy, owner_project)
-		 VALUES ($1, $2, $3, $4, $5, 'Delete', $6)`,
-		poolKey, cidr, claimKey, ipFamily, isChildPool, ownerProject,
+		`INSERT INTO ipam_cidr_allocations
+		    (pool_key, allocated_cidr, claim_key, ip_family, reclaim_policy, owner_project)
+		 VALUES ($1, $2, $3, $4, 'Delete', $5)`,
+		poolKey, cidr, claimKey, ipFamily, ownerProject,
 	)
 	if err != nil {
 		return fmt.Errorf("insert allocation: %w", err)

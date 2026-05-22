@@ -41,20 +41,46 @@ CREATE INDEX IF NOT EXISTS idx_ipam_objects_key_prefix ON ipam_objects (key text
 -- checks used in label-selector pushdown.
 CREATE INDEX IF NOT EXISTS idx_ipam_objects_labels     ON ipam_objects USING gin(labels jsonb_path_ops);
 
-CREATE TABLE IF NOT EXISTS ipam_prefix_allocations (
+-- Kind-scoped expression indexes for IPPool.
+CREATE INDEX IF NOT EXISTS idx_ipam_ippool_ip_family
+    ON ipam_objects ((ipam_data_to_jsonb(data) -> 'spec' ->> 'ipFamily'))
+    WHERE kind = 'IPPool';
+
+CREATE INDEX IF NOT EXISTS idx_ipam_ippool_parent_pool_ref_name
+    ON ipam_objects ((ipam_data_to_jsonb(data) -> 'spec' -> 'parentPoolRef' ->> 'name'))
+    WHERE kind = 'IPPool';
+
+-- Kind-scoped expression indexes for IPAllocation.
+CREATE INDEX IF NOT EXISTS idx_ipam_ipallocation_ip_family
+    ON ipam_objects ((ipam_data_to_jsonb(data) -> 'spec' ->> 'ipFamily'))
+    WHERE kind = 'IPAllocation';
+
+CREATE INDEX IF NOT EXISTS idx_ipam_ipallocation_pool_ref_name
+    ON ipam_objects ((ipam_data_to_jsonb(data) -> 'spec' -> 'poolRef' ->> 'name'))
+    WHERE kind = 'IPAllocation';
+
+-- Kind-scoped expression indexes for IPClaim.
+CREATE INDEX IF NOT EXISTS idx_ipam_ipclaim_ip_family
+    ON ipam_objects ((ipam_data_to_jsonb(data) -> 'spec' ->> 'ipFamily'))
+    WHERE kind = 'IPClaim';
+
+CREATE INDEX IF NOT EXISTS idx_ipam_ipclaim_pool_ref_name
+    ON ipam_objects ((ipam_data_to_jsonb(data) -> 'spec' -> 'poolRef' ->> 'name'))
+    WHERE kind = 'IPClaim';
+
+CREATE TABLE IF NOT EXISTS ipam_cidr_allocations (
     id             BIGSERIAL PRIMARY KEY,
     pool_key       TEXT NOT NULL REFERENCES ipam_objects (key) ON DELETE RESTRICT,
     allocated_cidr CIDR NOT NULL,
     claim_key      TEXT NOT NULL UNIQUE,
     ip_family      TEXT NOT NULL CHECK (ip_family IN ('IPv4', 'IPv6')),
-    is_child_pool  BOOLEAN NOT NULL DEFAULT FALSE,
     reclaim_policy TEXT NOT NULL DEFAULT 'Delete',
     owner_project  TEXT NOT NULL DEFAULT '',
     allocated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_ipam_prefix_alloc_pool    ON ipam_prefix_allocations (pool_key);
-CREATE INDEX IF NOT EXISTS idx_ipam_prefix_alloc_project ON ipam_prefix_allocations (owner_project);
+CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_pool    ON ipam_cidr_allocations (pool_key);
+CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_project ON ipam_cidr_allocations (owner_project);
 
 CREATE TABLE IF NOT EXISTS ipam_asn_allocations (
     id             BIGSERIAL PRIMARY KEY,
@@ -107,7 +133,7 @@ DROP TRIGGER IF EXISTS ipam_changelog_notify ON ipam_changelog;
 DROP FUNCTION IF EXISTS ipam_notify_changelog();
 DROP TABLE IF EXISTS ipam_changelog;
 DROP TABLE IF EXISTS ipam_asn_allocations;
-DROP TABLE IF EXISTS ipam_prefix_allocations;
+DROP TABLE IF EXISTS ipam_cidr_allocations;
 DROP TABLE IF EXISTS ipam_objects;
 DROP FUNCTION IF EXISTS ipam_data_to_jsonb(bytea);
 DROP SEQUENCE IF EXISTS ipam_resource_version_seq;

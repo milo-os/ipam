@@ -174,7 +174,7 @@ var (
 	// Suggested query_name values:
 	//   "select_pool_for_update" — SELECT data FROM ipam_objects ... FOR UPDATE
 	//   "load_existing_allocations" — SELECT existing CIDRs/ASNs for the pool
-	//   "insert_allocation" — INSERT INTO ipam_prefix_allocations / ipam_asn_allocations
+	//   "insert_allocation" — INSERT INTO ipam_cidr_allocations / ipam_asn_allocations
 	//   "insert_object" — INSERT INTO ipam_objects (claim row + child prefix)
 	//   "update_pool_status" — UPDATE ipam_objects ... when the pool status row is rewritten
 	PostgresQueryDuration = metrics.NewHistogramVec(

@@ -55,7 +55,7 @@ func (s *IPPoolStatusStorage) ConvertToTable(ctx context.Context, obj runtime.Ob
 // *genericregistry.Store handles root-pool CRUD and list/watch unchanged;
 // the Create override only diverts when ParentPoolRef is set, in which case
 // it runs a single allocation transaction against the parent pool. Delete
-// rejects any pool that still has rows in ipam_prefix_allocations so callers
+// rejects any pool that still has rows in ipam_cidr_allocations so callers
 // see a deterministic 409.
 type AllocatingIPPoolREST struct {
 	*genericregistry.Store
@@ -202,8 +202,8 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 }
 
 // Delete rejects any pool — root or child — that still has allocations
-// recorded in ipam_prefix_allocations. For child pools with zero
-// allocations the row in ipam_prefix_allocations representing the child's
+// recorded in ipam_cidr_allocations. For child pools with zero
+// allocations the row in ipam_cidr_allocations representing the child's
 // own reservation against its parent must also be released, in the same
 // transaction as the object delete.
 func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
@@ -224,7 +224,7 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	poolKey := poolStorageKey(name)
 	var count int
 	if err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM ipam_prefix_allocations WHERE pool_key = $1`,
+		`SELECT COUNT(*) FROM ipam_cidr_allocations WHERE pool_key = $1`,
 		poolKey,
 	).Scan(&count); err != nil {
 		return nil, false, fmt.Errorf("count active allocations for %q: %w", name, err)
