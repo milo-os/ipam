@@ -15,7 +15,7 @@ components:
   - ../../components/postgres
 
 images:
-  - name: ghcr.io/datum-cloud/ipam-apiserver
+  - name: ghcr.io/milo-os/ipam
     newName: ipam-apiserver
     newTag: dev
 
