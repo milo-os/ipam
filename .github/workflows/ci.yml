@@ -178,6 +178,8 @@ jobs:
 
       - name: Install dependencies (postgres via Flux HelmRelease)
         run: |
+          # Namespace must exist before the postgres HelmRelease can be applied.
+          kubectl create namespace ipam-system --dry-run=client -o yaml | kubectl apply -f -
           # Apply the postgres HelmRelease + HelmRepository using the test-infra kubeconfig.
           # The task wrapper resolves KUBECONFIG via the test-infra task vars, so we call
           # kubectl directly with our exported KUBECONFIG here.
