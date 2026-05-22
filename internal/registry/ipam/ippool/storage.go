@@ -138,28 +138,37 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 	parentKey := poolStorageKey(parentName)
 	childKey := poolStorageKey(pool.Name)
 
+	// Resolve the parent pool's IPFamily before entering the transaction so
+	// the explicit value can be passed to AllocatePrefix. IPFamily is
+	// immutable, so reading it outside the transaction is safe.
+	parentObj, err := r.Store.Get(ctx, parentName, &metav1.GetOptions{})
+	if err != nil {
+		return nil, apierrors.NewBadRequest("parent IPPool not found")
+	}
+	parentPool, ok := parentObj.(*ipam.IPPool)
+	if !ok {
+		return nil, fmt.Errorf("unexpected parent pool type %T", parentObj)
+	}
+	ipFamily := string(parentPool.Spec.IPFamily)
+
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin child-pool allocation transaction: %w", err)
 	}
 
-	// ipFamily is recorded on the allocation row and used as a metric label.
-	// Pass empty here — child pools inherit family from the parent, which the
-	// allocator has loaded inside lockAndDecodeIPPool; the row is still
-	// keyed by pool_key which is sufficient for subsequent allocation work.
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, "", childKey, "")
+	cidr, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, ipFamily, childKey, "")
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, mapAllocationError(err)
 	}
 
-	pool.Status.CIDR = cidr
+	pool.Status.AllocatedCIDR = cidr
 	pool.Status.Phase = ipam.PoolReady
 	pool.Status.Conditions = []metav1.Condition{{
-		Type:               "Ready",
+		Type:               "Allocated",
 		Status:             metav1.ConditionTrue,
-		Reason:             "PoolReady",
-		Message:            "IPPool is ready for allocation",
+		Reason:             "AllocationSucceeded",
+		Message:            fmt.Sprintf("CIDR %s allocated from %s", cidr, parentName),
 		LastTransitionTime: metav1.Now(),
 	}}
 	if _, ipnet, perr := net.ParseCIDR(cidr); perr == nil {

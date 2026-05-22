@@ -124,10 +124,10 @@ func convert_v1alpha1_IPPool_To_ipam(in *IPPool, out *ipam.IPPool) error {
 		Visibility:    in.Spec.Visibility,
 	}
 	out.Status = ipam.IPPoolStatus{
-		Phase:      ipam.PoolPhase(in.Status.Phase),
-		CIDR:       in.Status.CIDR,
-		Capacity:   ipam.PoolCapacity(in.Status.Capacity),
-		Conditions: toIpamConditions(in.Status.Conditions),
+		Phase:         ipam.PoolPhase(in.Status.Phase),
+		AllocatedCIDR: in.Status.AllocatedCIDR,
+		Capacity:      ipam.PoolCapacity(in.Status.Capacity),
+		Conditions:    toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }
@@ -143,10 +143,10 @@ func convert_ipam_IPPool_To_v1alpha1(in *ipam.IPPool, out *IPPool) error {
 		Visibility:    in.Spec.Visibility,
 	}
 	out.Status = IPPoolStatus{
-		Phase:      PoolPhase(in.Status.Phase),
-		CIDR:       in.Status.CIDR,
-		Capacity:   PoolCapacity(in.Status.Capacity),
-		Conditions: toIpamConditions(in.Status.Conditions),
+		Phase:         PoolPhase(in.Status.Phase),
+		AllocatedCIDR: in.Status.AllocatedCIDR,
+		Capacity:      PoolCapacity(in.Status.Capacity),
+		Conditions:    toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }
@@ -186,15 +186,13 @@ func convert_v1alpha1_IPAllocation_To_ipam(in *IPAllocation, out *ipam.IPAllocat
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec = ipam.IPAllocationSpec{
-		CIDR:     in.Spec.CIDR,
 		IPFamily: ipam.IPFamily(in.Spec.IPFamily),
 		PoolRef:  ipam.LocalRef{Name: in.Spec.PoolRef.Name},
 	}
 	out.Status = ipam.IPAllocationStatus{
-		Phase:      ipam.AllocationPhase(in.Status.Phase),
-		CIDR:       in.Status.CIDR,
-		Capacity:   ipam.PoolCapacity(in.Status.Capacity),
-		Conditions: toIpamConditions(in.Status.Conditions),
+		Phase:         ipam.AllocationPhase(in.Status.Phase),
+		AllocatedCIDR: in.Status.AllocatedCIDR,
+		Conditions:    toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }
@@ -202,15 +200,13 @@ func convert_ipam_IPAllocation_To_v1alpha1(in *ipam.IPAllocation, out *IPAllocat
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec = IPAllocationSpec{
-		CIDR:     in.Spec.CIDR,
 		IPFamily: IPFamily(in.Spec.IPFamily),
 		PoolRef:  LocalRef{Name: in.Spec.PoolRef.Name},
 	}
 	out.Status = IPAllocationStatus{
-		Phase:      AllocationPhase(in.Status.Phase),
-		CIDR:       in.Status.CIDR,
-		Capacity:   PoolCapacity(in.Status.Capacity),
-		Conditions: toIpamConditions(in.Status.Conditions),
+		Phase:         AllocationPhase(in.Status.Phase),
+		AllocatedCIDR: in.Status.AllocatedCIDR,
+		Conditions:    toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }

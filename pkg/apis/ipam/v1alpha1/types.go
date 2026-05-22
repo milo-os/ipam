@@ -123,7 +123,7 @@ type PoolCapacity struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,shortName=ippool
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.status.cidr`
+// +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.status.allocatedCIDR`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -163,7 +163,7 @@ type IPPoolStatus struct {
 	// +optional
 	Phase PoolPhase `json:"phase,omitempty"`
 	// +optional
-	CIDR string `json:"cidr,omitempty"`
+	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
 	// +optional
 	Capacity PoolCapacity `json:"capacity,omitempty"`
 	// +optional
@@ -187,7 +187,7 @@ type IPPoolList struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=ipalloc
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.spec.cidr`
+// +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.status.allocatedCIDR`
 // +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.spec.poolRef.name`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
@@ -204,7 +204,6 @@ type IPAllocation struct {
 }
 
 type IPAllocationSpec struct {
-	CIDR     string   `json:"cidr"`
 	IPFamily IPFamily `json:"ipFamily"`
 	PoolRef  LocalRef `json:"poolRef"`
 }
@@ -213,9 +212,7 @@ type IPAllocationStatus struct {
 	// +optional
 	Phase AllocationPhase `json:"phase,omitempty"`
 	// +optional
-	CIDR string `json:"cidr,omitempty"`
-	// +optional
-	Capacity PoolCapacity `json:"capacity,omitempty"`
+	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type

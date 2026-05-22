@@ -2,7 +2,7 @@
 // resource. Root pools are persisted directly by the underlying store; child
 // pools (pools whose CIDR is sub-allocated out of a parent IPPool) are created
 // synchronously through the AllocatingIPPoolREST wrapper so the response
-// carries the assigned status.cidr.
+// carries the assigned status.allocatedCIDR.
 package ippool
 
 import (
@@ -85,7 +85,7 @@ func (ipPoolStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
 	if err != nil {
 		return
 	}
-	p.Status.CIDR = ipnet.String()
+	p.Status.AllocatedCIDR = ipnet.String()
 	// Use CountAddresses so the initial Total uses the same unit as the
 	// post-allocation persistPoolCapacity refresh; seed Available so callers
 	// can observe "available decreased" after the first allocation.
@@ -93,9 +93,9 @@ func (ipPoolStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
 	p.Status.Capacity = ipam.PoolCapacity{Total: total, Available: total}
 	p.Status.Phase = ipam.PoolReady
 	p.Status.Conditions = []metav1.Condition{{
-		Type:               "Ready",
+		Type:               "Allocated",
 		Status:             metav1.ConditionTrue,
-		Reason:             "PoolReady",
+		Reason:             "AllocationSucceeded",
 		Message:            "IPPool is ready for allocation",
 		LastTransitionTime: metav1.Now(),
 	}}

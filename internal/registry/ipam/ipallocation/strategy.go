@@ -74,9 +74,6 @@ func (ipAllocationStrategy) ValidateUpdate(_ context.Context, obj, old runtime.O
 	o := old.(*ipam.IPAllocation)
 	allErrs := validateIPAllocation(n)
 	specPath := field.NewPath("spec")
-	if n.Spec.CIDR != o.Spec.CIDR {
-		allErrs = append(allErrs, field.Forbidden(specPath.Child("cidr"), "spec.cidr is immutable"))
-	}
 	if n.Spec.IPFamily != o.Spec.IPFamily {
 		allErrs = append(allErrs, field.Forbidden(specPath.Child("ipFamily"), "spec.ipFamily is immutable"))
 	}

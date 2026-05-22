@@ -42,7 +42,7 @@ spec:
     - name: create-region-1-pool
       description: |
         Child IPPool hier-region-1 with parentPoolRef=hier-env, prefixLength=12.
-        The server allocates a /12 from hier-env and writes it to status.cidr.
+        The server allocates a /12 from hier-env and writes it to status.allocatedCIDR.
       try:
         - create:
             file: test-data/region-1-pool.yaml
@@ -60,9 +60,9 @@ spec:
                 echo "FAIL: hier-region-1 not Ready after 30s (phase=$phase)"
                 exit 1
               fi
-              cidr=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.cidr}')
+              cidr=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$cidr" ]; then
-                echo "FAIL: hier-region-1 status.cidr empty"
+                echo "FAIL: hier-region-1 status.allocatedCIDR empty"
                 exit 1
               fi
               python3 -c "
@@ -98,8 +98,8 @@ spec:
                 echo "FAIL: hier-region-2 not Ready after 30s (phase=$phase)"
                 exit 1
               fi
-              c1=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.cidr}')
-              c2=$(kubectl get ippool hier-region-2 -o jsonpath='{.status.cidr}')
+              c1=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.allocatedCIDR}')
+              c2=$(kubectl get ippool hier-region-2 -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$c1" ] || [ -z "$c2" ]; then
                 echo "FAIL: missing region CIDR (c1=$c1 c2=$c2)"
                 exit 1
@@ -151,7 +151,7 @@ spec:
             content: |
               set -e
               leaf_cidr=$(kubectl get ipclaim -n "$NAMESPACE" hier-leaf-claim -o jsonpath='{.status.allocatedCIDR}')
-              region_cidr=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.cidr}')
+              region_cidr=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$leaf_cidr" ] || [ -z "$region_cidr" ]; then
                 echo "FAIL: missing CIDR (leaf=$leaf_cidr region=$region_cidr)"
                 exit 1

@@ -282,13 +282,12 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			Namespace: claim.Namespace,
 		},
 		Spec: ipam.IPAllocationSpec{
-			CIDR:     cidr,
 			IPFamily: claim.Spec.IPFamily,
 			PoolRef:  ipam.LocalRef{Name: poolName},
 		},
 		Status: ipam.IPAllocationStatus{
-			Phase: ipam.AllocationReady,
-			CIDR:  cidr,
+			Phase:         ipam.AllocationReady,
+			AllocatedCIDR: cidr,
 		},
 	}
 	allocData, err := runtime.Encode(r.codec, alloc)
