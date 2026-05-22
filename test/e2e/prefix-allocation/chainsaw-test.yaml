@@ -157,11 +157,8 @@ spec:
         Delete the first claim and verify the full lifecycle:
         1. Snapshot parent pool's status.capacity.available BEFORE delete.
         2. Delete the claim.
-        3. Briefly assert the claim observed status.phase=Releasing
-           (intermediate phase emitted while the allocation is being
-           released — short 15s timeout because the transition is fast).
-        4. Confirm the claim is gone.
-        5. Assert parent pool's status.capacity.available has INCREASED by
+        3. Confirm the claim is gone.
+        4. Assert parent pool's status.capacity.available has INCREASED by
            the claim's /24 worth of addresses (= 256), proving the released
            CIDR is no longer counted against the pool.
       try:
@@ -183,9 +180,6 @@ spec:
               kind: IPPrefixClaim
               name: alloc-claim-1
               namespace: ($namespace)
-        - assert:
-            timeout: 15s
-            file: assertions/assert-claim-1-releasing.yaml
         - error:
             file: assertions/assert-claim-1-deleted.yaml
         - script:

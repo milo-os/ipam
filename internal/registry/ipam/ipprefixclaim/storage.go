@@ -234,21 +234,21 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		isCrossProject = !id.IsPlatform() &&
 			claim.Spec.PrefixRef.ProjectRef != nil &&
 			claim.Spec.PrefixRef.ProjectRef.Name != id.Name
-		if isCrossProject {
-			poolKey = tenant.Identity{Name: claim.Spec.PrefixRef.ProjectRef.Name}.ResourceKey("ipprefixes", poolName)
-		} else {
-			poolKey = id.ResourceKey("ipprefixes", poolName)
-		}
+		// IPPrefix is cluster-scoped; pools are always stored at the platform
+		// key regardless of the calling project's tenant identity. The tenant
+		// identity governs ownerRef stamping and cross-project authorization,
+		// not where the pool row lives in ipam_objects.
+		poolKey = "/ipam.miloapis.com/ipprefixes/" + poolName
 	} else {
-		// PrefixSelector path. The selector's optional ProjectRef lets a
-		// claim target a specific project's pools; absent that, scope to
-		// the caller's own project (or platform).
-		ownerProject := id.Name
+		// PrefixSelector path. IPPrefix pools are cluster-scoped so they are
+		// always stored at platform keys. Pass ownerProject="" so listPools
+		// scans the platform prefix; the label selector and ipFamily filter
+		// narrow the result to the appropriate pool.
 		if claim.Spec.PrefixSelector.ProjectRef != nil {
-			ownerProject = claim.Spec.PrefixSelector.ProjectRef.Name
-			isCrossProject = !id.IsPlatform() && ownerProject != id.Name
+			isCrossProject = !id.IsPlatform() &&
+				claim.Spec.PrefixSelector.ProjectRef.Name != id.Name
 		}
-		resolved, rerr := allocator.ResolvePrefixPool(ctx, tx, claim.Spec.PrefixSelector.LabelSelector, ownerProject, string(claim.Spec.IPFamily))
+		resolved, rerr := allocator.ResolvePrefixPool(ctx, tx, claim.Spec.PrefixSelector.LabelSelector, "", string(claim.Spec.IPFamily))
 		if rerr != nil {
 			_ = tx.Rollback(ctx)
 			if errors.Is(rerr, allocator.ErrPoolNotFound) {

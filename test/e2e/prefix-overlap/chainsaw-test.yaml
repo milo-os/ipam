@@ -40,16 +40,20 @@ spec:
       try:
         - create:
             file: test-data/claims-10.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            namespace: ($namespace)
-            selector: overlap-test=true
-            timeout: 60s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            timeout: 90s
+            content: |
+              set -e
+              for name in overlap-claim-1 overlap-claim-2 overlap-claim-3 overlap-claim-4 overlap-claim-5 \
+                          overlap-claim-6 overlap-claim-7 overlap-claim-8 overlap-claim-9 overlap-claim-10; do
+                kubectl wait ipprefixclaim -n "$NAMESPACE" "$name" \
+                  --for=jsonpath='{.status.phase}'=Bound --timeout=60s
+              done
+            check:
+              ($error == null): true
 
     - name: assert-unique-non-overlapping
       description: All 10 allocatedCIDR values must be unique
