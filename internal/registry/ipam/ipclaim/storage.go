@@ -135,7 +135,7 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 // Create runs the standard create pipeline (system-metadata fill, strategy
 // PrepareForCreate, validation), then drives the allocator inside a
 // short-lived transaction. The transaction persists the claim row, the
-// allocation row in ipam_prefix_allocations, and the IPAllocation API object
+// allocation row in ipam_cidr_allocations, and the IPAllocation API object
 // together so the response body carries a CIDR that has already been
 // reserved.
 func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
@@ -533,3 +533,12 @@ func mapAllocationError(err error) error {
 		return apierrors.NewInternalError(err)
 	}
 }
+
+// Compile-time interface assertions.
+var (
+	_ rest.Storage           = (*AllocatingREST)(nil)
+	_ rest.Creater           = (*AllocatingREST)(nil)
+	_ rest.GracefulDeleter   = (*AllocatingREST)(nil)
+	_ rest.CollectionDeleter = (*AllocatingREST)(nil)
+	_ rest.Storage           = (*IPClaimStatusStorage)(nil)
+)
