@@ -54,7 +54,7 @@ spec:
           type: RuntimeDefault
       initContainers:
         - name: migrate
-          image: ghcr.io/datum-cloud/ipam-apiserver:latest
+          image: ghcr.io/milo-os/ipam-apiserver:latest
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -86,7 +86,7 @@ spec:
               memory: 256Mi
       containers:
         - name: apiserver
-          image: ghcr.io/datum-cloud/ipam-apiserver:latest
+          image: ghcr.io/milo-os/ipam-apiserver:latest
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
