@@ -120,6 +120,7 @@ spec:
             check:
               ($error == null): true
         - script:
+            timeout: 30s
             env:
               - name: NAMESPACE
                 value: ($namespace)
@@ -198,6 +199,7 @@ spec:
             check:
               ($error == null): true
         - script:
+            timeout: 30s
             env:
               - name: NAMESPACE
                 value: ($namespace)
@@ -368,6 +370,7 @@ spec:
             check:
               ($error == null): true
         - script:
+            timeout: 30s
             env:
               - name: NAMESPACE
                 value: ($namespace)
