@@ -1,10 +1,10 @@
 // ipv6-claim-throughput.js
 //
-// PRIMARY PRIORITY load test for the IPAM platform: IPv6 prefix-claim
-// throughput. The platform allocates primarily IPv6 — this script is the
-// canonical proof that the hot path holds the same SLO under IPv6 as under
-// IPv4, with the additional correctness gate that no two simultaneous
-// allocations may overlap.
+// PRIMARY PRIORITY load test for the IPAM platform: IPv6 IPClaim throughput.
+// The platform allocates primarily IPv6 — this script is the canonical proof
+// that the hot path holds the same SLO under IPv6 as under IPv4, with the
+// additional correctness gate that no two simultaneous allocations may
+// overlap.
 //
 // Topology (provisioned by setup-pools.js):
 //   - Per-project IPv6 /32 pool `perf-ipv6-prefix-<n>` (fd<HH>:<LLLL>::/32)
@@ -56,10 +56,10 @@ import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
   API_BASE,
-  ipPrefixClaim,
-  prefixClaimPath,
-  crossProjectPrefixClaim,
-  deletePrefixClaimForProject,
+  ipClaim,
+  ipClaimPath,
+  crossProjectIPClaim,
+  deleteIPClaimForProject,
   nsFor,
   projectIDFor,
   withProjectTagged,
@@ -99,7 +99,7 @@ export const options = {
     },
   },
   thresholds: {
-    // SLO: same envelope as the IPv4 prefix-claim path.
+    // SLO: same envelope as the IPv4 IPClaim path.
     'ipam_ipv6_claim_create_latency_ms{phase:success}': ['p(95)<500', 'p(99)<2000'],
     'ipam_ipv6_claim_success_rate': ['rate>0.95'],
     'http_req_failed': ['rate<0.05'],
@@ -180,11 +180,6 @@ function containsCIDR(parent, child) {
   return maskAddr(child.addr, parent.prefixLen) === maskAddr(parent.addr, parent.prefixLen);
 }
 
-// Two CIDRs collide iff one contains the other.
-function cidrsOverlap(a, b) {
-  return containsCIDR(a, b) || containsCIDR(b, a);
-}
-
 // Per-pool reference for containment checks. Parsed once at module load.
 const POOL_CIDR = {};
 POOL_CIDR[SHARED_IPV6_POOL] = parseCIDR('fd00:f000::/28');
@@ -200,9 +195,9 @@ for (let n = 0; n < PROJECT_COUNT; n++) {
 // ---- Duplicate-CIDR detection ----
 //
 // k6 VUs each run in their own goja runtime, so we cannot share a single
-// JS Set across VUs. We rely on the server's invariant: an IPPrefixClaim
-// CREATE must never return an overlapping CIDR. For an in-script signal we
-// keep a per-VU registry; a duplicate within ONE VU would also be a bug.
+// JS Set across VUs. We rely on the server's invariant: an IPClaim CREATE
+// must never return an overlapping CIDR. For an in-script signal we keep a
+// per-VU registry; a duplicate within ONE VU would also be a bug.
 // Cross-VU duplicates are detectable via the e2e suite and the count of
 // 201s vs distinct CIDRs in the json-out, both of which are tracked.
 const seenCIDRs = new Set();
@@ -282,18 +277,18 @@ function recordCreate(res, mode, poolName) {
 
 // Direct HTTP wrapper — the lib helpers default to IPv4, so we post our own
 // IPv6 body with the project tenant header in a single round-trip.
-function postIPv6Claim(ns, name, prefixRef, projectID) {
-  const body = ipPrefixClaim(ns, name, prefixRef, CLAIM_PREFIX_LENGTH, { ipFamily: 'IPv6' });
-  const params = withProjectTagged(projectID, 'ipv6_prefix_claim_create');
-  return http.post(`${API_BASE}${prefixClaimPath(ns)}`, JSON.stringify(body), params);
+function postIPv6Claim(ns, name, poolName, projectID) {
+  const body = ipClaim(ns, name, poolName, CLAIM_PREFIX_LENGTH, { ipFamily: 'IPv6' });
+  const params = withProjectTagged(projectID, 'ipv6_ipclaim_create');
+  return http.post(`${API_BASE}${ipClaimPath(ns)}`, JSON.stringify(body), params);
 }
 
 function postCrossProjectIPv6Claim(ns, name, poolName, sourceProjectID, callerProjectID) {
-  const body = crossProjectPrefixClaim(ns, name, poolName, sourceProjectID, CLAIM_PREFIX_LENGTH, {
+  const body = crossProjectIPClaim(ns, name, poolName, sourceProjectID, CLAIM_PREFIX_LENGTH, {
     ipFamily: 'IPv6',
   });
-  const params = withProjectTagged(callerProjectID, 'ipv6_cross_project_prefix_claim_create');
-  return http.post(`${API_BASE}${prefixClaimPath(ns)}`, JSON.stringify(body), params);
+  const params = withProjectTagged(callerProjectID, 'ipv6_cross_project_ipclaim_create');
+  return http.post(`${API_BASE}${ipClaimPath(ns)}`, JSON.stringify(body), params);
 }
 
 export default function () {
@@ -323,7 +318,7 @@ export default function () {
   const ok = recordCreate(res, mode, poolName);
 
   if (ok) {
-    const delRes = deletePrefixClaimForProject(ns, claimName, callerProject);
+    const delRes = deleteIPClaimForProject(ns, claimName, callerProject);
     claimDeleteLatency.add(delRes.timings.duration);
     if (delRes.status !== 200 && delRes.status !== 202 && delRes.status !== 404) {
       claimErrors.add(1, { mode, phase: 'delete' });

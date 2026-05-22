@@ -1,5 +1,5 @@
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefixClaim
+kind: IPClaim
 metadata:
   name: host-claim-v4-1
   namespace: ($namespace)
@@ -8,6 +8,6 @@ metadata:
 spec:
   ipFamily: IPv4
   prefixLength: 32
-  prefixRef:
+  poolRef:
     name: host-pool-v4
   reclaimPolicy: Delete

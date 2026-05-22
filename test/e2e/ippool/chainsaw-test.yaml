@@ -1,0 +1,281 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ippool
+spec:
+  description: |
+    Lifecycle tests for IPPool (cluster-scoped):
+    1. Create root IPPool → assert status.phase=Ready, status.cidr populated.
+    2. Create child IPPool with spec.parentPoolRef → assert status.cidr is a
+       valid subnet of the root and status.phase=Ready.
+    3. Create an IPClaim against the child pool → assert IPClaim Bound and
+       a corresponding IPAllocation object exists in the same namespace.
+    4. Attempt to delete the child IPPool while a claim still holds an
+       allocation → assert HTTP 409.
+    5. Delete the IPClaim → assert IPAllocation removed → child IPPool now
+       deletable.
+    6. Throughout, status.capacity.allocated/available track the live state.
+
+  steps:
+    - name: create-root-pool
+      description: Root IPPool 10.220.0.0/20 (consumer, /24-/28)
+      try:
+        - create:
+            file: test-data/root-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool pool-suite-root \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: pool-suite-root not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-root-ready.yaml
+
+    - name: create-child-pool
+      description: |
+        Child IPPool with parentPoolRef=pool-suite-root and prefixLength=24.
+        Server carves a /24 from the root and populates status.cidr.
+        Capture root capacity before/after to confirm the child consumes
+        256 addresses of the parent's available pool.
+      try:
+        - script:
+            content: |
+              set -e
+              before=$(kubectl get ippool pool-suite-root -o jsonpath='{.status.capacity.available}')
+              echo "$before" > /tmp/pool-suite-root-before
+              echo "before_root_available=$before"
+            check:
+              ($error == null): true
+        - create:
+            file: test-data/child-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool pool-suite-child \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: pool-suite-child not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+              child_cidr=$(kubectl get ippool pool-suite-child -o jsonpath='{.status.cidr}')
+              if [ -z "$child_cidr" ]; then
+                echo "FAIL: pool-suite-child status.cidr empty"
+                exit 1
+              fi
+              python3 -c "
+              import ipaddress, sys
+              child = ipaddress.ip_network('$child_cidr')
+              parent = ipaddress.ip_network('10.220.0.0/20')
+              if child.prefixlen != 24:
+                  print(f'FAIL: expected /24, got {child}', file=sys.stderr); sys.exit(1)
+              if not child.subnet_of(parent):
+                  print(f'FAIL: {child} not subnet of {parent}', file=sys.stderr); sys.exit(1)
+              print(f'OK child {child} subset of root {parent}')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK child ')): true
+        - script:
+            content: |
+              set -e
+              before=$(cat /tmp/pool-suite-root-before)
+              after=$(kubectl get ippool pool-suite-root -o jsonpath='{.status.capacity.available}')
+              echo "after_root_available=$after (before=$before)"
+              if [ "$after" -ge "$before" ]; then
+                echo "FAIL: root capacity.available did not decrease after child pool creation"
+                exit 1
+              fi
+              echo "OK root capacity decreased after child allocation ($before -> $after)"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK root capacity decreased')): true
+
+    - name: claim-against-child-pool
+      description: |
+        IPClaim with prefixLength=28 against the child pool. Assert Bound,
+        IPAllocation created in the same namespace, child pool capacity
+        decreased by 16 (one /28).
+      try:
+        - script:
+            content: |
+              set -e
+              before=$(kubectl get ippool pool-suite-child -o jsonpath='{.status.capacity.available}')
+              echo "$before" > /tmp/pool-suite-child-before
+              echo "before_child_available=$before"
+            check:
+              ($error == null): true
+        - create:
+            file: test-data/claim.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" pool-suite-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: pool-suite-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            timeout: 30s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              ref=$(kubectl get ipclaim -n "$NAMESPACE" pool-suite-claim -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$ref" ]; then
+                echo "FAIL: empty boundAllocationRef.name on pool-suite-claim"
+                exit 1
+              fi
+              alloc_cidr=$(kubectl get ipallocation -n "$NAMESPACE" "$ref" -o jsonpath='{.spec.cidr}' 2>/dev/null || echo "")
+              claim_cidr=$(kubectl get ipclaim -n "$NAMESPACE" pool-suite-claim -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$alloc_cidr" ]; then
+                echo "FAIL: IPAllocation $ref not found in namespace $NAMESPACE"
+                exit 1
+              fi
+              if [ "$alloc_cidr" != "$claim_cidr" ]; then
+                echo "FAIL: IPAllocation.spec.cidr ($alloc_cidr) != claim.status.allocatedCIDR ($claim_cidr)"
+                exit 1
+              fi
+              echo "$ref" > /tmp/pool-suite-allocation-ref
+              echo "OK IPAllocation $ref exists with cidr=$alloc_cidr"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK IPAllocation ')): true
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              before=$(cat /tmp/pool-suite-child-before)
+              for i in $(seq 1 30); do
+                after=$(kubectl get ippool pool-suite-child -o jsonpath='{.status.capacity.available}')
+                if [ "$after" -lt "$before" ]; then break; fi
+                sleep 0.5
+              done
+              echo "after_child_available=$after (before=$before)"
+              expected=$(( before - 16 ))
+              if [ "$after" -ne "$expected" ]; then
+                echo "FAIL: child capacity.available expected $expected after /28 claim (= $before - 16), got $after"
+                exit 1
+              fi
+              echo "OK child capacity decreased by 16 after /28 claim"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK child capacity decreased')): true
+
+    - name: delete-pool-with-active-claim-rejected
+      description: Deleting pool-suite-child while pool-suite-claim is bound must fail with HTTP 409
+      try:
+        - script:
+            content: |
+              out=$(kubectl delete ippool pool-suite-child 2>&1) && status=0 || status=$?
+              echo "$out"
+              if [ "$status" -eq 0 ]; then
+                echo "expected delete to fail, but it succeeded" >&2
+                exit 1
+              fi
+              echo "$out" | grep -qiE 'active allocation|409|Conflict'
+            check:
+              ($error == null): true
+
+    - name: release-claim-and-delete-pool
+      description: |
+        Delete the IPClaim → assert IPAllocation removed → child pool now
+        deletable. Then delete the child pool and confirm root capacity
+        recovers.
+      try:
+        - script:
+            content: |
+              set -e
+              before=$(kubectl get ippool pool-suite-root -o jsonpath='{.status.capacity.available}')
+              echo "$before" > /tmp/pool-suite-root-pre-child-delete
+              echo "before_root_available_pre_child_delete=$before"
+            check:
+              ($error == null): true
+        - delete:
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              name: pool-suite-claim
+              namespace: ($namespace)
+        - script:
+            timeout: 30s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              ref=$(cat /tmp/pool-suite-allocation-ref)
+              for i in $(seq 1 30); do
+                if ! kubectl get ipallocation -n "$NAMESPACE" "$ref" >/dev/null 2>&1; then
+                  echo "OK IPAllocation $ref removed after claim delete"
+                  exit 0
+                fi
+                sleep 1
+              done
+              echo "FAIL: IPAllocation $ref still present after claim delete"
+              exit 1
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK IPAllocation ')): true
+        - delete:
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              name: pool-suite-child
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              before=$(cat /tmp/pool-suite-root-pre-child-delete)
+              for i in $(seq 1 30); do
+                after=$(kubectl get ippool pool-suite-root -o jsonpath='{.status.capacity.available}')
+                if [ "$after" -gt "$before" ]; then break; fi
+                sleep 0.5
+              done
+              echo "after_root_available=$after (before=$before)"
+              if [ "$after" -le "$before" ]; then
+                echo "FAIL: root capacity.available did not increase after child pool delete"
+                exit 1
+              fi
+              echo "OK root capacity recovered after child pool delete ($before -> $after)"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK root capacity recovered')): true
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" pool-suite-claim --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool pool-suite-child --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool pool-suite-root --ignore-not-found >/dev/null 2>&1 || true
+              echo "ippool suite cleanup done"
+            check:
+              ($error == null): true

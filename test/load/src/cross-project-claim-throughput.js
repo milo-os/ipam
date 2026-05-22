@@ -1,11 +1,10 @@
 // cross-project-claim-throughput.js
 //
-// Dedicated cross-project IPPrefixClaim throughput test. Each VU acts as a
+// Dedicated cross-project IPClaim throughput test. Each VU acts as a
 // non-owner project (any project N != 0) claiming a /28 from project 0's
 // shared pool (`perf-shared-prefix`). The claim spec carries a
-// `prefixRef.projectRef` pointing at project 0, and the request itself
-// carries the caller's project identity in the X-Remote-Extra parent
-// headers.
+// `poolRef.projectRef` pointing at project 0, and the request itself carries
+// the caller's project identity in the X-Remote-Extra parent headers.
 //
 // This is the slow path that exercises whatever cross-project authorization
 // (SubjectAccessReview or similar) the server adds — thresholds are wider
@@ -23,8 +22,8 @@
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
-  createCrossProjectPrefixClaim,
-  deletePrefixClaimForProject,
+  createCrossProjectIPClaim,
+  deleteIPClaimForProject,
   nsFor,
   projectIDFor,
 } from '../lib/ipam-client.js';
@@ -70,7 +69,7 @@ export default function () {
   const callerProject = projectIDFor(callerIdx);
   const claimName = `xclaim-${__VU}-${__ITER}`;
 
-  const createRes = createCrossProjectPrefixClaim(
+  const createRes = createCrossProjectIPClaim(
     ns,
     claimName,
     SHARED_PREFIX,
@@ -98,7 +97,7 @@ export default function () {
   }
 
   if (ok) {
-    const delRes = deletePrefixClaimForProject(ns, claimName, callerProject);
+    const delRes = deleteIPClaimForProject(ns, claimName, callerProject);
     crossProjectDelete.add(delRes.timings.duration);
     if (delRes.status !== 200 && delRes.status !== 202 && delRes.status !== 404) {
       crossProjectErrors.add(1);

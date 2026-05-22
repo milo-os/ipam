@@ -4,8 +4,8 @@ metadata:
   name: multi-tenant
 spec:
   description: |
-    Multi-tenant IPPrefixClaim e2e suite. Two simulated projects (alpha, beta)
-    each have a private pool, plus one shared pool owned by alpha. The
+    Multi-tenant IPClaim e2e suite. Two simulated projects (alpha, beta)
+    each have a private IPPool, plus one shared pool owned by alpha. The
     X-Remote-Extra-Iam.Miloapis.Com.Parent-* headers are injected via curl
     through `kubectl proxy` so the suite exercises the IPAM server's
     multi-tenant authorization path end-to-end.
@@ -13,13 +13,14 @@ spec:
     The IPAM server enforces tenant isolation: UserInfo.Extra carries the
     caller's project, ownerRef on the resulting object is overwritten from
     that identity (not trusted from the client), and cross-project allocation
-    against another project's pool requires a SubjectAccessReview that passes
-    via a ClusterRoleBinding granting `use` on the pool. This suite asserts:
+    against another project's pool requires the pool's spec.visibility to be
+    `shared` AND a SubjectAccessReview that passes via a ClusterRoleBinding
+    granting `use` on the `ippools` resource. This suite asserts:
       * Same-project allocations succeed and stay within the project's CIDR.
       * Cross-project allocations against shared pools (with a `use` grant
         for project-beta) succeed (HTTP 201).
-      * Cross-project allocations against private pools (no `use` grant)
-        are denied (HTTP 403).
+      * Cross-project allocations against private pools (no `use` grant
+        and visibility=consumer) are denied (HTTP 403).
 
   timeouts:
     cleanup: 90s
@@ -27,14 +28,12 @@ spec:
     assert: 60s
 
   steps:
-    - name: seed-classes-pools-rbac
+    - name: seed-pools-rbac
       description: |
-        Create mt-consumer-private + mt-consumer-shared classes, mt-alpha-pool,
-        mt-beta-pool, mt-shared-pool, and the ClusterRole/ClusterRoleBinding
-        granting project-beta `use` on mt-shared-pool.
+        Create mt-alpha-pool, mt-beta-pool, mt-shared-pool (visibility=shared)
+        and the ClusterRole/ClusterRoleBinding granting project-beta `use` on
+        the `ippools` resource for mt-shared-pool.
       try:
-        - create:
-            file: resources/classes.yaml
         - create:
             file: resources/pools.yaml
         - create:
@@ -45,13 +44,13 @@ spec:
               set -e
               for pool in mt-alpha-pool mt-beta-pool mt-shared-pool; do
                 for i in $(seq 1 30); do
-                  ready=$(kubectl get ipprefix "$pool" \
-                    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-                  if [ "$ready" = "True" ]; then break; fi
+                  phase=$(kubectl get ippool "$pool" \
+                    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                  if [ "$phase" = "Ready" ]; then break; fi
                   sleep 1
                 done
-                if [ "$ready" != "True" ]; then
-                  echo "FAIL: $pool not Ready after 30s"
+                if [ "$phase" != "Ready" ]; then
+                  echo "FAIL: $pool not Ready after 30s (phase=$phase)"
                   exit 1
                 fi
               done
@@ -61,7 +60,7 @@ spec:
 
     - name: same-project-claim-alpha
       description: |
-        Project alpha posts an IPPrefixClaim against its own pool (mt-alpha-pool)
+        Project alpha posts an IPClaim against its own pool (mt-alpha-pool)
         with project-alpha tenant headers. Assert HTTP 201 and allocatedCIDR
         within 10.100.0.0/20.
       try:
@@ -72,9 +71,7 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              # Pick an ephemeral port so parallel suite runs don't collide.
-              PORT=$(shuf -i 30000-40000 -n 1)
-              # Start a per-step proxy so we can inject custom headers.
+              PORT=$(awk "BEGIN{srand(); print 30000+int(rand()*10000)}")
               kubectl proxy --port=$PORT >/dev/null 2>&1 &
               PROXY=$!
               trap "kill $PROXY 2>/dev/null || true" EXIT
@@ -82,10 +79,10 @@ spec:
                 curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
               done
 
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPrefixClaim","metadata":{"name":"mt-alpha-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"prefixRef":{"name":"mt-alpha-pool"},"reclaimPolicy":"Delete"}}'
+              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClaim","metadata":{"name":"mt-alpha-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"poolRef":{"name":"mt-alpha-pool"},"reclaimPolicy":"Delete"}}'
 
               code=$(curl -s -o /tmp/mt-alpha-claim.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipprefixclaims \
+                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipclaims \
                 -H "Content-Type: application/json" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-alpha" \
@@ -108,7 +105,7 @@ spec:
             content: |
               set -e
               for i in $(seq 1 30); do
-                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-alpha-claim \
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" mt-alpha-claim \
                   -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
                 if [ "$phase" = "Bound" ]; then break; fi
                 sleep 1
@@ -126,7 +123,7 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-alpha-claim -o jsonpath='{.status.allocatedCIDR}')
+              cidr=$(kubectl get ipclaim -n "$NAMESPACE" mt-alpha-claim -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$cidr" ]; then
                 echo "FAIL: empty allocatedCIDR"
                 exit 1
@@ -135,14 +132,20 @@ spec:
                 echo "FAIL: $cidr not in 10.100.0.0/20"
                 exit 1
               fi
-              echo "OK alpha allocatedCIDR=$cidr in 10.100.0.0/20"
+              # Confirm the IPAllocation object exists in the same namespace
+              ref=$(kubectl get ipclaim -n "$NAMESPACE" mt-alpha-claim -o jsonpath='{.status.boundAllocationRef.name}')
+              if ! kubectl get ipallocation -n "$NAMESPACE" "$ref" >/dev/null 2>&1; then
+                echo "FAIL: IPAllocation $ref missing in namespace $NAMESPACE"
+                exit 1
+              fi
+              echo "OK alpha allocatedCIDR=$cidr in 10.100.0.0/20 ipallocation=$ref"
             check:
               ($error == null): true
               (contains($stdout, 'OK alpha allocatedCIDR=')): true
 
     - name: same-project-claim-beta
       description: |
-        Project beta posts an IPPrefixClaim against its own pool (mt-beta-pool)
+        Project beta posts an IPClaim against its own pool (mt-beta-pool)
         with project-beta headers. Assert allocatedCIDR within 10.101.0.0/20
         and non-overlapping with the alpha claim from the previous step.
       try:
@@ -153,7 +156,7 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              PORT=$(shuf -i 30000-40000 -n 1)
+              PORT=$(awk "BEGIN{srand(); print 30000+int(rand()*10000)}")
               kubectl proxy --port=$PORT >/dev/null 2>&1 &
               PROXY=$!
               trap "kill $PROXY 2>/dev/null || true" EXIT
@@ -161,10 +164,10 @@ spec:
                 curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
               done
 
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPrefixClaim","metadata":{"name":"mt-beta-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"prefixRef":{"name":"mt-beta-pool"},"reclaimPolicy":"Delete"}}'
+              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClaim","metadata":{"name":"mt-beta-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"poolRef":{"name":"mt-beta-pool"},"reclaimPolicy":"Delete"}}'
 
               code=$(curl -s -o /tmp/mt-beta-claim.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipprefixclaims \
+                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipclaims \
                 -H "Content-Type: application/json" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
@@ -187,7 +190,7 @@ spec:
             content: |
               set -e
               for i in $(seq 1 30); do
-                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-beta-claim \
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" mt-beta-claim \
                   -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
                 if [ "$phase" = "Bound" ]; then break; fi
                 sleep 1
@@ -205,8 +208,8 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              beta_cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-beta-claim -o jsonpath='{.status.allocatedCIDR}')
-              alpha_cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-alpha-claim -o jsonpath='{.status.allocatedCIDR}')
+              beta_cidr=$(kubectl get ipclaim -n "$NAMESPACE" mt-beta-claim -o jsonpath='{.status.allocatedCIDR}')
+              alpha_cidr=$(kubectl get ipclaim -n "$NAMESPACE" mt-alpha-claim -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$beta_cidr" ]; then
                 echo "FAIL: empty beta allocatedCIDR"
                 exit 1
@@ -226,13 +229,12 @@ spec:
 
     - name: cross-project-claim-beta-from-shared
       description: |
-        Project beta posts an IPPrefixClaim against project-alpha's shared pool
-        (mt-shared-pool) carrying project-beta headers and prefixRef.projectRef
-        pointing at project-alpha. The IPAM server enforces tenant isolation:
-        UserInfo.Extra carries project-beta, but the ClusterRoleBinding in
-        resources/rbac.yaml grants project-beta `use` on mt-shared-pool, so
-        the SubjectAccessReview passes and the claim must succeed (HTTP 201)
-        with allocatedCIDR inside 172.20.0.0/20.
+        Project beta posts an IPClaim against project-alpha's shared pool
+        (mt-shared-pool, visibility=shared) carrying project-beta headers
+        and poolRef.projectRef pointing at project-alpha. The ClusterRoleBinding
+        in resources/rbac.yaml grants project-beta `use` on the `ippools`
+        resource for mt-shared-pool, so the SubjectAccessReview passes and
+        the claim must succeed (HTTP 201) with allocatedCIDR inside 172.20.0.0/20.
       try:
         - script:
             timeout: 60s
@@ -241,7 +243,7 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              PORT=$(shuf -i 30000-40000 -n 1)
+              PORT=$(awk "BEGIN{srand(); print 30000+int(rand()*10000)}")
               kubectl proxy --port=$PORT >/dev/null 2>&1 &
               PROXY=$!
               trap "kill $PROXY 2>/dev/null || true" EXIT
@@ -249,10 +251,10 @@ spec:
                 curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
               done
 
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPrefixClaim","metadata":{"name":"mt-cross-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"prefixRef":{"name":"mt-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
+              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClaim","metadata":{"name":"mt-cross-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"poolRef":{"name":"mt-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
 
               code=$(curl -s -o /tmp/mt-cross-claim.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipprefixclaims \
+                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipclaims \
                 -H "Content-Type: application/json" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
@@ -265,13 +267,12 @@ spec:
                 exit 1
               fi
 
-              # Wait for Bound and verify CIDR is inside the shared pool range.
               for i in $(seq 1 60); do
-                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" mt-cross-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
                 if [ "$phase" = "Bound" ]; then break; fi
                 sleep 0.5
               done
-              cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-claim -o jsonpath='{.status.allocatedCIDR}')
+              cidr=$(kubectl get ipclaim -n "$NAMESPACE" mt-cross-claim -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$cidr" ]; then
                 echo "FAIL: empty allocatedCIDR after 201"
                 exit 1
@@ -287,11 +288,11 @@ spec:
 
     - name: cross-project-claim-beta-from-private-denied
       description: |
-        Project beta posts an IPPrefixClaim against project-alpha's PRIVATE
-        pool (mt-alpha-pool) carrying project-beta headers. There is no
-        ClusterRoleBinding granting project-beta `use` on mt-alpha-pool, so
-        the SubjectAccessReview must fail and the request must be denied
-        with HTTP 403.
+        Project beta posts an IPClaim against project-alpha's PRIVATE pool
+        (mt-alpha-pool, visibility=consumer) carrying project-beta headers.
+        There is no ClusterRoleBinding granting project-beta `use` on
+        mt-alpha-pool, so the SubjectAccessReview must fail and the request
+        must be denied with HTTP 403.
       try:
         - script:
             timeout: 60s
@@ -300,7 +301,7 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              PORT=$(shuf -i 30000-40000 -n 1)
+              PORT=$(awk "BEGIN{srand(); print 30000+int(rand()*10000)}")
               kubectl proxy --port=$PORT >/dev/null 2>&1 &
               PROXY=$!
               trap "kill $PROXY 2>/dev/null || true" EXIT
@@ -308,10 +309,10 @@ spec:
                 curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
               done
 
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPrefixClaim","metadata":{"name":"mt-cross-private-denied","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"prefixRef":{"name":"mt-alpha-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
+              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClaim","metadata":{"name":"mt-cross-private-denied","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"poolRef":{"name":"mt-alpha-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
 
               code=$(curl -s -o /tmp/mt-cross-private.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipprefixclaims \
+                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipclaims \
                 -H "Content-Type: application/json" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
@@ -323,9 +324,7 @@ spec:
                 cat /tmp/mt-cross-private.json
                 exit 1
               fi
-              # Cleanup if the server accepted (cluster-admin identity in test env
-              # bypasses tenant auth because kubectl proxy strips X-Remote-Extra headers)
-              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-private-denied --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipclaim -n "$NAMESPACE" mt-cross-private-denied --ignore-not-found=true >/dev/null 2>&1 || true
               echo "OK cross-project private-pool claim: code=$code (403=enforced, 201=cluster-admin bypass)"
             check:
               ($error == null): true
@@ -336,14 +335,14 @@ spec:
               - name: NAMESPACE
                 value: ($namespace)
             content: |
-              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-private-denied --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipclaim -n "$NAMESPACE" mt-cross-private-denied --ignore-not-found=true >/dev/null 2>&1 || true
               echo "private-pool denial cleanup done"
             check:
               ($error == null): true
 
     - name: concurrent-claims-non-overlap
       description: |
-        Apply 4 IPPrefixClaims simultaneously (2 from mt-alpha-pool, 2 from
+        Apply 4 IPClaims simultaneously (2 from mt-alpha-pool, 2 from
         mt-beta-pool). All must reach Bound; all 4 allocatedCIDR values must be
         distinct. The two alpha CIDRs must be in 10.100.0.0/20, the two beta
         CIDRs in 10.101.0.0/20.
@@ -358,7 +357,7 @@ spec:
             content: |
               set -e
               for i in $(seq 1 60); do
-                count=$(kubectl get ipprefixclaim -n "$NAMESPACE" -l mt-concurrent=true \
+                count=$(kubectl get ipclaim -n "$NAMESPACE" -l mt-concurrent=true \
                   -o jsonpath='{.items[*].status.phase}' 2>/dev/null | tr ' ' '\n' | grep -c "^Bound$" || echo "0")
                 if [ "$count" = "4" ]; then break; fi
                 sleep 1
@@ -376,20 +375,19 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              count=$(kubectl get ipprefixclaim -n "$NAMESPACE" -l mt-concurrent=true \
+              count=$(kubectl get ipclaim -n "$NAMESPACE" -l mt-concurrent=true \
                 -o jsonpath='{.items[*].status.allocatedCIDR}' | tr ' ' '\n' | sort -u | wc -l | tr -d ' ')
               if [ "$count" != "4" ]; then
                 echo "FAIL: expected 4 unique CIDRs, got $count"
-                kubectl get ipprefixclaim -n "$NAMESPACE" -l mt-concurrent=true \
+                kubectl get ipclaim -n "$NAMESPACE" -l mt-concurrent=true \
                   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.allocatedCIDR}{"\n"}{end}'
                 exit 1
               fi
 
-              # Range check per tenant pool
               for ns_label in alpha beta; do
                 expected_prefix="10.100"
                 if [ "$ns_label" = "beta" ]; then expected_prefix="10.101"; fi
-                cidrs=$(kubectl get ipprefixclaim -n "$NAMESPACE" -l mt-concurrent=true,mt-tenant=$ns_label \
+                cidrs=$(kubectl get ipclaim -n "$NAMESPACE" -l mt-concurrent=true,mt-tenant=$ns_label \
                   -o jsonpath='{.items[*].status.allocatedCIDR}')
                 for c in $cidrs; do
                   if ! echo "$c" | grep -qE "^${expected_prefix}\.[0-9]+\.[0-9]+/24$"; then
@@ -407,10 +405,7 @@ spec:
       description: |
         Read mt-shared-pool capacity, delete the cross-project claim from the
         previous step, assert capacity.available is non-decreasing across the
-        delete, then post a fresh cross-project claim from project-beta. Since
-        the SAR via the ClusterRoleBinding passes, the recheck must succeed
-        (HTTP 201) with a valid CIDR. Confirms the cross-project path does not
-        permanently consume shared-pool capacity.
+        delete, then post a fresh cross-project claim from project-beta.
       try:
         - script:
             timeout: 90s
@@ -419,7 +414,7 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              PORT=$(shuf -i 30000-40000 -n 1)
+              PORT=$(awk "BEGIN{srand(); print 30000+int(rand()*10000)}")
               kubectl proxy --port=$PORT >/dev/null 2>&1 &
               PROXY=$!
               trap "kill $PROXY 2>/dev/null || true" EXIT
@@ -427,21 +422,17 @@ spec:
                 curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
               done
 
-              # Capacity before release
-              before=$(kubectl get ipprefix mt-shared-pool -o jsonpath='{.status.capacity.available}' 2>/dev/null || echo "")
+              before=$(kubectl get ippool mt-shared-pool -o jsonpath='{.status.capacity.available}' 2>/dev/null || echo "")
               echo "before_available=$before"
 
-              # The previous step is now strict-201, so the cross-claim MUST be
-              # present. Fail if it is not.
-              if ! kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-claim >/dev/null 2>&1; then
+              if ! kubectl get ipclaim -n "$NAMESPACE" mt-cross-claim >/dev/null 2>&1; then
                 echo "FAIL: mt-cross-claim missing — previous step should have allocated it"
                 exit 1
               fi
 
-              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-claim --wait=true
-              # Allow the controller a moment to update pool capacity
+              kubectl delete ipclaim -n "$NAMESPACE" mt-cross-claim --wait=true
               for i in $(seq 1 20); do
-                after_del=$(kubectl get ipprefix mt-shared-pool -o jsonpath='{.status.capacity.available}' 2>/dev/null || echo "")
+                after_del=$(kubectl get ippool mt-shared-pool -o jsonpath='{.status.capacity.available}' 2>/dev/null || echo "")
                 if [ -n "$after_del" ] && [ -n "$before" ] && [ "$after_del" -ge "$before" ]; then
                   break
                 fi
@@ -453,11 +444,10 @@ spec:
                 exit 1
               fi
 
-              # Fresh cross-project claim from project-beta — must succeed.
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPrefixClaim","metadata":{"name":"mt-cross-recheck","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"prefixRef":{"name":"mt-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
+              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClaim","metadata":{"name":"mt-cross-recheck","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"poolRef":{"name":"mt-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
 
               code=$(curl -s -o /tmp/mt-cross-recheck.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipprefixclaims \
+                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipclaims \
                 -H "Content-Type: application/json" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
@@ -470,13 +460,12 @@ spec:
                 exit 1
               fi
 
-              # Wait for Bound and verify CIDR
               for i in $(seq 1 60); do
-                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-recheck -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" mt-cross-recheck -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
                 if [ "$phase" = "Bound" ]; then break; fi
                 sleep 0.5
               done
-              cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-recheck -o jsonpath='{.status.allocatedCIDR}')
+              cidr=$(kubectl get ipclaim -n "$NAMESPACE" mt-cross-recheck -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$cidr" ]; then
                 echo "FAIL: no CIDR allocated"
                 exit 1
@@ -495,28 +484,21 @@ spec:
               - name: NAMESPACE
                 value: ($namespace)
             content: |
-              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-recheck --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-alpha-claim --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-beta-claim --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-claim --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipclaim -n "$NAMESPACE" mt-cross-recheck --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipclaim -n "$NAMESPACE" mt-alpha-claim --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipclaim -n "$NAMESPACE" mt-beta-claim --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipclaim -n "$NAMESPACE" mt-cross-claim --ignore-not-found=true >/dev/null 2>&1 || true
               echo "cleanup done"
             check:
               ($error == null): true
 
     # ------------------------------------------------------------------------
-    # Cross-project IPAddressClaim and ASNClaim coverage. The IPPrefixClaim
-    # cross-project flow above proves the request-path / RBAC spec; these add
-    # the same coverage for the two other claim kinds. Both follow the same
-    # forward-looking pattern: project-beta posts via kubectl proxy with
-    # project-beta tenant headers; today the server lacks multi-tenant
-    # enforcement, so we accept either 201 (accept) or 400/422 (reject) and
-    # record the observed branch.
+    # Cross-project /32 host-IP allocation via IPClaim — same multi-tenant
+    # auth path against a separate shared host pool.
     # ------------------------------------------------------------------------
 
     - name: seed-cross-project-pools
-      description: |
-        Create mt-host-shared (IPPrefixClass + IPPrefix /29) plus the
-        ClusterRoleBinding for project-beta `use` on the host pool.
+      description: Create mt-host-shared-pool plus the ClusterRoleBinding for project-beta `use`.
       try:
         - create:
             file: resources/cross-project-pools.yaml
@@ -527,13 +509,13 @@ spec:
             content: |
               set -e
               for i in $(seq 1 30); do
-                ready=$(kubectl get ipprefix mt-host-shared-pool \
-                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
-                if [ "$ready" = "True" ]; then break; fi
+                phase=$(kubectl get ippool mt-host-shared-pool \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
                 sleep 1
               done
-              if [ "$ready" != "True" ]; then
-                echo "FAIL: mt-host-shared-pool not Ready after 30s"
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: mt-host-shared-pool not Ready after 30s (phase=$phase)"
                 exit 1
               fi
             check:
@@ -541,11 +523,9 @@ spec:
 
     - name: cross-project-address-claim-beta-from-shared
       description: |
-        Project beta posts an IPPrefixClaim with prefixLength: 32 against
-        project-alpha's host pool (mt-host-shared-pool) carrying project-beta
-        headers and prefixRef.projectRef pointing at project-alpha. Single-IP
-        allocation is now performed via IPPrefixClaim /32 — IPAddressClaim has
-        been removed from the service. The ClusterRoleBinding
+        Project beta posts an IPClaim with prefixLength: 32 against project-alpha's
+        host pool (mt-host-shared-pool) carrying project-beta headers and
+        poolRef.projectRef pointing at project-alpha. The ClusterRoleBinding
         mt-host-shared-pool-user-project-beta grants project-beta `use` on the
         shared host pool, so the SAR passes and the claim must succeed (HTTP 201)
         with status.allocatedCIDR being a /32 inside 172.21.0.0/29.
@@ -557,7 +537,7 @@ spec:
                 value: ($namespace)
             content: |
               set -e
-              PORT=$(shuf -i 30000-40000 -n 1)
+              PORT=$(awk "BEGIN{srand(); print 30000+int(rand()*10000)}")
               kubectl proxy --port=$PORT >/dev/null 2>&1 &
               PROXY=$!
               trap "kill $PROXY 2>/dev/null || true" EXIT
@@ -565,10 +545,10 @@ spec:
                 curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
               done
 
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPrefixClaim","metadata":{"name":"mt-cross-addr-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross-addr":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":32,"prefixRef":{"name":"mt-host-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
+              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClaim","metadata":{"name":"mt-cross-addr-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross-addr":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":32,"poolRef":{"name":"mt-host-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
 
               code=$(curl -s -o /tmp/mt-cross-addr.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipprefixclaims \
+                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipclaims \
                 -H "Content-Type: application/json" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
@@ -581,13 +561,12 @@ spec:
                 exit 1
               fi
 
-              # Wait for Bound and verify the allocated CIDR is a /32 within 172.21.0.0/29.
               for i in $(seq 1 60); do
-                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
                 if [ "$phase" = "Bound" ]; then break; fi
                 sleep 0.5
               done
-              cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.allocatedCIDR}')
+              cidr=$(kubectl get ipclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$cidr" ]; then
                 echo "FAIL: empty allocatedCIDR"
                 exit 1
@@ -606,7 +585,7 @@ spec:
               - name: NAMESPACE
                 value: ($namespace)
             content: |
-              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipclaim -n "$NAMESPACE" mt-cross-addr-claim --ignore-not-found=true >/dev/null 2>&1 || true
               echo "address cross-project cleanup done"
             check:
               ($error == null): true

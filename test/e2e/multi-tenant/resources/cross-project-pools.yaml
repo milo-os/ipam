@@ -1,26 +1,13 @@
 # Cross-project IP host pool for /32 allocation. Distinct from mt-shared-pool
 # (which allocates /24-/28) so the two cross-project flows do not interfere.
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefixClass
-metadata:
-  name: mt-host-shared
-spec:
-  requiresVerification: false
-  visibility: platform
-  defaultAllocation:
-    minPrefixLength: 32
-    maxPrefixLength: 32
-    strategy: FirstFit
----
-apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefix
+kind: IPPool
 metadata:
   name: mt-host-shared-pool
 spec:
   cidr: 172.21.0.0/29
   ipFamily: IPv4
-  classRef:
-    name: mt-host-shared
+  visibility: shared
   allocation:
     minPrefixLength: 32
     maxPrefixLength: 32

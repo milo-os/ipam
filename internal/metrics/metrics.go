@@ -29,7 +29,7 @@ var (
 	// label. See docs/production-readiness.md for the cardinality discussion.
 
 	// AllocationDuration tracks the latency of synchronous allocation
-	// transactions for IPPrefixClaim, IPAddressClaim, and ASNClaim.
+	// transactions for IPClaim and ASNClaim.
 	//
 	// METRIC NAMING NOTE: the spec (.claude/agents/observability.md) lists a
 	// single `ipam_allocation_total` counter alongside the duration histogram.
@@ -110,7 +110,7 @@ var (
 			Help:           "Ratio of allocated to total capacity per pool",
 			StabilityLevel: metrics.ALPHA,
 		},
-		// resource is the plural lowercase pool kind ("ipprefixes" |
+		// resource is the plural lowercase pool kind ("ippools" |
 		// "asnpools"), kept here so dashboards can split prefix vs ASN
 		// utilization without parsing pool_key — same shape used by
 		// PoolCapacity and PoolAllocated.
@@ -125,7 +125,7 @@ var (
 	// /28 with 8 free even though both are at 50%).
 	//
 	// Values are addresses for IPv4 / IPv6 prefix pools and ASN counts for
-	// ASN pools. resource is "ipprefixes" | "asnpools" so a single PromQL
+	// ASN pools. resource is "ippools" | "asnpools" so a single PromQL
 	// can split prefix vs ASN capacity without parsing pool_key.
 	PoolCapacity = metrics.NewGaugeVec(
 		&metrics.GaugeOpts{
@@ -254,8 +254,8 @@ var (
 	// (predicate-rejected) entries are NOT counted — only events the watcher
 	// actually hands off downstream.
 	//
-	// kind:       lowercase plural resource (ipprefixes, ipprefixclaims,
-	//             ipaddresses, ipaddressclaims, asnpools, asnclaims, ...).
+	// kind:       lowercase plural resource (ippools, ipclaims, ipallocations,
+	//             asnpools, asnclaims, ...).
 	//             Derived from the storage key prefix; "unknown" if the key
 	//             does not match the expected /ipam.miloapis.com/<resource>/...
 	//             layout (which would indicate a bug, not user input).
@@ -359,7 +359,7 @@ func RecordDrainCycle(kind string, multiBatch bool) {
 }
 
 // RecordWatchEvent increments the watch_events_total counter for the given
-// resource kind (lowercase plural, e.g. "ipprefixclaims") and event type
+// resource kind (lowercase plural, e.g. "ipclaims") and event type
 // ("ADDED" | "MODIFIED" | "DELETED"). Called from the watcher's dispatch
 // path, immediately after an event is handed off to the subscriber channel.
 func RecordWatchEvent(kind, eventType string) {
@@ -461,7 +461,7 @@ func RecordAllocationFailure(resource, reason, ipFamily, project, org string) {
 // poolKey is the storage-layer key (the same key used as the FOR UPDATE
 // target in the allocation transaction); ipFamily is "IPv4", "IPv6", or
 // "ASN" for ASN pools. resource is the plural lowercase pool kind
-// ("ipprefixes" | "asnpools") and matches the labels used by SetPoolCapacity
+// ("ippools" | "asnpools") and matches the labels used by SetPoolCapacity
 // so all three pool gauges split identically. project / org carry the owning
 // tenant for org-level dashboards. Ratios outside [0, 1] are clamped — a
 // buggy capacity computation should not poison the dashboard.
@@ -477,7 +477,7 @@ func SetPoolUtilization(poolKey, ipFamily, resource, project, org string, ratio 
 // SetPoolCapacity publishes the absolute total / allocated counts for a pool
 // alongside the existing utilization ratio. Callers should invoke this in
 // the same place they invoke SetPoolUtilization so all three gauges advance
-// together. resource is the plural lowercase resource name ("ipprefixes" |
+// together. resource is the plural lowercase resource name ("ippools" |
 // "asnpools") so dashboards can split prefix vs ASN capacity without parsing
 // pool_key.
 //

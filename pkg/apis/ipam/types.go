@@ -38,14 +38,24 @@ const (
 	ClaimError     ClaimPhase = "Error"
 )
 
-// PrefixPhase is the high-level lifecycle phase of an IP prefix.
-type PrefixPhase string
+// AllocationPhase is the high-level lifecycle phase of an IPAllocation.
+type AllocationPhase string
 
 const (
-	PrefixPending   PrefixPhase = "Pending"
-	PrefixReady     PrefixPhase = "Ready"
-	PrefixExhausted PrefixPhase = "Exhausted"
-	PrefixError     PrefixPhase = "Error"
+	AllocationPending   AllocationPhase = "Pending"
+	AllocationReady     AllocationPhase = "Ready"
+	AllocationExhausted AllocationPhase = "Exhausted"
+	AllocationError     AllocationPhase = "Error"
+)
+
+// PoolPhase is the high-level lifecycle phase of an IPPool.
+type PoolPhase string
+
+const (
+	PoolPending   PoolPhase = "Pending"
+	PoolReady     PoolPhase = "Ready"
+	PoolExhausted PoolPhase = "Exhausted"
+	PoolError     PoolPhase = "Error"
 )
 
 // LocalRef references another IPAM object in the same namespace by name.
@@ -61,9 +71,9 @@ type NamespacedRef struct {
 	ProjectRef *LocalRef
 }
 
-// PrefixSelector picks a parent IPPrefix by labels, optionally scoped to a
+// PoolSelector picks a parent IPPool by labels, optionally scoped to a
 // specific project for cross-project shared pools.
-type PrefixSelector struct {
+type PoolSelector struct {
 	*metav1.LabelSelector
 	ProjectRef *LocalRef
 }
@@ -77,136 +87,131 @@ type ObjectRef struct {
 	Name      string
 }
 
-// AllocationSpec configures sub-allocation behaviour for a prefix.
+// AllocationSpec configures sub-allocation behaviour for a pool.
 type AllocationSpec struct {
 	MinPrefixLength int
 	MaxPrefixLength int
 	Strategy        Strategy
 }
 
-// PrefixCapacity reports utilization for an IPPrefix.
-type PrefixCapacity struct {
+// PoolCapacity reports utilization for an IPPool.
+type PoolCapacity struct {
 	Total     int64
 	Allocated int64
 	Available int64
 }
 
-// IPPrefixTemplate is the metadata + spec used to materialise an IPPrefix
-// child created atomically with an IPPrefixClaim.
-type IPPrefixTemplate struct {
-	Metadata metav1.ObjectMeta
-	Spec     IPPrefixSpec
-}
-
 // ----------------------------------------------------------------------------
-// IPPrefixClass — cluster-scoped class of prefix pools.
+// IPPool — cluster-scoped allocatable address space.
 // ----------------------------------------------------------------------------
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +genclient
 // +genclient:nonNamespaced
 
-// IPPrefixClass declares operational properties shared by a class of
-// IPPrefix pools.
-type IPPrefixClass struct {
+type IPPool struct {
 	metav1.TypeMeta
 	metav1.ObjectMeta
 
-	Spec IPPrefixClassSpec
+	Spec   IPPoolSpec
+	Status IPPoolStatus
 }
 
-type IPPrefixClassSpec struct {
-	// RequiresVerification indicates that IP prefixes borrowing from this
-	// class must be verified before they can be used (e.g. BYOIP flows).
-	RequiresVerification bool
-	Visibility           string
-	DefaultAllocation    AllocationSpec
+type IPPoolSpec struct {
+	CIDR          string
+	IPFamily      IPFamily
+	ParentPoolRef *LocalRef
+	PrefixLength  int
+	Allocation    AllocationSpec
+	Visibility    string
 }
 
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-type IPPrefixClassList struct {
-	metav1.TypeMeta
-	metav1.ListMeta
-	Items []IPPrefixClass
-}
-
-// ----------------------------------------------------------------------------
-// IPPrefix — the prefix pool itself.
-// ----------------------------------------------------------------------------
-
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-// +genclient
-
-type IPPrefix struct {
-	metav1.TypeMeta
-	metav1.ObjectMeta
-
-	Spec   IPPrefixSpec
-	Status IPPrefixStatus
-}
-
-type IPPrefixSpec struct {
+type IPPoolStatus struct {
+	Phase      PoolPhase
 	CIDR       string
-	IPFamily   IPFamily
-	ClassRef   LocalRef
-	Allocation AllocationSpec
-	ParentRef  *ObjectRef
-}
-
-type IPPrefixStatus struct {
-	Phase      PrefixPhase
-	CIDR       string
-	Capacity   PrefixCapacity
+	Capacity   PoolCapacity
 	Conditions []metav1.Condition
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-type IPPrefixList struct {
+type IPPoolList struct {
 	metav1.TypeMeta
 	metav1.ListMeta
-	Items []IPPrefix
+	Items []IPPool
 }
 
 // ----------------------------------------------------------------------------
-// IPPrefixClaim
+// IPAllocation — namespaced, system-created allocation record.
 // ----------------------------------------------------------------------------
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +genclient
 
-type IPPrefixClaim struct {
+type IPAllocation struct {
 	metav1.TypeMeta
 	metav1.ObjectMeta
 
-	Spec   IPPrefixClaimSpec
-	Status IPPrefixClaimStatus
+	Spec   IPAllocationSpec
+	Status IPAllocationStatus
 }
 
-type IPPrefixClaimSpec struct {
-	IPFamily            IPFamily
-	PrefixLength        int
-	PrefixSelector      *PrefixSelector
-	PrefixRef           *NamespacedRef
-	ChildPrefixTemplate *IPPrefixTemplate
-	ReclaimPolicy       ReclaimPolicy
-	OwnerRef            *ObjectRef
+type IPAllocationSpec struct {
+	CIDR     string
+	IPFamily IPFamily
+	PoolRef  LocalRef
 }
 
-type IPPrefixClaimStatus struct {
-	Phase          ClaimPhase
-	AllocatedCIDR  string
-	BoundPrefixRef *LocalRef
-	Conditions     []metav1.Condition
+type IPAllocationStatus struct {
+	Phase      AllocationPhase
+	CIDR       string
+	Capacity   PoolCapacity
+	Conditions []metav1.Condition
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-type IPPrefixClaimList struct {
+type IPAllocationList struct {
 	metav1.TypeMeta
 	metav1.ListMeta
-	Items []IPPrefixClaim
+	Items []IPAllocation
 }
 
+// ----------------------------------------------------------------------------
+// IPClaim
+// ----------------------------------------------------------------------------
 
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +genclient
+
+type IPClaim struct {
+	metav1.TypeMeta
+	metav1.ObjectMeta
+
+	Spec   IPClaimSpec
+	Status IPClaimStatus
+}
+
+type IPClaimSpec struct {
+	IPFamily      IPFamily
+	PrefixLength  int
+	PoolSelector  *PoolSelector
+	PoolRef       *NamespacedRef
+	ReclaimPolicy ReclaimPolicy
+	OwnerRef      *ObjectRef
+}
+
+type IPClaimStatus struct {
+	Phase              ClaimPhase
+	AllocatedCIDR      string
+	BoundAllocationRef *LocalRef
+	Conditions         []metav1.Condition
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+type IPClaimList struct {
+	metav1.TypeMeta
+	metav1.ListMeta
+	Items []IPClaim
+}

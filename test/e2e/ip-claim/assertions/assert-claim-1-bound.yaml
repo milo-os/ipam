@@ -1,0 +1,9 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: alloc-claim-1
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (allocatedCIDR != null): true
+  (boundAllocationRef.name != null): true

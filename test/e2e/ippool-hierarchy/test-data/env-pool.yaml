@@ -1,0 +1,12 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: hier-env
+spec:
+  cidr: 10.128.0.0/9
+  ipFamily: IPv4
+  visibility: platform
+  allocation:
+    minPrefixLength: 12
+    maxPrefixLength: 16
+    strategy: FirstFit

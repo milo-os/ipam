@@ -37,12 +37,12 @@ func (f *genericInformer) Lister() cache.GenericLister {
 func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
 	switch resource {
 	// Group=ipam.miloapis.com, Version=v1alpha1
-	case v1alpha1.SchemeGroupVersion.WithResource("ipprefixes"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPPrefixes().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("ipprefixclaims"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPPrefixClaims().Informer()}, nil
-	case v1alpha1.SchemeGroupVersion.WithResource("ipprefixclasses"):
-		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPPrefixClasses().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("ipallocations"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPAllocations().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("ipclaims"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPClaims().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("ippools"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPPools().Informer()}, nil
 
 	}
 

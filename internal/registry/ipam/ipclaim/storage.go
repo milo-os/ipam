@@ -1,0 +1,536 @@
+// Package ipclaim provides REST storage for the IPClaim resource. The
+// exported AllocatingREST wraps the standard storage with a synchronous
+// Postgres-backed allocator: Create reserves a free sub-prefix from the
+// target IPPool inside a single transaction and atomically materialises the
+// resulting IPAllocation row. Delete reverses both, releasing the allocation
+// and removing the IPAllocation in the same transaction as the claim.
+package ipclaim
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apiserver/pkg/registry/generic"
+	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
+	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/apiserver/pkg/storage"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
+
+	"go.miloapis.com/ipam/internal/access"
+	"go.miloapis.com/ipam/internal/allocator"
+	"go.miloapis.com/ipam/internal/metrics"
+	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
+	"go.miloapis.com/ipam/internal/tenant"
+	"go.miloapis.com/ipam/pkg/apis/ipam"
+	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+)
+
+type IPClaimStorage struct {
+	*genericregistry.Store
+}
+
+type IPClaimStatusStorage struct {
+	store *genericregistry.Store
+}
+
+func (s *IPClaimStatusStorage) New() runtime.Object { return &ipam.IPClaim{} }
+func (s *IPClaimStatusStorage) Destroy()            {}
+
+func (s *IPClaimStatusStorage) Get(ctx context.Context, name string, options *metav1.GetOptions) (runtime.Object, error) {
+	return s.store.Get(ctx, name, options)
+}
+
+func (s *IPClaimStatusStorage) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, _ bool, options *metav1.UpdateOptions) (runtime.Object, bool, error) {
+	return s.store.Update(ctx, name, objInfo, createValidation, updateValidation, false, options)
+}
+
+func (s *IPClaimStatusStorage) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
+	return s.store.GetResetFields()
+}
+
+func (s *IPClaimStatusStorage) ConvertToTable(ctx context.Context, obj runtime.Object, opts runtime.Object) (*metav1.Table, error) {
+	return s.store.ConvertToTable(ctx, obj, opts)
+}
+
+// newInnerStorage builds the underlying generic registry-backed REST storage
+// for IPClaim. NewAllocatingStorage wraps the result to add synchronous
+// allocation in the request path.
+func newInnerStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter) (*IPClaimStorage, *IPClaimStatusStorage, error) {
+	strategy := NewStrategy(scheme)
+	statusStrategy := NewStatusStrategy(scheme)
+
+	store := &genericregistry.Store{
+		NewFunc:                   func() runtime.Object { return &ipam.IPClaim{} },
+		NewListFunc:               func() runtime.Object { return &ipam.IPClaimList{} },
+		DefaultQualifiedResource:  v1alpha1.Resource("ipclaims"),
+		SingularQualifiedResource: v1alpha1.Resource("ipclaim"),
+
+		CreateStrategy: strategy,
+		UpdateStrategy: strategy,
+		DeleteStrategy: strategy,
+
+		TableConvertor: rest.NewDefaultTableConvertor(v1alpha1.Resource("ipclaims")),
+	}
+
+	if err := store.CompleteWithOptions(&generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: GetAttrs}); err != nil {
+		return nil, nil, err
+	}
+
+	statusStore := *store
+	statusStore.UpdateStrategy = statusStrategy
+	statusStore.ResetFieldsStrategy = statusStrategy
+
+	return &IPClaimStorage{store}, &IPClaimStatusStorage{store: &statusStore}, nil
+}
+
+// AllocatingREST decorates the standard claim storage with a synchronous
+// allocator. On Create it begins a Postgres transaction, asks the allocator
+// to reserve a sub-prefix from the target IPPool, materialises an
+// IPAllocation row, and returns the claim with status fully populated. On
+// Delete it releases the allocation and removes the IPAllocation in the same
+// transaction as the claim deletion.
+type AllocatingREST struct {
+	*IPClaimStorage
+	allocator   allocator.PrefixAllocator
+	db          *pgxpool.Pool
+	strategy    ipClaimStrategy
+	poolChecker access.PoolAccessChecker
+	codec       runtime.Codec
+}
+
+// NewAllocatingStorage builds the IPClaim REST storage with synchronous
+// Postgres-backed allocation. db must be the same pool the allocator commits
+// against; codec is used to serialise the synchronously-allocated claim and
+// the generated IPAllocation into ipam_objects so subsequent GETs return
+// fully-populated objects. poolChecker may be nil; when non-nil it
+// authorises cross-project claims via SubjectAccessReview before allocation.
+func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
+	claimStore, statusStore, err := newInnerStorage(scheme, optsGetter)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &AllocatingREST{
+		IPClaimStorage: claimStore,
+		allocator:      alloc,
+		db:             db,
+		strategy:       NewStrategy(scheme),
+		poolChecker:    poolChecker,
+		codec:          codec,
+	}, statusStore, nil
+}
+
+// Create runs the standard create pipeline (system-metadata fill, strategy
+// PrepareForCreate, validation), then drives the allocator inside a
+// short-lived transaction. The transaction persists the claim row, the
+// allocation row in ipam_prefix_allocations, and the IPAllocation API object
+// together so the response body carries a CIDR that has already been
+// reserved.
+func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
+	claim, ok := obj.(*ipam.IPClaim)
+	if !ok {
+		return nil, fmt.Errorf("expected *ipam.IPClaim, got %T", obj)
+	}
+
+	id := tenant.FromContext(ctx)
+	project := id.Project()
+	org := id.Org()
+
+	ipFamily := string(claim.Spec.IPFamily)
+	metrics.AllocationAttempts.WithLabelValues("ipclaim", ipFamily, project, org).Inc()
+	allocStart := time.Now()
+	result := "error"
+	defer func() {
+		metrics.ObserveAllocationDuration("ipclaim", result, ipFamily, project, org, allocStart)
+	}()
+
+	objectMeta, err := meta.Accessor(claim)
+	if err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, fmt.Errorf("get object metadata: %w", err)
+	}
+	rest.FillObjectMetaSystemFields(objectMeta)
+
+	if err := rest.BeforeCreate(r.strategy, ctx, claim); err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, err
+	}
+	if createValidation != nil {
+		if err := createValidation(ctx, claim.DeepCopyObject()); err != nil {
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			return nil, err
+		}
+	}
+
+	if claim.Spec.PoolRef == nil && claim.Spec.PoolSelector == nil {
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, apierrors.NewBadRequest("synchronous allocation requires spec.poolRef or spec.poolSelector")
+	}
+	if claim.Spec.PoolRef != nil && claim.Spec.PoolSelector != nil {
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, apierrors.NewBadRequest("spec.poolRef and spec.poolSelector are mutually exclusive")
+	}
+
+	if !id.IsPlatform() {
+		// Overwrite client-supplied ownerRef — requestheader CA guarantees
+		// Extra authenticity, so the tenant identity is the source of truth.
+		claim.Spec.OwnerRef = &ipam.ObjectRef{
+			APIGroup: id.APIGroup,
+			Kind:     id.Kind,
+			Name:     id.Name,
+		}
+	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		return nil, fmt.Errorf("begin allocation transaction: %w", err)
+	}
+
+	// Resolve the target IPPool. spec.poolRef is a direct named lookup;
+	// spec.poolSelector lists candidate pools, filters by the supplied
+	// label selector, and picks the first match by storage key (see
+	// allocator.ResolveIPPool). IPPool is cluster-scoped, so the storage
+	// key always lives at the platform prefix regardless of the calling
+	// project's tenant identity.
+	isCrossProject := false
+	var poolKey, poolName string
+	if claim.Spec.PoolRef != nil {
+		poolName = claim.Spec.PoolRef.Name
+		isCrossProject = !id.IsPlatform() &&
+			claim.Spec.PoolRef.ProjectRef != nil &&
+			claim.Spec.PoolRef.ProjectRef.Name != id.Name
+		poolKey = poolStorageKey(poolName)
+	} else {
+		if claim.Spec.PoolSelector.ProjectRef != nil {
+			isCrossProject = !id.IsPlatform() &&
+				claim.Spec.PoolSelector.ProjectRef.Name != id.Name
+		}
+		resolved, rerr := allocator.ResolveIPPool(ctx, tx, claim.Spec.PoolSelector.LabelSelector, "", string(claim.Spec.IPFamily))
+		if rerr != nil {
+			_ = tx.Rollback(ctx)
+			if errors.Is(rerr, allocator.ErrPoolNotFound) {
+				metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+				return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
+			}
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			return nil, fmt.Errorf("resolve IPPool: %w", rerr)
+		}
+		poolKey = resolved
+		poolName = poolKey[strings.LastIndex(poolKey, "/")+1:]
+	}
+	claimKey := claimObjectKey(claim.Namespace, claim.Name)
+
+	if isCrossProject {
+		if err := r.authorizeCrossProject(ctx, tx, poolKey); err != nil {
+			_ = tx.Rollback(ctx)
+			if errors.Is(err, access.ErrCrossProjectDenied) {
+				// Selector-driven lookups must not distinguish "no pool
+				// matched the selector" from "a pool matched but you
+				// can't use it" — that distinction is a label/existence
+				// fingerprint into another project. Direct poolRef
+				// lookups can return Forbidden because the caller already
+				// named the pool by hand.
+				if claim.Spec.PoolSelector != nil {
+					metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+					return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
+				}
+				metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+				return nil, apierrors.NewForbidden(
+					v1alpha1.Resource("ippools"),
+					poolKey,
+					fmt.Errorf("cross-project pool not accessible"),
+				)
+			}
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			return nil, err
+		}
+	}
+
+	cidr, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, claim.Spec.PrefixLength, string(claim.Spec.IPFamily), claimKey, id.Name)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		reason := allocationFailureReason(err)
+		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org)
+		if reason == "pool_exhausted" {
+			result = "exhausted"
+		}
+		return nil, mapAllocationError(err)
+	}
+
+	// Build the IPAllocation object that records this binding. It lives in
+	// the claim's namespace; its name is a stable hash of the claim
+	// namespace/name so the Delete handler can recompute it deterministically.
+	allocationName := allocationNameFor(claim.Namespace, claim.Name)
+	allocationKey := allocationObjectKey(claim.Namespace, allocationName)
+
+	alloc := &ipam.IPAllocation{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      allocationName,
+			Namespace: claim.Namespace,
+		},
+		Spec: ipam.IPAllocationSpec{
+			CIDR:     cidr,
+			IPFamily: claim.Spec.IPFamily,
+			PoolRef:  ipam.LocalRef{Name: poolName},
+		},
+		Status: ipam.IPAllocationStatus{
+			Phase: ipam.AllocationReady,
+			CIDR:  cidr,
+		},
+	}
+	allocData, err := runtime.Encode(r.codec, alloc)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, fmt.Errorf("encode IPAllocation: %w", err)
+	}
+	if _, err := r.allocator.InsertObject(ctx, tx, allocationKey, "IPAllocation", claim.Namespace, allocationName, allocData); err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		return nil, fmt.Errorf("persist IPAllocation: %w", err)
+	}
+
+	// Populate the claim status with the allocated CIDR + reference back to
+	// the IPAllocation row that records it. Watchers see a single ADDED
+	// event with the terminal bound state.
+	claim.Status.Phase = ipam.ClaimBound
+	claim.Status.AllocatedCIDR = cidr
+	claim.Status.BoundAllocationRef = &ipam.LocalRef{Name: allocationName}
+
+	claimData, err := runtime.Encode(r.codec, claim)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, fmt.Errorf("encode claim: %w", err)
+	}
+	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		return nil, fmt.Errorf("persist claim: %w", err)
+	}
+	versioner := storage.APIObjectVersioner{}
+	if err := versioner.UpdateObject(claim, uint64(rv)); err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, fmt.Errorf("set resource version: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		return nil, fmt.Errorf("commit allocation transaction: %w", err)
+	}
+
+	result = "success"
+	return claim, nil
+}
+
+// allocationFailureReason maps an allocator error onto the canonical reason
+// label used by ipam_allocation_failures_total.
+func allocationFailureReason(err error) string {
+	switch {
+	case errors.Is(err, allocator.ErrPoolExhausted):
+		return "pool_exhausted"
+	case errors.Is(err, allocator.ErrPoolNotFound):
+		return "pool_not_found"
+	default:
+		return "tx_error"
+	}
+}
+
+// Delete runs the claim teardown in two transactions so watchers can observe
+// the intermediate Releasing phase before the object disappears:
+//
+//	TX1: UPDATE the claim row with status.phase=Releasing + MODIFIED changelog
+//	TX2: Release the allocation + DeleteObject(IPAllocation) + DeleteObject(claim) + DELETED changelogs
+//
+// TX2 is retried up to deleteMaxAttempts times with a short backoff so a
+// transient PG hiccup does not strand the claim in Releasing forever.
+func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
+	existing, err := r.Get(ctx, name, &metav1.GetOptions{})
+	if err != nil {
+		return nil, false, err
+	}
+	claim, ok := existing.(*ipam.IPClaim)
+	if !ok {
+		return nil, false, fmt.Errorf("expected *ipam.IPClaim from Get, got %T", existing)
+	}
+	if deleteValidation != nil {
+		if err := deleteValidation(ctx, claim.DeepCopyObject()); err != nil {
+			return nil, false, err
+		}
+	}
+
+	claimKey := claimObjectKey(claim.Namespace, claim.Name)
+
+	// TX1 — publish phase=Releasing.
+	releasing := claim.DeepCopy()
+	releasing.Status.Phase = ipam.ClaimReleasing
+	releasingData, err := runtime.Encode(r.codec, releasing)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode releasing claim: %w", err)
+	}
+	tx1, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin releasing transaction: %w", err)
+	}
+	rv, err := r.allocator.UpdateObject(ctx, tx1, claimKey, releasingData)
+	if err != nil {
+		_ = tx1.Rollback(ctx)
+		return nil, false, fmt.Errorf("publish releasing phase: %w", err)
+	}
+	versioner := storage.APIObjectVersioner{}
+	if err := versioner.UpdateObject(releasing, uint64(rv)); err != nil {
+		_ = tx1.Rollback(ctx)
+		return nil, false, fmt.Errorf("set releasing resource version: %w", err)
+	}
+	if err := tx1.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("commit releasing transaction: %w", err)
+	}
+	klog.V(2).InfoS("claim entering Releasing phase", "claim", name)
+
+	// TX2 — release the allocation, remove the IPAllocation row and the
+	// claim row in a single transaction. Retried on transient failures.
+	var lastErr error
+	for attempt := 1; attempt <= deleteMaxAttempts; attempt++ {
+		lastErr = r.releaseAndDelete(ctx, claim, claimKey)
+		if lastErr == nil {
+			break
+		}
+		klog.ErrorS(lastErr, "release-and-delete attempt failed", "claim", name, "attempt", attempt)
+		if attempt < deleteMaxAttempts {
+			time.Sleep(deleteRetryBackoff)
+		}
+	}
+	if lastErr != nil {
+		klog.ErrorS(lastErr, "claim stuck in Releasing after retries — manual intervention may be required", "claim", name, "attempts", deleteMaxAttempts)
+		return nil, false, fmt.Errorf("release allocation after %d attempts: %w", deleteMaxAttempts, lastErr)
+	}
+
+	klog.V(2).InfoS("claim released and deleted", "claim", name)
+	metrics.RecordRelease("ipclaim")
+	return releasing, true, nil
+}
+
+// DeleteCollection routes individual deletes through AllocatingREST.Delete
+// so allocation rows are released when a namespace is bulk-terminated. The
+// embedded Store's DeleteCollection would otherwise dispatch statically to
+// Store.Delete and leak allocations.
+func (r *AllocatingREST) DeleteCollection(ctx context.Context, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions, listOptions *metainternalversion.ListOptions) (runtime.Object, error) {
+	listObj, err := r.List(ctx, listOptions)
+	if err != nil {
+		return nil, fmt.Errorf("list claims for deletecollection: %w", err)
+	}
+	claimList, ok := listObj.(*ipam.IPClaimList)
+	if !ok {
+		return nil, fmt.Errorf("expected *ipam.IPClaimList from List, got %T", listObj)
+	}
+
+	deletedList := &ipam.IPClaimList{}
+	var errs []error
+	for i := range claimList.Items {
+		deleted, _, err := r.Delete(ctx, claimList.Items[i].Name, deleteValidation, options.DeepCopy())
+		if err != nil {
+			if !apierrors.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("delete claim %s: %w", claimList.Items[i].Name, err))
+			}
+			continue
+		}
+		if c, ok := deleted.(*ipam.IPClaim); ok {
+			deletedList.Items = append(deletedList.Items, *c)
+		}
+	}
+	if len(errs) > 0 {
+		return deletedList, errors.Join(errs...)
+	}
+	return deletedList, nil
+}
+
+// releaseAndDelete is a single attempt of TX2: release the allocation
+// row(s) for claimKey, delete the IPAllocation row recorded on the claim,
+// and delete the claim row — all inside one transaction.
+func (r *AllocatingREST) releaseAndDelete(ctx context.Context, claim *ipam.IPClaim, claimKey string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin release transaction: %w", err)
+	}
+	if err := r.allocator.Release(ctx, tx, claimKey); err != nil {
+		_ = tx.Rollback(ctx)
+		return fmt.Errorf("release allocation: %w", err)
+	}
+	if claim.Status.BoundAllocationRef != nil && claim.Status.BoundAllocationRef.Name != "" {
+		allocationKey := allocationObjectKey(claim.Namespace, claim.Status.BoundAllocationRef.Name)
+		if _, err := r.allocator.DeleteObject(ctx, tx, allocationKey); err != nil {
+			_ = tx.Rollback(ctx)
+			return fmt.Errorf("delete IPAllocation row: %w", err)
+		}
+	}
+	if _, err := r.allocator.DeleteObject(ctx, tx, claimKey); err != nil {
+		_ = tx.Rollback(ctx)
+		return fmt.Errorf("delete claim row: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit release transaction: %w", err)
+	}
+	return nil
+}
+
+const (
+	deleteMaxAttempts  = 3
+	deleteRetryBackoff = 100 * time.Millisecond
+)
+
+func claimObjectKey(namespace, name string) string {
+	return fmt.Sprintf("/ipam.miloapis.com/ipclaims/%s/%s", namespace, name)
+}
+
+// allocationObjectKey is the storage key for an IPAllocation. IPAllocation
+// is namespace-scoped, so the key carries the namespace segment.
+func allocationObjectKey(namespace, name string) string {
+	return fmt.Sprintf("/ipam.miloapis.com/ipallocations/%s/%s", namespace, name)
+}
+
+// poolStorageKey is the storage key for a cluster-scoped IPPool — matches
+// the key shape ippool/storage.go writes against.
+func poolStorageKey(name string) string {
+	return fmt.Sprintf("/ipam.miloapis.com/ippools/%s", name)
+}
+
+// allocationNameFor generates a stable, collision-resistant name for the
+// IPAllocation produced by a given claim, using a truncated SHA-256 hash of
+// the claim's namespace/name. The "alloc-" prefix makes system-generated
+// names obvious and lets operators distinguish them at a glance.
+func allocationNameFor(namespace, name string) string {
+	h := sha256.Sum256([]byte(namespace + "/" + name))
+	return "alloc-" + hex.EncodeToString(h[:8])
+}
+
+// authorizeCrossProject delegates to the shared cross-project gate in
+// internal/access.
+func (r *AllocatingREST) authorizeCrossProject(ctx context.Context, tx pgx.Tx, poolKey string) error {
+	return access.AuthorizeCrossProjectPrefix(ctx, tx, poolKey, r.poolChecker)
+}
+
+func mapAllocationError(err error) error {
+	switch {
+	case errors.Is(err, allocator.ErrPoolExhausted):
+		return registryerrors.NewInsufficientStorage("IPPool exhausted")
+	case errors.Is(err, allocator.ErrPoolNotFound):
+		return apierrors.NewBadRequest("IPPool not found")
+	default:
+		return apierrors.NewInternalError(err)
+	}
+}

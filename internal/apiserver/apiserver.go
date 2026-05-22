@@ -23,8 +23,9 @@ import (
 	_ "go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
-	"go.miloapis.com/ipam/internal/registry/ipam/ipprefix"
-	"go.miloapis.com/ipam/internal/registry/ipam/ipprefixclaim"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipallocation"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipclaim"
+	"go.miloapis.com/ipam/internal/registry/ipam/ippool"
 	"go.miloapis.com/ipam/pkg/apis/ipam/install"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -56,12 +57,12 @@ func init() {
 // settings.
 type ExtraConfig struct {
 	// PrefixAllocator drives synchronous CIDR/single-address allocation for
-	// IPPrefixClaim and IPAddressClaim creates. Required.
+	// IPClaim creates. Required.
 	PrefixAllocator allocator.PrefixAllocator
 	// AllocatorPool is the pgx pool the allocators commit against. The claim
 	// REST handlers open transactions on this pool. Required.
 	AllocatorPool *pgxpool.Pool
-	// PoolChecker authorises cross-project IPPrefixClaim creates via
+	// PoolChecker authorises cross-project IPClaim creates via
 	// SubjectAccessReview. nil bypasses the check (e.g. when no authorizer
 	// is configured).
 	PoolChecker access.PoolAccessChecker
@@ -116,8 +117,8 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	allocCodec := Codecs.LegacyCodec(v1alpha1.SchemeGroupVersion)
 
 	// Watch exclusions are intentionally NOT configured on the postgres
-	// RESTOptionsGetter for the *claim resources (ipprefixclaims,
-	// ipaddressclaims). At first glance the AllocatingREST
+	// RESTOptionsGetter for the *claim resources (ipclaims, asnclaims).
+	// At first glance the AllocatingREST
 	// pattern looks like it might double-emit watch events — Create writes
 	// the claim row + ADDED changelog entry directly via
 	// allocator.InsertObject (bypassing the embedded Store.Create), and
@@ -143,29 +144,38 @@ func (c completedConfig) New() (*IPAMServer, error) {
 
 	v1alpha1Storage := map[string]rest.Storage{}
 
-	// IPPrefixClass — cluster-scoped, no status subresource.
-	prefixClassStore, err := ipprefix.NewClassStorage(Scheme, c.GenericConfig.RESTOptionsGetter)
-	if err != nil {
-		return nil, fmt.Errorf("create IPPrefixClass storage: %w", err)
-	}
-	v1alpha1Storage["ipprefixclasses"] = prefixClassStore
-
-	// IPPrefix — cluster-scoped, with status subresource, and (when allocator
-	// pool is configured) deletion protection that rejects deletes for prefixes
-	// with active allocations.
-	prefixStore, prefixStatusStore, err := ipprefix.NewPrefixStorage(
+	// IPPool — cluster-scoped, with status subresource. Root pools persist
+	// directly; child pools (with spec.parentPoolRef) allocate a sub-prefix
+	// from the parent pool synchronously inside Create.
+	ipPoolStore, ipPoolStatusStore, err := ippool.NewIPPoolStorage(
 		Scheme,
 		c.GenericConfig.RESTOptionsGetter,
+		c.ExtraConfig.PrefixAllocator,
 		c.ExtraConfig.AllocatorPool,
+		allocCodec,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create IPPrefix storage: %w", err)
+		return nil, fmt.Errorf("create IPPool storage: %w", err)
 	}
-	v1alpha1Storage["ipprefixes"] = prefixStore
-	v1alpha1Storage["ipprefixes/status"] = prefixStatusStore
+	v1alpha1Storage["ippools"] = ipPoolStore
+	v1alpha1Storage["ippools/status"] = ipPoolStatusStore
 
-	// IPPrefixClaim — namespaced, with status subresource.
-	prefixClaimStore, prefixClaimStatusStore, err := ipprefixclaim.NewAllocatingStorage(
+	// IPAllocation — namespaced, simple CRUD. Rows are system-created by the
+	// IPClaim Create handler inside the allocation transaction, so this
+	// storage carries no allocator/db dependency.
+	ipAllocStore, ipAllocStatusStore, err := ipallocation.NewAllocationStorage(
+		Scheme,
+		c.GenericConfig.RESTOptionsGetter,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create IPAllocation storage: %w", err)
+	}
+	v1alpha1Storage["ipallocations"] = ipAllocStore
+	v1alpha1Storage["ipallocations/status"] = ipAllocStatusStore
+
+	// IPClaim — namespaced, with status subresource. Synchronous allocation
+	// against an IPPool; produces an IPAllocation in the same transaction.
+	ipClaimStore, ipClaimStatusStore, err := ipclaim.NewAllocatingStorage(
 		Scheme,
 		c.GenericConfig.RESTOptionsGetter,
 		c.ExtraConfig.PrefixAllocator,
@@ -174,10 +184,10 @@ func (c completedConfig) New() (*IPAMServer, error) {
 		c.ExtraConfig.PoolChecker,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create IPPrefixClaim storage: %w", err)
+		return nil, fmt.Errorf("create IPClaim storage: %w", err)
 	}
-	v1alpha1Storage["ipprefixclaims"] = prefixClaimStore
-	v1alpha1Storage["ipprefixclaims/status"] = prefixClaimStatusStore
+	v1alpha1Storage["ipclaims"] = ipClaimStore
+	v1alpha1Storage["ipclaims/status"] = ipClaimStatusStore
 
 	apiGroupInfo.VersionedResourcesStorageMap["v1alpha1"] = v1alpha1Storage
 

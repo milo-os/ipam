@@ -1,0 +1,13 @@
+---
+# The selector matched only selector-pool-consumer-b (environment=consumer
+# AND region=us-east), so the claim must bind there. Allocated CIDR must
+# fall inside the b pool's 10.201.0.0/20.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: selector-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (boundAllocationRef.name != null): true
+  (starts_with(allocatedCIDR, '10.201.')): true

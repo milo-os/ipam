@@ -8,12 +8,12 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
-	// IPPrefixes returns a IPPrefixInformer.
-	IPPrefixes() IPPrefixInformer
-	// IPPrefixClaims returns a IPPrefixClaimInformer.
-	IPPrefixClaims() IPPrefixClaimInformer
-	// IPPrefixClasses returns a IPPrefixClassInformer.
-	IPPrefixClasses() IPPrefixClassInformer
+	// IPAllocations returns a IPAllocationInformer.
+	IPAllocations() IPAllocationInformer
+	// IPClaims returns a IPClaimInformer.
+	IPClaims() IPClaimInformer
+	// IPPools returns a IPPoolInformer.
+	IPPools() IPPoolInformer
 }
 
 type version struct {
@@ -27,17 +27,17 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
-// IPPrefixes returns a IPPrefixInformer.
-func (v *version) IPPrefixes() IPPrefixInformer {
-	return &iPPrefixInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+// IPAllocations returns a IPAllocationInformer.
+func (v *version) IPAllocations() IPAllocationInformer {
+	return &iPAllocationInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// IPPrefixClaims returns a IPPrefixClaimInformer.
-func (v *version) IPPrefixClaims() IPPrefixClaimInformer {
-	return &iPPrefixClaimInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+// IPClaims returns a IPClaimInformer.
+func (v *version) IPClaims() IPClaimInformer {
+	return &iPClaimInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// IPPrefixClasses returns a IPPrefixClassInformer.
-func (v *version) IPPrefixClasses() IPPrefixClassInformer {
-	return &iPPrefixClassInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+// IPPools returns a IPPoolInformer.
+func (v *version) IPPools() IPPoolInformer {
+	return &iPPoolInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

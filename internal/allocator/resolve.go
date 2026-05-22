@@ -16,11 +16,10 @@ import (
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
-// ResolvePrefixPool returns the storage key of an IPPrefix pool that
-// satisfies the supplied label selector. It lists pools belonging to the
-// caller's project (or the platform scope when ownerProject is empty),
-// decodes each into an IPPrefix, applies the selector, and returns the first
-// match by storage key.
+// ResolveIPPool returns the storage key of an IPPool that satisfies the
+// supplied label selector. It lists pools belonging to the caller's project
+// (or the platform scope when ownerProject is empty), decodes each into an
+// IPPool, applies the selector, and returns the first match by storage key.
 //
 // The first-match policy is deliberately simple: it is deterministic across
 // callers, requires no per-pool capacity probe, and lets operators steer
@@ -33,23 +32,23 @@ import (
 // the ipFamily comes from the resolved pool itself).
 //
 // Returns ErrPoolNotFound if no pool matches the selector.
-func ResolvePrefixPool(ctx context.Context, tx pgx.Tx, selector *metav1.LabelSelector, ownerProject, ipFamily string) (string, error) {
-	defer metrics.ObserveQuery("resolve_prefix_pool", time.Now())
+func ResolveIPPool(ctx context.Context, tx pgx.Tx, selector *metav1.LabelSelector, ownerProject, ipFamily string) (string, error) {
+	defer metrics.ObserveQuery("resolve_ip_pool", time.Now())
 
 	sel, err := labelSelectorOrEverything(selector)
 	if err != nil {
 		return "", fmt.Errorf("compile label selector: %w", err)
 	}
 
-	keys, datas, err := listPools(ctx, tx, "IPPrefix", ownerProject)
+	keys, datas, err := listPools(ctx, tx, "IPPool", ownerProject)
 	if err != nil {
 		return "", err
 	}
 
 	for i, key := range keys {
-		var pool ipamv1alpha1.IPPrefix
+		var pool ipamv1alpha1.IPPool
 		if err := json.Unmarshal(datas[i], &pool); err != nil {
-			return "", fmt.Errorf("decode IPPrefix pool %q: %w", key, err)
+			return "", fmt.Errorf("decode IPPool %q: %w", key, err)
 		}
 		if ipFamily != "" && string(pool.Spec.IPFamily) != ipFamily {
 			continue
@@ -115,8 +114,8 @@ func labelSelectorOrEverything(selector *metav1.LabelSelector) (labels.Selector,
 // pluraliser in here.
 func plural(kind string) string {
 	switch kind {
-	case "IPPrefix":
-		return "ipprefixes"
+	case "IPPool":
+		return "ippools"
 	}
 	// Conservative fallback — lowercase + "s" — never reached for the kinds
 	// this resolver supports today, but defends against future kinds being

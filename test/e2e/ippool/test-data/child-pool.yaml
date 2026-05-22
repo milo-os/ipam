@@ -1,0 +1,13 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: pool-suite-child
+spec:
+  visibility: consumer
+  parentPoolRef:
+    name: pool-suite-root
+  prefixLength: 24
+  allocation:
+    minPrefixLength: 28
+    maxPrefixLength: 28
+    strategy: FirstFit
