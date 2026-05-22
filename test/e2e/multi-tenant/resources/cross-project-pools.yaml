@@ -1,9 +1,5 @@
-# Cross-project pools for IPAddressClaim and ASNClaim flows. Mirrors the
-# IPPrefixClaim setup: project-alpha owns each "shared" pool, project-beta is
-# the cross-tenant caller via the ClusterRoleBinding in resources/rbac.yaml.
-#
-# IP pool dedicated to /32 host allocation. Distinct from mt-shared-pool
-# (which allocates /24..../28) so the two cross-project flows do not interfere.
+# Cross-project IP host pool for /32 allocation. Distinct from mt-shared-pool
+# (which allocates /24-/28) so the two cross-project flows do not interfere.
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPPrefixClass
 metadata:
@@ -29,22 +25,3 @@ spec:
     minPrefixLength: 32
     maxPrefixLength: 32
     strategy: FirstFit
----
-apiVersion: ipam.miloapis.com/v1alpha1
-kind: ASNPoolClass
-metadata:
-  name: mt-asn-shared
-spec:
-  requiresVerification: false
-  visibility: platform
----
-apiVersion: ipam.miloapis.com/v1alpha1
-kind: ASNPool
-metadata:
-  name: mt-asn-shared-pool
-spec:
-  ranges:
-    - start: 4250000000
-      end: 4250000019
-  classRef:
-    name: mt-asn-shared

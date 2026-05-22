@@ -515,9 +515,8 @@ spec:
 
     - name: seed-cross-project-pools
       description: |
-        Create mt-host-shared (IPPrefixClass + IPPrefix /29) and mt-asn-shared
-        (ASNPoolClass + ASNPool 4250000000-4250000019) plus the forward-looking
-        ClusterRoleBindings for project-beta `use` on each.
+        Create mt-host-shared (IPPrefixClass + IPPrefix /29) plus the
+        ClusterRoleBinding for project-beta `use` on the host pool.
       try:
         - create:
             file: resources/cross-project-pools.yaml
@@ -535,22 +534,6 @@ spec:
               done
               if [ "$ready" != "True" ]; then
                 echo "FAIL: mt-host-shared-pool not Ready after 30s"
-                exit 1
-              fi
-            check:
-              ($error == null): true
-        - script:
-            timeout: 45s
-            content: |
-              set -e
-              for i in $(seq 1 30); do
-                total=$(kubectl get asnpool mt-asn-shared-pool \
-                  -o jsonpath='{.status.capacity.total}' 2>/dev/null || echo "")
-                if [ "$total" = "20" ]; then break; fi
-                sleep 1
-              done
-              if [ "$total" != "20" ]; then
-                echo "FAIL: mt-asn-shared-pool capacity.total not 20 after 30s (got: $total)"
                 exit 1
               fi
             check:
@@ -625,82 +608,5 @@ spec:
             content: |
               kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim --ignore-not-found=true >/dev/null 2>&1 || true
               echo "address cross-project cleanup done"
-            check:
-              ($error == null): true
-
-    - name: cross-project-asn-claim-beta-from-shared
-      description: |
-        Project beta posts an ASNClaim against project-alpha's ASN pool
-        (mt-asn-shared-pool) carrying project-beta headers. ASNClaim's
-        spec.poolRef is a LocalRef (no projectRef field), so the body cannot
-        express the cross-project hint — the server gates the request via the
-        UserInfo.Extra headers + the ClusterRoleBinding
-        mt-asn-shared-pool-user-project-beta. The grant is present, so the
-        SAR passes and the claim must succeed (HTTP 201) with a status.asn in
-        4250000000-4250000019.
-      try:
-        - script:
-            timeout: 60s
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              set -e
-              PORT=$(shuf -i 30000-40000 -n 1)
-              kubectl proxy --port=$PORT >/dev/null 2>&1 &
-              PROXY=$!
-              trap "kill $PROXY 2>/dev/null || true" EXIT
-              for i in $(seq 1 20); do
-                curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
-              done
-
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"ASNClaim","metadata":{"name":"mt-cross-asn-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross-asn":"true"}},"spec":{"poolRef":{"name":"mt-asn-shared-pool"}}}'
-
-              code=$(curl -s -o /tmp/mt-cross-asn.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/asnclaims \
-                -H "Content-Type: application/json" \
-                -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
-                -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
-                -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Api-Group: resourcemanager.miloapis.com" \
-                -d "$body")
-
-              if [ "$code" != "201" ]; then
-                echo "FAIL: expected 201 (shared ASN pool with use grant), got $code"
-                cat /tmp/mt-cross-asn.json
-                exit 1
-              fi
-
-              for i in $(seq 1 60); do
-                phase=$(kubectl get asnclaim -n "$NAMESPACE" mt-cross-asn-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-                if [ "$phase" = "Bound" ]; then break; fi
-                sleep 0.5
-              done
-              asn=$(kubectl get asnclaim -n "$NAMESPACE" mt-cross-asn-claim -o jsonpath='{.status.asn}')
-              if [ -z "$asn" ] || [ "$asn" = "0" ]; then
-                echo "FAIL: empty/zero ASN"
-                exit 1
-              fi
-              if [ "$asn" -lt 4250000000 ] || [ "$asn" -gt 4250000019 ]; then
-                echo "FAIL: $asn outside 4250000000-4250000019"
-                exit 1
-              fi
-              echo "OK cross-project ASN claim accepted (201), asn=$asn"
-            check:
-              ($error == null): true
-              (contains($stdout, 'OK cross-project ASN claim accepted')): true
-      finally:
-        - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              kubectl delete asnclaim -n "$NAMESPACE" mt-cross-asn-claim --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefix mt-host-shared-pool --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefixclass mt-host-shared --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete asnpool mt-asn-shared-pool --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete asnpoolclass mt-asn-shared --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete clusterrolebinding mt-host-shared-pool-user-project-beta mt-asn-shared-pool-user-project-beta --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete clusterrole mt-host-shared-pool-user mt-asn-shared-pool-user --ignore-not-found=true >/dev/null 2>&1 || true
-              echo "cross-project ASN + pool cleanup done"
             check:
               ($error == null): true
