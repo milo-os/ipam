@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apiserver/pkg/admission"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/healthz"
@@ -151,13 +152,25 @@ type IPAMServerOptions struct {
 }
 
 func NewIPAMServerOptions() *IPAMServerOptions {
-	return &IPAMServerOptions{
+	opts := &IPAMServerOptions{
 		RecommendedOptions: options.NewRecommendedOptions(
 			"/registry/ipam.miloapis.com",
 			ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...),
 		),
 		Logs: logsapi.NewLoggingConfiguration(),
 	}
+
+	// IPAM is a delegating aggregated apiserver — admission webhooks, policies,
+	// and namespace lifecycle are all enforced by the main kube-apiserver before
+	// requests are forwarded here. Replace the default plugin registry with an
+	// empty one to avoid informers for Namespace, WebhookConfiguration,
+	// ValidatingAdmissionPolicy, etc. that silently block readyz without a
+	// wired-up CoreAPI client.
+	opts.RecommendedOptions.Admission.Plugins = admission.NewPlugins()
+	opts.RecommendedOptions.Admission.RecommendedPluginOrder = []string{}
+	opts.RecommendedOptions.Admission.DefaultOffPlugins = nil
+
+	return opts
 }
 
 // AddFlags registers command-line flags for all options.
@@ -213,6 +226,11 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	// etcd path so the apiserver does not try to dial etcd or register etcd
 	// healthchecks.
 	o.RecommendedOptions.Etcd = nil
+
+	// Delegating aggregated apiservers defer API Priority and Fairness to the
+	// main kube-apiserver. Disabling APF here avoids the FlowSchema and
+	// PriorityLevelConfiguration informers that would otherwise block readyz.
+	genericConfig.FlowControl = nil
 
 	if err := o.RecommendedOptions.ApplyTo(genericConfig); err != nil {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
