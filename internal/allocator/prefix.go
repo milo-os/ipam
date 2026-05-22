@@ -85,6 +85,9 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	// set, so the post-allocation utilization can be computed from data
 	// already in scope without an extra DB round-trip.
 	updated := append(append([]net.IPNet(nil), existing...), *cidr)
+	if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, updated); err != nil {
+		return "", fmt.Errorf("update pool capacity after allocation: %w", err)
+	}
 	publishPrefixUtilization(poolKey, ipFamily, parents, updated)
 
 	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", claimKey, "ownerProject", ownerProject)
@@ -198,7 +201,41 @@ func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimK
 		if perr != nil {
 			return fmt.Errorf("reload allocations after release: %w", perr)
 		}
+		if perr := persistPoolCapacity(ctx, tx, pool, r.poolKey, parents, remaining); perr != nil {
+			return fmt.Errorf("update pool capacity after release: %w", perr)
+		}
 		publishPrefixUtilization(r.poolKey, r.ipFamily, parents, remaining)
+	}
+	return nil
+}
+
+// persistPoolCapacity recomputes Total/Allocated/Available for the pool and
+// writes the updated pool object back to ipam_objects (+ MODIFIED changelog)
+// within the current transaction. Must be called inside the transaction that
+// inserted or deleted the allocation row so the capacity stays consistent.
+func persistPoolCapacity(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPrefix, poolKey string, parents, allocations []net.IPNet) error {
+	var total, allocated int64
+	for _, p := range parents {
+		total += allocation.CountAddresses(p)
+	}
+	for _, a := range allocations {
+		allocated += allocation.CountAddresses(a)
+	}
+	available := total - allocated
+	if available < 0 {
+		available = 0
+	}
+	pool.Status.Capacity = ipamv1alpha1.PrefixCapacity{
+		Total:     total,
+		Allocated: allocated,
+		Available: available,
+	}
+	data, err := json.Marshal(pool)
+	if err != nil {
+		return fmt.Errorf("marshal pool: %w", err)
+	}
+	if _, err := updateObject(ctx, tx, poolKey, data); err != nil {
+		return fmt.Errorf("write pool: %w", err)
 	}
 	return nil
 }

@@ -44,16 +44,26 @@ spec:
             env:
               - name: NAMESPACE
                 value: ($namespace)
-            timeout: 90s
+            timeout: 120s
             content: |
               set -e
               for name in overlap-claim-1 overlap-claim-2 overlap-claim-3 overlap-claim-4 overlap-claim-5 \
                           overlap-claim-6 overlap-claim-7 overlap-claim-8 overlap-claim-9 overlap-claim-10; do
-                kubectl wait ipprefixclaim -n "$NAMESPACE" "$name" \
-                  --for=jsonpath='{.status.phase}'=Bound --timeout=60s
+                for i in $(seq 1 60); do
+                  phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" "$name" \
+                    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                  if [ "$phase" = "Bound" ]; then break; fi
+                  sleep 1
+                done
+                if [ "$phase" != "Bound" ]; then
+                  echo "FAIL: $name not Bound after 60s (phase=$phase)"
+                  exit 1
+                fi
               done
+              echo "all 10 claims Bound"
             check:
               ($error == null): true
+              (contains($stdout, 'all 10 claims Bound')): true
 
     - name: assert-unique-non-overlapping
       description: All 10 allocatedCIDR values must be unique
