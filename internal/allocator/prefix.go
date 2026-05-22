@@ -54,14 +54,6 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	// Child-pool sub-allocations and other callers that don't carry an
-	// explicit family inherit it from the locked parent pool. The CHECK
-	// constraint on ipam_prefix_allocations.ip_family rejects empty values,
-	// so default before the insert.
-	if ipFamily == "" {
-		ipFamily = string(pool.Spec.IPFamily)
-	}
-
 	parents, err := parsePoolCIDR(pool)
 	if err != nil {
 		return "", err
@@ -72,12 +64,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
-	if strategy == "" {
-		strategy = allocation.FirstFit
-	}
-
-	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, prefixLen, strategy)
+	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
 	if err != nil {
 		if errors.Is(err, allocation.ErrPoolExhausted) {
 			return "", ErrPoolExhausted
@@ -322,8 +309,8 @@ func deleteObject(ctx context.Context, tx pgx.Tx, key string) (int64, error) {
 // ----------------------------------------------------------------------------
 
 // lockAndDecodeIPPool acquires a row-level lock on the pool row in
-// ipam_objects and decodes its data column as an IPPool. Status.CIDR is
-// preferred (populated for child pools after provisioning); Spec.CIDR is
+// ipam_objects and decodes its data column as an IPPool. Status.AllocatedCIDR
+// is preferred (populated for child pools after provisioning); Spec.CIDR is
 // the fallback used by root pools whose CIDR is operator-supplied.
 func lockAndDecodeIPPool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alpha1.IPPool, error) {
 	defer metrics.ObserveQuery("select_pool_for_update", time.Now())
@@ -351,8 +338,8 @@ func lockAndDecodeIPPool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv
 // allocation.FindFirstAvailableBlock's parameter shape.
 func parsePoolCIDR(pool *ipamv1alpha1.IPPool) ([]net.IPNet, error) {
 	cidrStr := pool.Spec.CIDR
-	if pool.Status.CIDR != "" {
-		cidrStr = pool.Status.CIDR
+	if pool.Status.AllocatedCIDR != "" {
+		cidrStr = pool.Status.AllocatedCIDR
 	}
 	_, ipnet, err := net.ParseCIDR(cidrStr)
 	if err != nil {

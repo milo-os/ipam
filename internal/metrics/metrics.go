@@ -48,7 +48,7 @@ var (
 			Buckets:        metrics.DefBuckets,
 			StabilityLevel: metrics.ALPHA,
 		},
-		// resource:  "ipprefixclaim" | "ipaddressclaim" | "asnclaim"
+		// resource:  "ipclaims" | "asnclaims"
 		// result:    "success" | "exhausted" | "error"
 		// ip_family: "IPv4" | "IPv6" | "ASN" — derived from the claim spec or
 		//            the resolved CIDR for prefix/address claims, hardcoded
@@ -74,7 +74,7 @@ var (
 			Help:           "Total number of allocation attempts (incremented at the top of the allocation path before any DB work)",
 			StabilityLevel: metrics.ALPHA,
 		},
-		// resource:  "ipprefixclaim" | "ipaddressclaim" | "asnclaim"
+		// resource:  "ipclaims" | "asnclaims"
 		// ip_family: "IPv4" | "IPv6" | "ASN" — sourced from the same handler
 		//            value used for ObserveAllocationDuration so attempts,
 		//            failures, and the latency histogram split identically.
@@ -90,7 +90,7 @@ var (
 			Help:           "Total number of allocation failures",
 			StabilityLevel: metrics.ALPHA,
 		},
-		// resource:  "ipprefixclaim" | "ipaddressclaim" | "asnclaim"
+		// resource:  "ipclaims" | "asnclaims"
 		// reason:    "pool_exhausted" | "pool_not_found" | "verification_required" | "tx_error" | "internal"
 		// ip_family: "IPv4" | "IPv6" | "ASN" — mirrors AllocationAttempts so
 		//            success-ratio = 1 - (failures / attempts) can be computed
@@ -309,7 +309,7 @@ var (
 	// extremely rare (transaction-only failure mode) and surface as
 	// apiserver_request_total{verb="delete", code!~"2.."} already.
 	//
-	// resource: "ipprefixclaim" | "ipaddressclaim" | "asnclaim".
+	// resource: "ipclaims" | "asnclaims".
 	Releases = metrics.NewCounterVec(
 		&metrics.CounterOpts{
 			Namespace:      "ipam",
@@ -367,7 +367,7 @@ func RecordWatchEvent(kind, eventType string) {
 }
 
 // RecordRelease increments the releases_total counter for the given claim
-// resource ("ipprefixclaim" | "ipaddressclaim" | "asnclaim"). Called from
+// resource ("ipclaims" | "asnclaims"). Called from
 // the claim Delete handler immediately after the deletion transaction
 // commits successfully.
 func RecordRelease(resource string) {
@@ -424,7 +424,7 @@ func ObservePgxpoolStat(stat PgxpoolStatLike) {
 //
 //	start := time.Now()
 //	defer func() {
-//	    metrics.ObserveAllocationDuration("ipprefixclaim", result, ipFamily, project, org, start)
+//	    metrics.ObserveAllocationDuration("ipclaims", result, ipFamily, project, org, start)
 //	}()
 //
 // where the surrounding code mutates `result` ("success" | "exhausted" |

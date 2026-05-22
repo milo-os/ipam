@@ -127,10 +127,10 @@ type IPPoolSpec struct {
 }
 
 type IPPoolStatus struct {
-	Phase      PoolPhase
-	CIDR       string
-	Capacity   PoolCapacity
-	Conditions []metav1.Condition
+	Phase         PoolPhase
+	AllocatedCIDR string
+	Capacity      PoolCapacity
+	Conditions    []metav1.Condition
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -157,16 +157,14 @@ type IPAllocation struct {
 }
 
 type IPAllocationSpec struct {
-	CIDR     string
 	IPFamily IPFamily
 	PoolRef  LocalRef
 }
 
 type IPAllocationStatus struct {
-	Phase      AllocationPhase
-	CIDR       string
-	Capacity   PoolCapacity
-	Conditions []metav1.Condition
+	Phase         AllocationPhase
+	AllocatedCIDR string
+	Conditions    []metav1.Condition
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

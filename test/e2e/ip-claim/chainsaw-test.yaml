@@ -73,7 +73,7 @@ spec:
             content: |
               set -e
               allocated=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-1 -o jsonpath='{.status.allocatedCIDR}')
-              pool=$(kubectl get ippool alloc-parent -o jsonpath='{.status.cidr}')
+              pool=$(kubectl get ippool alloc-parent -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$allocated" ] || [ -z "$pool" ]; then
                 echo "FAIL: missing allocated=$allocated pool=$pool"
                 exit 1
@@ -105,14 +105,14 @@ spec:
                 echo "FAIL: empty boundAllocationRef.name on alloc-claim-1"
                 exit 1
               fi
-              alloc_cidr=$(kubectl get ipallocation -n "$NAMESPACE" "$ref" -o jsonpath='{.spec.cidr}' 2>/dev/null || echo "")
+              alloc_cidr=$(kubectl get ipallocation -n "$NAMESPACE" "$ref" -o jsonpath='{.status.allocatedCIDR}' 2>/dev/null || echo "")
               claim_cidr=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-1 -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$alloc_cidr" ]; then
                 echo "FAIL: IPAllocation $ref not found in namespace $NAMESPACE"
                 exit 1
               fi
               if [ "$alloc_cidr" != "$claim_cidr" ]; then
-                echo "FAIL: IPAllocation.spec.cidr ($alloc_cidr) != claim.status.allocatedCIDR ($claim_cidr)"
+                echo "FAIL: IPAllocation.status.allocatedCIDR ($alloc_cidr) != claim.status.allocatedCIDR ($claim_cidr)"
                 exit 1
               fi
               echo "OK IPAllocation $ref exists with cidr=$alloc_cidr"

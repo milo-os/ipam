@@ -7,4 +7,4 @@ spec:
   ipFamily: IPv4
 status:
   phase: Ready
-  cidr: 10.220.0.0/20
+  allocatedCIDR: 10.220.0.0/20

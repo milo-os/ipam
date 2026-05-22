@@ -24,9 +24,9 @@ func NewIPAMServerCommand() *cobra.Command {
 		Short: "IPAM service apiserver",
 		Long: `IPAM is a Kubernetes-native IP Address Management service.
 
-It provides synchronous CIDR, IP, and ASN allocation through IPPrefix,
-IPPrefixClaim, IPAddress, IPAddressClaim, ASNPool, and ASNClaim resources
-exposed as an aggregated Kubernetes API server.`,
+It provides synchronous CIDR and IP allocation through IPPool, IPClaim,
+IPAllocation, ASNPool, and ASNClaim resources exposed as an aggregated
+Kubernetes API server.`,
 	}
 
 	cmd.AddCommand(NewServeCommand())

@@ -5,8 +5,8 @@ metadata:
 spec:
   description: |
     Lifecycle tests for IPPool (cluster-scoped):
-    1. Create root IPPool → assert status.phase=Ready, status.cidr populated.
-    2. Create child IPPool with spec.parentPoolRef → assert status.cidr is a
+    1. Create root IPPool → assert status.phase=Ready, status.allocatedCIDR populated.
+    2. Create child IPPool with spec.parentPoolRef → assert status.allocatedCIDR is a
        valid subnet of the root and status.phase=Ready.
     3. Create an IPClaim against the child pool → assert IPClaim Bound and
        a corresponding IPAllocation object exists in the same namespace.
@@ -44,7 +44,7 @@ spec:
     - name: create-child-pool
       description: |
         Child IPPool with parentPoolRef=pool-suite-root and prefixLength=24.
-        Server carves a /24 from the root and populates status.cidr.
+        Server carves a /24 from the root and populates status.allocatedCIDR.
         Capture root capacity before/after to confirm the child consumes
         256 addresses of the parent's available pool.
       try:
@@ -72,9 +72,9 @@ spec:
                 echo "FAIL: pool-suite-child not Ready after 30s (phase=$phase)"
                 exit 1
               fi
-              child_cidr=$(kubectl get ippool pool-suite-child -o jsonpath='{.status.cidr}')
+              child_cidr=$(kubectl get ippool pool-suite-child -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$child_cidr" ]; then
-                echo "FAIL: pool-suite-child status.cidr empty"
+                echo "FAIL: pool-suite-child status.allocatedCIDR empty"
                 exit 1
               fi
               python3 -c "
@@ -152,14 +152,14 @@ spec:
                 echo "FAIL: empty boundAllocationRef.name on pool-suite-claim"
                 exit 1
               fi
-              alloc_cidr=$(kubectl get ipallocation -n "$NAMESPACE" "$ref" -o jsonpath='{.spec.cidr}' 2>/dev/null || echo "")
+              alloc_cidr=$(kubectl get ipallocation -n "$NAMESPACE" "$ref" -o jsonpath='{.status.allocatedCIDR}' 2>/dev/null || echo "")
               claim_cidr=$(kubectl get ipclaim -n "$NAMESPACE" pool-suite-claim -o jsonpath='{.status.allocatedCIDR}')
               if [ -z "$alloc_cidr" ]; then
                 echo "FAIL: IPAllocation $ref not found in namespace $NAMESPACE"
                 exit 1
               fi
               if [ "$alloc_cidr" != "$claim_cidr" ]; then
-                echo "FAIL: IPAllocation.spec.cidr ($alloc_cidr) != claim.status.allocatedCIDR ($claim_cidr)"
+                echo "FAIL: IPAllocation.status.allocatedCIDR ($alloc_cidr) != claim.status.allocatedCIDR ($claim_cidr)"
                 exit 1
               fi
               echo "$ref" > /tmp/pool-suite-allocation-ref
