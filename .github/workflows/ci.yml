@@ -174,7 +174,14 @@ jobs:
         run: task --yes dev:build
 
       - name: Load image into kind
-        run: task --yes dev:load
+        run: |
+          task --yes dev:load
+          # Kyverno in the test-infra cluster rewrites image references that lack a
+          # registry prefix (e.g. ipam-apiserver:dev) to the fully-qualified form
+          # ghcr.io/milo-os/ipam-apiserver:latest. Re-tag the locally-built image
+          # under that name so kubelet can find it when imagePullPolicy=Never.
+          docker tag ipam-apiserver:dev ghcr.io/milo-os/ipam-apiserver:latest
+          kind load docker-image ghcr.io/milo-os/ipam-apiserver:latest --name test-infra
 
       - name: Deploy IPAM service
         run: |
