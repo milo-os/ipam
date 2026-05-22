@@ -5,6 +5,8 @@ namespace: ipam-system
 
 resources:
   - ../../base
+  - secret.yaml
+  - anonymous-rbac.yaml
 
 components:
   - ../../components/namespace

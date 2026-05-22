@@ -179,9 +179,6 @@ jobs:
       - name: Deploy IPAM service
         run: |
           kubectl apply -k config/overlays/test-infra
-          kubectl apply -f config/overlays/dev/secret.yaml
-          kubectl apply -f config/overlays/dev/anonymous-rbac.yaml
-          # Wait for postgres before the IPAM apiserver starts (it needs the DB).
           kubectl -n ipam-system wait helmrelease/postgres \
             --for=condition=Ready --timeout=300s
           kubectl -n ipam-system wait pod \
