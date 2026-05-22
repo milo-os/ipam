@@ -19,7 +19,7 @@ jobs:
       attestations: write
     uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
     with:
-      image-name: ipam-apiserver
+      image-name: ipam
       registry-organization: milo-os
       platforms: linux/amd64,linux/arm64
     secrets: inherit
@@ -37,5 +37,5 @@ jobs:
       bundle-name: ghcr.io/milo-os/ipam-kustomize
       bundle-path: config
       image-overlays: config/base
-      image-name: ghcr.io/milo-os/ipam-apiserver
+      image-name: ghcr.io/milo-os/ipam
     secrets: inherit

@@ -24,7 +24,7 @@ labels:
 
 # Image (overlays override newTag for different environments)
 images:
-  - name: ghcr.io/milo-os/ipam-apiserver
+  - name: ghcr.io/milo-os/ipam
     newTag: latest
 
 # rbac-auth-reader RoleBinding belongs in kube-system. The patch keeps the
