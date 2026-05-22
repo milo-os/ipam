@@ -1,79 +1,86 @@
-# Six additional claims. Combined with claim-1 and claim-2 these saturate the
-# /29 (8 addresses), leaving the pool fully allocated for the exhaustion step.
+# Claims host-claim-v4-3 through host-claim-v4-8.
+# Combined with host-claim-v4-1 and host-claim-v4-2 these saturate the /29
+# (8 addresses), leaving the pool fully allocated for the overflow check.
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPAddressClaim
+kind: IPPrefixClaim
 metadata:
-  name: addr-claim-3
+  name: host-claim-v4-3
   namespace: ($namespace)
   labels:
-    addr-test: "true"
+    host-test: "true"
 spec:
   ipFamily: IPv4
+  prefixLength: 32
   prefixRef:
-    name: addr-pool
+    name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPAddressClaim
+kind: IPPrefixClaim
 metadata:
-  name: addr-claim-4
+  name: host-claim-v4-4
   namespace: ($namespace)
   labels:
-    addr-test: "true"
+    host-test: "true"
 spec:
   ipFamily: IPv4
+  prefixLength: 32
   prefixRef:
-    name: addr-pool
+    name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPAddressClaim
+kind: IPPrefixClaim
 metadata:
-  name: addr-claim-5
+  name: host-claim-v4-5
   namespace: ($namespace)
   labels:
-    addr-test: "true"
+    host-test: "true"
 spec:
   ipFamily: IPv4
+  prefixLength: 32
   prefixRef:
-    name: addr-pool
+    name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPAddressClaim
+kind: IPPrefixClaim
 metadata:
-  name: addr-claim-6
+  name: host-claim-v4-6
   namespace: ($namespace)
   labels:
-    addr-test: "true"
+    host-test: "true"
 spec:
   ipFamily: IPv4
+  prefixLength: 32
   prefixRef:
-    name: addr-pool
+    name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPAddressClaim
+kind: IPPrefixClaim
 metadata:
-  name: addr-claim-7
+  name: host-claim-v4-7
   namespace: ($namespace)
   labels:
-    addr-test: "true"
+    host-test: "true"
 spec:
   ipFamily: IPv4
+  prefixLength: 32
   prefixRef:
-    name: addr-pool
+    name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPAddressClaim
+kind: IPPrefixClaim
 metadata:
-  name: addr-claim-8
+  name: host-claim-v4-8
   namespace: ($namespace)
   labels:
-    addr-test: "true"
+    host-test: "true"
 spec:
   ipFamily: IPv4
+  prefixLength: 32
   prefixRef:
-    name: addr-pool
+    name: host-pool-v4
   reclaimPolicy: Delete

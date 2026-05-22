@@ -136,6 +136,10 @@ type IPPrefixClass struct {
 }
 
 type IPPrefixClassSpec struct {
+	// RequiresVerification indicates that IP prefixes borrowing from this
+	// class must be verified before they can be used (e.g. BYOIP flows).
+	// +optional
+	RequiresVerification bool `json:"requiresVerification,omitempty"`
 	// Visibility controls cross-project access semantics for IPPrefix
 	// pools that reference this class. "platform" pools are platform-only
 	// (callers see them only when running with platform scope);
@@ -283,102 +287,4 @@ type IPPrefixClaimList struct {
 	Items           []IPPrefixClaim `json:"items"`
 }
 
-// ----------------------------------------------------------------------------
-// IPAddress
-// ----------------------------------------------------------------------------
-
-// +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName=ipa
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Address",type=string,JSONPath=`.spec.address`
-// +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
-// +kubebuilder:printcolumn:name="Prefix",type=string,JSONPath=`.spec.prefixRef.name`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +genclient
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPAddress struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   IPAddressSpec   `json:"spec,omitempty"`
-	Status IPAddressStatus `json:"status,omitempty"`
-}
-
-type IPAddressSpec struct {
-	Address   string   `json:"address"`
-	IPFamily  IPFamily `json:"ipFamily"`
-	PrefixRef LocalRef `json:"prefixRef"`
-	// +optional
-	ClaimRef *LocalRef `json:"claimRef,omitempty"`
-}
-
-type IPAddressStatus struct {
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPAddressList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []IPAddress `json:"items"`
-}
-
-// ----------------------------------------------------------------------------
-// IPAddressClaim
-// ----------------------------------------------------------------------------
-
-// +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName=ipac
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="IP",type=string,JSONPath=`.status.allocatedIP`
-// +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.spec.prefixRef.name`
-// +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +genclient
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPAddressClaim struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   IPAddressClaimSpec   `json:"spec,omitempty"`
-	Status IPAddressClaimStatus `json:"status,omitempty"`
-}
-
-type IPAddressClaimSpec struct {
-	IPFamily IPFamily `json:"ipFamily"`
-	// +optional
-	PrefixSelector *PrefixSelector `json:"prefixSelector,omitempty"`
-	// +optional
-	PrefixRef *NamespacedRef `json:"prefixRef,omitempty"`
-	// +optional
-	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
-	// +optional
-	OwnerRef *ObjectRef `json:"ownerRef,omitempty"`
-}
-
-type IPAddressClaimStatus struct {
-	// +optional
-	Phase ClaimPhase `json:"phase,omitempty"`
-	// +optional
-	AllocatedIP string `json:"allocatedIP,omitempty"`
-	// +optional
-	BoundAddressRef *LocalRef `json:"boundAddressRef,omitempty"`
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPAddressClaimList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []IPAddressClaim `json:"items"`
-}
 

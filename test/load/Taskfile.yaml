@@ -182,7 +182,7 @@ tasks:
           {{.K6_SRC_DIR}}/asn-claim-throughput.js
 
   address-concurrent:
-    desc: 'Stress-test IPAddressClaim concurrency + uniqueness. Vars: VUS, DURATION, POOL_CIDR'
+    desc: 'Stress-test host-address (IPPrefixClaim /32) concurrency + uniqueness. Vars: VUS, DURATION, POOL_CIDR'
     silent: true
     cmds:
       - |
@@ -190,11 +190,11 @@ tasks:
         k6 run \
           -e IPAM_API_URL={{.IPAM_API_URL}} \
           -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
-          -e VUS={{.VUS | default "50"}} \
+          -e VUS={{.VUS | default "10"}} \
           -e DURATION={{.DURATION | default "2m"}} \
-          -e POOL_CIDR={{.POOL_CIDR | default "10.250.0.0/22"}} \
+          -e POOL_CIDR={{.POOL_CIDR | default "10.60.0.0/24"}} \
           --summary-export={{.RESULTS_DIR}}/address-concurrent.json \
-          {{.K6_SRC_DIR}}/ipaddress-claim-concurrent.js
+          {{.K6_SRC_DIR}}/host-prefix-claim-concurrent.js
 
   exhaustion:
     desc: 'Measure deny-path latency under pool exhaustion'

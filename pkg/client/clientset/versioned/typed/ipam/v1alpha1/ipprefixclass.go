@@ -40,7 +40,7 @@ type iPPrefixClasses struct {
 // newIPPrefixClasses returns a IPPrefixClasses
 func newIPPrefixClasses(c *IpamV1alpha1Client) *iPPrefixClasses {
 	return &iPPrefixClasses{
-		gentype.NewClientWithList[*ipamv1alpha1.IPPrefixClass, *ipamv1alpha1.IPPrefixClassList](
+		gentype.NewClientWithList(
 			"ipprefixclasses",
 			c.RESTClient(),
 			scheme.ParameterCodec,

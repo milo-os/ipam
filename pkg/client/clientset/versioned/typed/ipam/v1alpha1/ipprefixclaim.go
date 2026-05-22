@@ -42,7 +42,7 @@ type iPPrefixClaims struct {
 // newIPPrefixClaims returns a IPPrefixClaims
 func newIPPrefixClaims(c *IpamV1alpha1Client, namespace string) *iPPrefixClaims {
 	return &iPPrefixClaims{
-		gentype.NewClientWithList[*ipamv1alpha1.IPPrefixClaim, *ipamv1alpha1.IPPrefixClaimList](
+		gentype.NewClientWithList(
 			"ipprefixclaims",
 			c.RESTClient(),
 			scheme.ParameterCodec,

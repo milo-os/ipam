@@ -5,7 +5,7 @@ metadata:
 spec:
   description: |
     Pool exhaustion path:
-    - Two IPAddressClaims fill the /31 pool (2 addresses)
+    - Two IPPrefixClaims (prefixLength: 32) fill the /31 pool (2 host addresses)
     - Third claim returns HTTP 507 (Insufficient Storage)
     - Releasing one claim re-opens the slot
 
@@ -17,43 +17,51 @@ spec:
             file: test-data/class.yaml
         - create:
             file: test-data/tiny-prefix.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: exhaust-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix exhaust-pool \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: exhaust-pool not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: fill-pool
-      description: Create two IPAddressClaims; both must reach Bound
+      description: Create two IPPrefixClaims (prefixLength 32); both must reach Bound
       try:
         - create:
             file: test-data/claim-1.yaml
         - create:
             file: test-data/claim-2.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPAddressClaim
-            name: exhaust-claim-1
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPAddressClaim
-            name: exhaust-claim-2
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for name in exhaust-claim-1 exhaust-claim-2; do
+                for i in $(seq 1 30); do
+                  phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" "$name" \
+                    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                  if [ "$phase" = "Bound" ]; then break; fi
+                  sleep 1
+                done
+                if [ "$phase" != "Bound" ]; then
+                  echo "FAIL: $name not Bound after 30s (phase=$phase)"
+                  exit 1
+                fi
+              done
+            check:
+              ($error == null): true
 
     - name: third-claim-rejected-507
       description: Third claim must fail with HTTP 507 (Insufficient Storage)
@@ -71,23 +79,32 @@ spec:
         - delete:
             ref:
               apiVersion: ipam.miloapis.com/v1alpha1
-              kind: IPAddressClaim
+              kind: IPPrefixClaim
               name: exhaust-claim-1
               namespace: ($namespace)
         - error:
             file: assertions/assert-claim-1-deleted.yaml
         - create:
             file: test-data/claim-3.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPAddressClaim
-            name: exhaust-claim-3
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" exhaust-claim-3 \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: exhaust-claim-3 not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
       finally:
         - script:
@@ -95,7 +112,7 @@ spec:
               - name: NAMESPACE
                 value: ($namespace)
             content: |
-              kubectl delete ipaddressclaim -n "$NAMESPACE" \
+              kubectl delete ipprefixclaim -n "$NAMESPACE" \
                 exhaust-claim-1 exhaust-claim-2 exhaust-claim-3 --ignore-not-found >/dev/null 2>&1 || true
               kubectl delete ipprefix exhaust-pool --ignore-not-found >/dev/null 2>&1 || true
               kubectl delete ipprefixclass exhaust-class --ignore-not-found >/dev/null 2>&1 || true

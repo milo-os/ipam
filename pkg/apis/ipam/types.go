@@ -116,8 +116,11 @@ type IPPrefixClass struct {
 }
 
 type IPPrefixClassSpec struct {
-	Visibility        string
-	DefaultAllocation AllocationSpec
+	// RequiresVerification indicates that IP prefixes borrowing from this
+	// class must be verified before they can be used (e.g. BYOIP flows).
+	RequiresVerification bool
+	Visibility           string
+	DefaultAllocation    AllocationSpec
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -206,75 +209,4 @@ type IPPrefixClaimList struct {
 	Items []IPPrefixClaim
 }
 
-// ----------------------------------------------------------------------------
-// IPAddress
-// ----------------------------------------------------------------------------
-
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-// +genclient
-
-type IPAddress struct {
-	metav1.TypeMeta
-	metav1.ObjectMeta
-
-	Spec   IPAddressSpec
-	Status IPAddressStatus
-}
-
-type IPAddressSpec struct {
-	Address   string
-	IPFamily  IPFamily
-	PrefixRef LocalRef
-	ClaimRef  *LocalRef
-}
-
-type IPAddressStatus struct {
-	Conditions []metav1.Condition
-}
-
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-type IPAddressList struct {
-	metav1.TypeMeta
-	metav1.ListMeta
-	Items []IPAddress
-}
-
-// ----------------------------------------------------------------------------
-// IPAddressClaim
-// ----------------------------------------------------------------------------
-
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-// +genclient
-
-type IPAddressClaim struct {
-	metav1.TypeMeta
-	metav1.ObjectMeta
-
-	Spec   IPAddressClaimSpec
-	Status IPAddressClaimStatus
-}
-
-type IPAddressClaimSpec struct {
-	IPFamily       IPFamily
-	PrefixSelector *PrefixSelector
-	PrefixRef      *NamespacedRef
-	ReclaimPolicy  ReclaimPolicy
-	OwnerRef       *ObjectRef
-}
-
-type IPAddressClaimStatus struct {
-	Phase           ClaimPhase
-	AllocatedIP     string
-	BoundAddressRef *LocalRef
-	Conditions      []metav1.Condition
-}
-
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-type IPAddressClaimList struct {
-	metav1.TypeMeta
-	metav1.ListMeta
-	Items []IPAddressClaim
-}
 

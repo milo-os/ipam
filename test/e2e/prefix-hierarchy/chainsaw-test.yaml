@@ -29,56 +29,88 @@ spec:
             file: test-data/class.yaml
         - create:
             file: test-data/env-prefix.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: hier-env
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix hier-env \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: hier-env not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: claim-region-1
       description: Claim regional block /12 with childPrefixTemplate; assert child IPPrefix exists
       try:
         - create:
             file: test-data/region-1-claim.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: hier-region-1-claim
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: hier-region-1
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" hier-region-1-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: hier-region-1-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix hier-region-1 \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: hier-region-1 not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: claim-region-2-non-overlap
       description: Second regional /12 must be non-overlapping with first
       try:
         - create:
             file: test-data/region-2-claim.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: hier-region-2-claim
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" hier-region-2-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: hier-region-2-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - script:
             env:
               - name: NAMESPACE
@@ -94,16 +126,25 @@ spec:
       try:
         - create:
             file: test-data/leaf-claim.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: hier-leaf-claim
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" hier-leaf-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: hier-leaf-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - script:
             env:
               - name: NAMESPACE
