@@ -197,10 +197,14 @@ jobs:
         run: |
           echo "=== Pods ==="
           kubectl get pods -A
+          echo "=== IPAM pod describe ==="
+          kubectl describe pods -n ipam-system -l app=ipam-apiserver || true
           echo "=== IPAM apiserver logs ==="
-          kubectl logs -n ipam-system -l app=ipam-apiserver --tail=100 || true
+          kubectl logs -n ipam-system -l app=ipam-apiserver --all-containers --tail=100 || true
+          echo "=== CertificateRequests ==="
+          kubectl get certificaterequests -n ipam-system -o wide || true
           echo "=== Events ==="
-          kubectl get events -n ipam-system --sort-by='.lastTimestamp' | tail -40 || true
+          kubectl get events -n ipam-system --sort-by='.lastTimestamp' | tail -60 || true
           echo "=== APIService ==="
           kubectl get apiservice v1alpha1.ipam.miloapis.com -o yaml || true
 

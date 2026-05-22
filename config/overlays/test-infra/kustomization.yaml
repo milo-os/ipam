@@ -11,7 +11,6 @@ resources:
 components:
   - ../../components/namespace
   - ../../components/api-registration
-  - ../../components/cert-manager-ca
   - ../../components/postgres
 
 images:
@@ -21,6 +20,10 @@ images:
 
 patches:
   - path: patches/apiservice-patch.yaml
+  - path: patches/deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
 
 labels:
   - includeSelectors: false
