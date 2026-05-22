@@ -62,14 +62,48 @@ spec:
               ($error == null): true
 
     - name: third-claim-rejected-507
-      description: Third claim must fail with HTTP 507 (Insufficient Storage)
+      description: |
+        Third claim cannot be satisfied from the exhausted pool. Apply the
+        claim and assert it reaches a non-Bound terminal condition with
+        reason=PoolExhausted (works for both sync 507 and async reconciler).
       try:
-        - create:
+        - apply:
             file: test-data/claim-3.yaml
-            expect:
-              - check:
-                  ($error != null): true
-                  (contains($error, '507') || contains($error, 'Insufficient Storage') || contains($error, 'exhausted')): true
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                reason=$(kubectl get ipclaim -n "$NAMESPACE" exhaust-claim-3 \
+                  -o jsonpath='{.status.conditions[?(@.type=="Allocated")].reason}' 2>/dev/null || echo "")
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" exhaust-claim-3 \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$reason" = "PoolExhausted" ]; then break; fi
+                if [ "$phase" = "Bound" ]; then
+                  echo "FAIL: exhaust-claim-3 became Bound against an exhausted pool"
+                  exit 1
+                fi
+                sleep 1
+              done
+              if [ "$reason" != "PoolExhausted" ]; then
+                echo "FAIL: exhaust-claim-3 Allocated condition reason=$reason (expected PoolExhausted) after 30s"
+                exit 1
+              fi
+              echo "OK exhaust-claim-3 rejected with reason=PoolExhausted"
+            check:
+              ($error == null): true
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" exhaust-claim-3 --ignore-not-found >/dev/null 2>&1 || true
+            check:
+              ($error == null): true
 
     - name: release-and-reallocate
       description: Delete first claim, then create third claim — succeeds

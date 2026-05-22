@@ -32,7 +32,6 @@ import (
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/metrics"
-	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -138,6 +137,13 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 // allocation row in ipam_cidr_allocations, and the IPAllocation API object
 // together so the response body carries a CIDR that has already been
 // reserved.
+//
+// When allocation fails (pool exhausted, pool not found, no selector match),
+// the claim is still persisted to storage with a failure condition set on its
+// status. The Create call returns the persisted claim object without an HTTP
+// error, allowing callers (including federated edge controllers) to observe
+// the failure reason via status.conditions rather than a transport-level
+// error code.
 func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
 	claim, ok := obj.(*ipam.IPClaim)
 	if !ok {
@@ -223,7 +229,13 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			_ = tx.Rollback(ctx)
 			if errors.Is(rerr, allocator.ErrPoolNotFound) {
 				metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
-				return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
+				result = "exhausted"
+				return r.persistFailedClaim(ctx, claim, metav1.Condition{
+					Type:    "Allocated",
+					Status:  metav1.ConditionFalse,
+					Reason:  "NoPoolMatch",
+					Message: "no IPPool matches the provided selector",
+				})
 			}
 			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 			return nil, fmt.Errorf("resolve IPPool: %w", rerr)
@@ -245,7 +257,13 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 				// named the pool by hand.
 				if claim.Spec.PoolSelector != nil {
 					metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
-					return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
+					result = "exhausted"
+					return r.persistFailedClaim(ctx, claim, metav1.Condition{
+						Type:    "Allocated",
+						Status:  metav1.ConditionFalse,
+						Reason:  "NoPoolMatch",
+						Message: "no IPPool matches the provided selector",
+					})
 				}
 				metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 				return nil, apierrors.NewForbidden(
@@ -259,15 +277,19 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		}
 	}
 
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, claim.Spec.PrefixLength, string(claim.Spec.IPFamily), claimKey, id.Name)
-	if err != nil {
+	cidr, allocErr := r.allocator.AllocatePrefix(ctx, tx, poolKey, claim.Spec.PrefixLength, string(claim.Spec.IPFamily), claimKey, id.Name)
+	if allocErr != nil {
 		_ = tx.Rollback(ctx)
-		reason := allocationFailureReason(err)
+		reason := allocationFailureReason(allocErr)
 		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org)
 		if reason == "pool_exhausted" {
 			result = "exhausted"
 		}
-		return nil, mapAllocationError(err)
+		// Persist the claim with a failure condition rather than returning an
+		// HTTP error. This allows both hub and federated edge controllers to
+		// observe failure state through status.conditions.
+		cond := allocationFailureCondition(allocErr, poolName)
+		return r.persistFailedClaim(ctx, claim, cond)
 	}
 
 	// Build the IPAllocation object that records this binding. It lives in
@@ -308,6 +330,13 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	claim.Status.Phase = ipam.ClaimBound
 	claim.Status.AllocatedCIDR = cidr
 	claim.Status.BoundAllocationRef = &ipam.LocalRef{Name: allocationName}
+	claim.Status.Conditions = []metav1.Condition{{
+		Type:               "Allocated",
+		Status:             metav1.ConditionTrue,
+		Reason:             "AllocationSucceeded",
+		Message:            fmt.Sprintf("CIDR %s allocated from %s", cidr, poolName),
+		LastTransitionTime: metav1.Now(),
+	}}
 
 	claimData, err := runtime.Encode(r.codec, claim)
 	if err != nil {
@@ -337,6 +366,60 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	return claim, nil
 }
 
+// persistFailedClaim persists a claim to storage with a failure condition
+// set on its status and returns the persisted object without an HTTP error.
+// This is used when allocation fails (pool exhausted, pool not found, no
+// selector match) so that clients — including federated edge controllers —
+// can observe the failure through status.conditions rather than a
+// transport-level error.
+func (r *AllocatingREST) persistFailedClaim(ctx context.Context, claim *ipam.IPClaim, cond metav1.Condition) (runtime.Object, error) {
+	ipFamily := string(claim.Spec.IPFamily)
+	id := tenant.FromContext(ctx)
+	project := id.Project()
+	org := id.Org()
+
+	claim.Status.Phase = ipam.ClaimError
+	cond.LastTransitionTime = metav1.Now()
+	claim.Status.Conditions = []metav1.Condition{cond}
+
+	claimKey := claimObjectKey(claim.Namespace, claim.Name)
+	claimData, err := runtime.Encode(r.codec, claim)
+	if err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, fmt.Errorf("encode failed claim: %w", err)
+	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		return nil, fmt.Errorf("begin failed-claim persist transaction: %w", err)
+	}
+	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		return nil, fmt.Errorf("persist failed claim: %w", err)
+	}
+	versioner := storage.APIObjectVersioner{}
+	if err := versioner.UpdateObject(claim, uint64(rv)); err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, fmt.Errorf("set resource version on failed claim: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		return nil, fmt.Errorf("commit failed-claim persist transaction: %w", err)
+	}
+
+	klog.V(2).InfoS("claim persisted with failure condition",
+		"claim", claim.Name,
+		"namespace", claim.Namespace,
+		"reason", cond.Reason,
+		"message", cond.Message,
+	)
+	return claim, nil
+}
+
 // allocationFailureReason maps an allocator error onto the canonical reason
 // label used by ipam_allocation_failures_total.
 func allocationFailureReason(err error) string {
@@ -347,6 +430,35 @@ func allocationFailureReason(err error) string {
 		return "pool_not_found"
 	default:
 		return "tx_error"
+	}
+}
+
+// allocationFailureCondition builds the Allocated=False condition for a claim
+// that failed to allocate a prefix. poolName is the resolved pool name and is
+// included in the human-readable message where available.
+func allocationFailureCondition(err error, poolName string) metav1.Condition {
+	switch {
+	case errors.Is(err, allocator.ErrPoolExhausted):
+		return metav1.Condition{
+			Type:    "Allocated",
+			Status:  metav1.ConditionFalse,
+			Reason:  "PoolExhausted",
+			Message: fmt.Sprintf("pool %s has no available block of the requested size", poolName),
+		}
+	case errors.Is(err, allocator.ErrPoolNotFound):
+		return metav1.Condition{
+			Type:    "Allocated",
+			Status:  metav1.ConditionFalse,
+			Reason:  "PoolNotFound",
+			Message: fmt.Sprintf("pool %s not found", poolName),
+		}
+	default:
+		return metav1.Condition{
+			Type:    "Allocated",
+			Status:  metav1.ConditionFalse,
+			Reason:  "AllocationFailed",
+			Message: err.Error(),
+		}
 	}
 }
 
@@ -521,17 +633,6 @@ func allocationNameFor(namespace, name string) string {
 // internal/access.
 func (r *AllocatingREST) authorizeCrossProject(ctx context.Context, tx pgx.Tx, poolKey string) error {
 	return access.AuthorizeCrossProjectPrefix(ctx, tx, poolKey, r.poolChecker)
-}
-
-func mapAllocationError(err error) error {
-	switch {
-	case errors.Is(err, allocator.ErrPoolExhausted):
-		return registryerrors.NewInsufficientStorage("IPPool exhausted")
-	case errors.Is(err, allocator.ErrPoolNotFound):
-		return apierrors.NewBadRequest("IPPool not found")
-	default:
-		return apierrors.NewInternalError(err)
-	}
 }
 
 // Compile-time interface assertions.

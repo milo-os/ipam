@@ -91,10 +91,15 @@ spec:
               ($error == null): true
               (contains($stdout, 'OK child ')): true
         - script:
+            timeout: 30s
             content: |
               set -e
               before=$(cat /tmp/pool-suite-root-before)
-              after=$(kubectl get ippool pool-suite-root -o jsonpath='{.status.capacity.available}')
+              for i in $(seq 1 30); do
+                after=$(kubectl get ippool pool-suite-root -o jsonpath='{.status.capacity.available}')
+                if [ "$after" -lt "$before" ]; then break; fi
+                sleep 1
+              done
               echo "after_root_available=$after (before=$before)"
               if [ "$after" -ge "$before" ]; then
                 echo "FAIL: root capacity.available did not decrease after child pool creation"

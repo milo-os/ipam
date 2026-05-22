@@ -37,36 +37,72 @@ spec:
             file: assertions/assert-valid-pool.yaml
 
     - name: missing-cidr-field
-      description: IPPool missing spec.cidr is rejected at admission
+      description: |
+        IPPool missing spec.cidr is rejected. We assert only that the create
+        fails (object not created), not the specific error message, since
+        error text differs between the aggregated apiserver and a webhook.
       try:
         - create:
             file: test-data/missing-cidr-pool.yaml
             expect:
               - check:
                   ($error != null): true
-                  (contains($error, 'cidr')): true
 
     - name: invalid-cidr-format
-      description: IPPool with malformed CIDR string is rejected
+      description: |
+        IPPool with a malformed CIDR string is rejected. We assert only that
+        the create fails, not the specific error message text.
       try:
         - create:
             file: test-data/invalid-cidr-pool.yaml
             expect:
               - check:
                   ($error != null): true
-                  (contains($error, 'invalid CIDR')): true
 
     - name: claim-prefix-length-out-of-bounds
       description: |
-        IPClaim asks for prefixLength=16 against a /20 pool. No candidate
-        block fits, so the request is rejected with HTTP 507 "pool exhausted".
+        IPClaim asks for prefixLength=16 against a /20 pool (allocation only
+        allows /24-/28). No block fits, so the claim must reach a non-Bound
+        state with reason=PoolExhausted (works for both sync 507 and async
+        reconciler).
       try:
-        - create:
+        - apply:
             file: test-data/claim-out-of-bounds.yaml
-            expect:
-              - check:
-                  ($error != null): true
-                  (contains($error, '507') || contains($error, 'Insufficient Storage') || contains($error, 'exhausted')): true
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                reason=$(kubectl get ipclaim -n "$NAMESPACE" claim-out-of-bounds \
+                  -o jsonpath='{.status.conditions[?(@.type=="Allocated")].reason}' 2>/dev/null || echo "")
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" claim-out-of-bounds \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$reason" = "PoolExhausted" ]; then break; fi
+                if [ "$phase" = "Bound" ]; then
+                  echo "FAIL: claim-out-of-bounds became Bound but prefixLength=16 exceeds pool allocation bounds"
+                  exit 1
+                fi
+                sleep 1
+              done
+              if [ "$reason" != "PoolExhausted" ]; then
+                echo "FAIL: claim-out-of-bounds Allocated condition reason=$reason (expected PoolExhausted) after 30s"
+                exit 1
+              fi
+              echo "OK claim-out-of-bounds rejected with reason=PoolExhausted"
+            check:
+              ($error == null): true
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" claim-out-of-bounds --ignore-not-found >/dev/null 2>&1 || true
+            check:
+              ($error == null): true
 
     - name: claim-prefix-length-zero
       description: IPClaim with prefixLength=0 is rejected
@@ -79,24 +115,46 @@ spec:
                   (contains($error, 'prefixLength')): true
 
     - name: immutable-cidr
-      description: Patching IPPool.spec.cidr is rejected (immutable)
+      description: |
+        Patching IPPool.spec.cidr is rejected (immutable). The patch is
+        attempted; regardless of whether the rejection is synchronous (webhook)
+        or the field stays unchanged by a reconciler, we assert the object
+        retains the original CIDR value.
       try:
         - patch:
             file: test-data/patch-pool-cidr.yaml
             expect:
               - check:
                   ($error != null): true
-                  (contains($error, 'spec.cidr is immutable')): true
+        - assert:
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: test-valid-pool
+              spec:
+                cidr: 10.200.0.0/20
 
     - name: immutable-ip-family
-      description: Patching IPPool.spec.ipFamily is rejected (immutable)
+      description: |
+        Patching IPPool.spec.ipFamily is rejected (immutable). The patch is
+        attempted; regardless of whether the rejection is synchronous (webhook)
+        or the field stays unchanged by a reconciler, we assert the object
+        retains the original ipFamily value.
       try:
         - patch:
             file: test-data/patch-pool-ip-family.yaml
             expect:
               - check:
                   ($error != null): true
-                  (contains($error, 'spec.ipFamily is immutable')): true
+        - assert:
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: test-valid-pool
+              spec:
+                ipFamily: IPv4
 
     - name: update-mutable-strategy
       description: Patching IPPool.spec.allocation.strategy succeeds; assert updated value

@@ -91,14 +91,48 @@ spec:
               (contains($stdout, 'OK IPAllocation ')): true
 
     - name: claim-no-match-rejected
-      description: Selector matching no pool returns HTTP 400
+      description: |
+        Selector matching no pool must not produce a Bound claim. Apply the
+        claim and assert it reaches a non-Bound condition with
+        reason=NoPoolMatch (works for both sync 400 and async reconciler).
       try:
-        - create:
+        - apply:
             file: test-data/claim-no-match.yaml
-            expect:
-              - check:
-                  ($error != null): true
-                  (contains($error, 'no IPPool matches') || contains($error, 'no pool matches') || contains($error, 'no IPPrefix pool matches')): true
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                reason=$(kubectl get ipclaim -n "$NAMESPACE" selector-claim-no-match \
+                  -o jsonpath='{.status.conditions[?(@.type=="Allocated")].reason}' 2>/dev/null || echo "")
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" selector-claim-no-match \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$reason" = "NoPoolMatch" ]; then break; fi
+                if [ "$phase" = "Bound" ]; then
+                  echo "FAIL: selector-claim-no-match became Bound despite no matching pool"
+                  exit 1
+                fi
+                sleep 1
+              done
+              if [ "$reason" != "NoPoolMatch" ]; then
+                echo "FAIL: selector-claim-no-match Allocated condition reason=$reason (expected NoPoolMatch) after 30s"
+                exit 1
+              fi
+              echo "OK selector-claim-no-match rejected with reason=NoPoolMatch"
+            check:
+              ($error == null): true
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" selector-claim-no-match --ignore-not-found >/dev/null 2>&1 || true
+            check:
+              ($error == null): true
 
     - name: mutually-exclusive-rejected
       description: Setting both poolRef and poolSelector returns HTTP 400
