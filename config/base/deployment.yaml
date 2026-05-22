@@ -111,6 +111,7 @@ spec:
             - --authentication-skip-lookup=$(AUTHENTICATION_SKIP_LOOKUP)
             - --authentication-tolerate-lookup-failure=$(AUTHENTICATION_TOLERATE_LOOKUP_FAILURE)
             - --authorization-always-allow-paths=$(AUTHORIZATION_ALWAYS_ALLOW_PATHS)
+            - --requestheader-client-ca-file=/etc/kubernetes/pki/requestheader/ca.crt
             - --requestheader-username-headers=$(REQUESTHEADER_USERNAME_HEADERS)
             - --requestheader-group-headers=$(REQUESTHEADER_GROUP_HEADERS)
             - --requestheader-uid-headers=$(REQUESTHEADER_UID_HEADERS)

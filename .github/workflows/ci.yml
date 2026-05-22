@@ -176,6 +176,19 @@ jobs:
       - name: Load image into kind
         run: task --yes dev:load
 
+      - name: Create control-plane-ca configmap
+        run: |
+          # The aggregated apiserver uses --requestheader-client-ca-file to verify
+          # the front proxy identity. In kind the cert lives in the
+          # extension-apiserver-authentication ConfigMap in kube-system.
+          kubectl create namespace ipam-system --dry-run=client -o yaml | kubectl apply -f -
+          kubectl get configmap extension-apiserver-authentication -n kube-system \
+            -o jsonpath='{.data.requestheader-client-ca-file}' > /tmp/requestheader-ca.crt
+          kubectl create configmap control-plane-ca \
+            -n ipam-system \
+            --from-file=ca.crt=/tmp/requestheader-ca.crt \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Deploy IPAM service
         run: |
           kubectl apply -k config/overlays/test-infra
