@@ -141,7 +141,7 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 	// Resolve the parent pool's IPFamily before entering the transaction so
 	// the explicit value can be passed to AllocatePrefix. IPFamily is
 	// immutable, so reading it outside the transaction is safe.
-	parentObj, err := r.Store.Get(ctx, parentName, &metav1.GetOptions{})
+	parentObj, err := r.Get(ctx, parentName, &metav1.GetOptions{})
 	if err != nil {
 		return nil, apierrors.NewBadRequest("parent IPPool not found")
 	}
