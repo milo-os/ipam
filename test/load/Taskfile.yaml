@@ -182,7 +182,7 @@ tasks:
           {{.K6_SRC_DIR}}/asn-claim-throughput.js
 
   address-concurrent:
-    desc: 'Stress-test host-address (IPPrefixClaim /32) concurrency + uniqueness. Vars: VUS, DURATION, POOL_CIDR'
+    desc: 'Stress-test host-address (IPClaim /32) concurrency + uniqueness. Vars: VUS, DURATION, POOL_CIDR'
     silent: true
     cmds:
       - |
@@ -235,7 +235,7 @@ tasks:
           {{.K6_SRC_DIR}}/mixed-load.js
 
   concurrent:
-    desc: 'Concurrent burst + uniqueness IPPrefixClaim test. Vars: VUS, DURATION'
+    desc: 'Concurrent burst + uniqueness IPClaim test. Vars: VUS, DURATION'
     silent: true
     cmds:
       - |
@@ -250,7 +250,7 @@ tasks:
           {{.K6_SRC_DIR}}/concurrent-claims.js
 
   cross-project:
-    desc: 'Cross-project IPPrefixClaim throughput. Vars: VUS, DURATION'
+    desc: 'Cross-project IPClaim throughput. Vars: VUS, DURATION'
     silent: true
     cmds:
       - |
@@ -316,17 +316,23 @@ tasks:
         PROJECT_COUNT={{.PROJECT_COUNT}}
         LAST=$((PROJECT_COUNT - 1))
 
+        echo "Deleting IPClaims and IPAllocations in every perf namespace..."
+        for ns in $(KUBECONFIG={{.KUBECONFIG}} kubectl get ns -o name | grep '^namespace/ipam-perf-' | sed 's|^namespace/||'); do
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete ipclaim.ipam.miloapis.com --all -n ${ns} --ignore-not-found --wait=false || true
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete ipallocation.ipam.miloapis.com --all -n ${ns} --ignore-not-found --wait=false || true
+        done
+
         echo "Deleting perf namespaces..."
         KUBECONFIG={{.KUBECONFIG}} kubectl get ns -o name | grep '^namespace/ipam-perf-' | xargs -r KUBECONFIG={{.KUBECONFIG}} kubectl delete --wait=false || true
 
-        echo "Deleting per-project IPv4 prefixes (perf-prefix-0..${LAST})..."
+        echo "Deleting per-project IPv4 IPPools (perf-prefix-0..${LAST})..."
         for n in $(seq 0 ${LAST}); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-prefix-${n} --ignore-not-found || true
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-prefix-${n} --ignore-not-found || true
         done
 
-        echo "Deleting per-project IPv6 prefixes (perf-ipv6-prefix-0..${LAST})..."
+        echo "Deleting per-project IPv6 IPPools (perf-ipv6-prefix-0..${LAST})..."
         for n in $(seq 0 ${LAST}); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-ipv6-prefix-${n} --ignore-not-found || true
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-ipv6-prefix-${n} --ignore-not-found || true
         done
 
         echo "Deleting per-project ASN pools (perf-asn-pool-0..${LAST})..."
@@ -335,39 +341,34 @@ tasks:
         done
 
         echo "Deleting platform-level perf pool..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-prefix --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-private --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-prefix --ignore-not-found || true
         KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-pool --ignore-not-found || true
         KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpoolclass.ipam.miloapis.com perf-asn --ignore-not-found || true
 
         echo "Deleting IPv4 shared cross-project pool + RBAC..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-shared-prefix --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-shared --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-shared-prefix --ignore-not-found || true
         KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-shared-pool-user --ignore-not-found || true
         for n in $(seq 0 ${LAST}); do
           KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-shared-pool-user-ipam-perf-${n} --ignore-not-found || true
         done
 
         echo "Deleting IPv6 shared cross-project pool + RBAC..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-ipv6-shared --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-ipv6-shared-class --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-ipv6-shared --ignore-not-found || true
         KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-ipv6-shared-pool-user --ignore-not-found || true
         for n in $(seq 0 ${LAST}); do
           KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-ipv6-shared-pool-user-ipam-perf-${n} --ignore-not-found || true
         done
 
         echo "Deleting exhaust pool + RBAC (pool-exhaustion.js setup leaks)..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-exhaust-pool --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-exhaust-class --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-exhaust-pool --ignore-not-found || true
         KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-exhaust-pool-user --ignore-not-found || true
         for n in $(seq 0 ${LAST}); do
           KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-exhaust-pool-user-ipam-perf-${n} --ignore-not-found || true
         done
 
-        echo "Deleting per-test scratch pools (asn classref + ipaddress concurrent)..."
+        echo "Deleting per-test scratch pools..."
         KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-classref-pool --ignore-not-found || true
         KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpoolclass.ipam.miloapis.com perf-asn-classref --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefix.ipam.miloapis.com perf-ipaddr-concurrent-pool --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipprefixclass.ipam.miloapis.com perf-ipaddr-concurrent --ignore-not-found || true
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-host-claim-pool --ignore-not-found || true
 
         echo "Cleanup complete."

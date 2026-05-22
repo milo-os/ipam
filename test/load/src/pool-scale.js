@@ -5,7 +5,7 @@
 // latency. Tags every metric with {depth: N} so we can compare across steps.
 //
 // All requests are scoped to project 0 (`ipam-perf-0`) and target project 0's
-// per-project pool `perf-prefix-0` (10.0.0.0/16). The /16 size keeps the
+// per-project IPPool `perf-prefix-0` (10.0.0.0/16). The /16 size keeps the
 // sweep bounded while still letting us walk /20 -> /28 densities.
 //
 // Asserts (informally, via thresholds) that p95 latency does not increase
@@ -25,8 +25,8 @@
 
 import { Counter, Trend } from 'k6/metrics';
 import {
-  createPrefixClaimForProject,
-  deletePrefixClaimForProject,
+  createIPClaimForProject,
+  deleteIPClaimForProject,
   nsFor,
   projectIDFor,
 } from '../lib/ipam-client.js';
@@ -91,7 +91,7 @@ function fillStep(prefixLen) {
   const samples = latenciesByDepth[prefixLen] || (latenciesByDepth[prefixLen] = []);
   for (let i = 0; i < target; i++) {
     const name = `scale-d${prefixLen}-${i}`;
-    const r = createPrefixClaimForProject(FILL_NS, name, PARENT_PREFIX, prefixLen, PROJECT);
+    const r = createIPClaimForProject(FILL_NS, name, PARENT_PREFIX, prefixLen, PROJECT);
     if (r.status === 201) {
       created.push(name);
       createLatency.add(r.timings.duration, { depth: String(prefixLen) });
@@ -106,7 +106,7 @@ function fillStep(prefixLen) {
 
   // Cleanup so the next step gets fresh capacity
   for (const name of created) {
-    deletePrefixClaimForProject(FILL_NS, name, PROJECT);
+    deleteIPClaimForProject(FILL_NS, name, PROJECT);
   }
   return created.length;
 }

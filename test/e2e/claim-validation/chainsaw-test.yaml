@@ -1,0 +1,121 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: claim-validation
+spec:
+  description: |
+    End-to-end tests for IPPool and IPClaim validation:
+    - Required field validation (cidr) on IPPool
+    - CIDR format validation
+    - prefixLength bounds (min/max from parent)
+    - Immutability of IPPool spec.cidr and spec.ipFamily
+    - Mutability of spec.allocation.strategy
+
+  steps:
+    - name: create-valid-pool
+      description: Create a valid IPPool; assert Ready phase and canonical CIDR
+      try:
+        - create:
+            file: test-data/valid-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool test-valid-pool \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: test-valid-pool not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-valid-pool.yaml
+
+    - name: missing-cidr-field
+      description: IPPool missing spec.cidr is rejected at admission
+      try:
+        - create:
+            file: test-data/missing-cidr-pool.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'cidr')): true
+
+    - name: invalid-cidr-format
+      description: IPPool with malformed CIDR string is rejected
+      try:
+        - create:
+            file: test-data/invalid-cidr-pool.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'invalid CIDR')): true
+
+    - name: claim-prefix-length-out-of-bounds
+      description: |
+        IPClaim asks for prefixLength=16 against a /20 pool. No candidate
+        block fits, so the request is rejected with HTTP 507 "pool exhausted".
+      try:
+        - create:
+            file: test-data/claim-out-of-bounds.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, '507') || contains($error, 'Insufficient Storage') || contains($error, 'exhausted')): true
+
+    - name: claim-prefix-length-zero
+      description: IPClaim with prefixLength=0 is rejected
+      try:
+        - create:
+            file: test-data/claim-zero-length.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'prefixLength')): true
+
+    - name: immutable-cidr
+      description: Patching IPPool.spec.cidr is rejected (immutable)
+      try:
+        - patch:
+            file: test-data/patch-pool-cidr.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'spec.cidr is immutable')): true
+
+    - name: immutable-ip-family
+      description: Patching IPPool.spec.ipFamily is rejected (immutable)
+      try:
+        - patch:
+            file: test-data/patch-pool-ip-family.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'spec.ipFamily is immutable')): true
+
+    - name: update-mutable-strategy
+      description: Patching IPPool.spec.allocation.strategy succeeds; assert updated value
+      try:
+        - patch:
+            file: test-data/patch-pool-strategy.yaml
+        - assert:
+            file: assertions/assert-updated-strategy.yaml
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" \
+                claim-out-of-bounds claim-zero-length --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool \
+                test-valid-pool test-missing-cidr test-invalid-cidr --ignore-not-found >/dev/null 2>&1 || true
+              echo "claim-validation cleanup done"
+            check:
+              ($error == null): true

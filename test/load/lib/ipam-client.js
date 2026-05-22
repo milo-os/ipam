@@ -1,5 +1,6 @@
 // Shared HTTP client for the IPAM apiserver. Provides typed helpers for the
-// nine IPAM resources and standardized request configuration.
+// IPAM resources (IPPool, IPClaim, IPAllocation, ASNPool, ASNClaim) and
+// standardized request configuration.
 //
 // Configuration via environment variables:
 //   IPAM_API_URL    - Base URL of the apiserver (default: kubectl proxy localhost:8001)
@@ -97,24 +98,29 @@ export function nsFor(n) {
   return `ipam-perf-${n}`;
 }
 
-export function prefixClaimPath(ns, name) {
+// IPClaim is namespaced.
+export function ipClaimPath(ns, name) {
   return name
-    ? `/namespaces/${ns}/ipprefixclaims/${name}`
-    : `/namespaces/${ns}/ipprefixclaims`;
+    ? `/namespaces/${ns}/ipclaims/${name}`
+    : `/namespaces/${ns}/ipclaims`;
+}
+
+// IPAllocation is namespaced (system-created allocation record).
+export function ipAllocationPath(ns, name) {
+  return name
+    ? `/namespaces/${ns}/ipallocations/${name}`
+    : `/namespaces/${ns}/ipallocations`;
+}
+
+// IPPool is cluster-scoped.
+export function ipPoolPath(name) {
+  return name ? `/ippools/${name}` : '/ippools';
 }
 
 export function asnClaimPath(ns, name) {
   return name
     ? `/namespaces/${ns}/asnclaims/${name}`
     : `/namespaces/${ns}/asnclaims`;
-}
-
-export function prefixPath(name) {
-  return name ? `/ipprefixes/${name}` : '/ipprefixes';
-}
-
-export function prefixClassPath(name) {
-  return name ? `/ipprefixclasses/${name}` : '/ipprefixclasses';
 }
 
 export function asnPoolPath(name) {
@@ -125,52 +131,62 @@ export function asnPoolClassPath(name) {
   return name ? `/asnpoolclasses/${name}` : '/asnpoolclasses';
 }
 
-// IPAddress is namespaced (the cluster-allocated address resource — distinct
-// from IPAddressClaim).
-export function ipAddressPath(ns, name) {
-  return name
-    ? `/namespaces/${ns}/ipaddresses/${name}`
-    : `/namespaces/${ns}/ipaddresses`;
-}
-
 // --- Resource builders ---
 
-export function ipPrefixClass(name, { visibility = 'consumer', minLen = 20, maxLen = 28, strategy = 'FirstFit' } = {}) {
+// ipPool builds an IPPool body. visibility defaults to 'consumer'. Set
+// visibility='shared' to allow cross-project use, 'platform' for backbone.
+export function ipPool(name, cidr, {
+  ipFamily = 'IPv4',
+  visibility = 'consumer',
+  minLen = 20,
+  maxLen = 28,
+  strategy = 'FirstFit',
+} = {}) {
   return {
     apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'IPPrefixClass',
-    metadata: { name },
-    spec: {
-      visibility,
-      defaultAllocation: { minPrefixLength: minLen, maxPrefixLength: maxLen, strategy },
-    },
-  };
-}
-
-export function ipPrefix(name, cidr, classRef, { ipFamily = 'IPv4', minLen = 20, maxLen = 28, strategy = 'FirstFit' } = {}) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'IPPrefix',
+    kind: 'IPPool',
     metadata: { name },
     spec: {
       cidr,
       ipFamily,
-      classRef: { name: classRef },
+      visibility,
       allocation: { minPrefixLength: minLen, maxPrefixLength: maxLen, strategy },
     },
   };
 }
 
-export function ipPrefixClaim(ns, name, prefixRef, prefixLength, { ipFamily = 'IPv4', reclaimPolicy = 'Delete' } = {}) {
+// ipClaim builds an IPClaim body. poolName is the IPPool name; the resulting
+// spec.poolRef is `{ name: poolName }` (same-project).
+export function ipClaim(ns, name, poolName, prefixLength, { ipFamily = 'IPv4', reclaimPolicy = 'Delete' } = {}) {
   return {
     apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'IPPrefixClaim',
+    kind: 'IPClaim',
     metadata: { name, namespace: ns },
     spec: {
       ipFamily,
       prefixLength,
-      prefixRef: { name: prefixRef },
+      poolRef: { name: poolName },
       reclaimPolicy,
+    },
+  };
+}
+
+// crossProjectIPClaim is like ipClaim but sets spec.poolRef.projectRef to the
+// pool's owning project, so the apiserver resolves the pool in that project's
+// scope.
+export function crossProjectIPClaim(ns, name, poolName, sourceProjectID, prefixLength, opts = {}) {
+  return {
+    apiVersion: `${API_GROUP}/${API_VERSION}`,
+    kind: 'IPClaim',
+    metadata: { name, namespace: ns },
+    spec: {
+      ipFamily: opts.ipFamily || 'IPv4',
+      prefixLength,
+      poolRef: {
+        name: poolName,
+        projectRef: { name: sourceProjectID },
+      },
+      reclaimPolicy: opts.reclaimPolicy || 'Delete',
     },
   };
 }
@@ -202,9 +218,6 @@ export function asnClaim(ns, name, poolRef) {
   };
 }
 
-// asnClaimWithClassRef builds an ASNClaim driven by spec.classRef rather than
-// spec.poolRef. The apiserver picks a pool that matches the class. Mutually
-// exclusive with poolRef in the resource model.
 export function asnClaimWithClassRef(ns, name, classRefName) {
   return {
     apiVersion: `${API_GROUP}/${API_VERSION}`,
@@ -216,22 +229,46 @@ export function asnClaimWithClassRef(ns, name, classRefName) {
 
 // --- Typed helper functions ---
 
-export function createPrefixClaim(ns, name, prefixRef, prefixLength, opts) {
-  return ipamPost(prefixClaimPath(ns), ipPrefixClaim(ns, name, prefixRef, prefixLength, opts), 'prefix_claim_create');
+// IPPool create / read / delete.
+export function createIPPool(name, cidr, opts) {
+  return ipamPost(ipPoolPath(), ipPool(name, cidr, opts), 'ippool_create');
 }
 
-export function deletePrefixClaim(ns, name) {
-  return ipamDelete(prefixClaimPath(ns, name), 'prefix_claim_delete');
+export function getIPPool(name) {
+  return ipamGet(ipPoolPath(name), 'ippool_get');
 }
 
-export function getPrefixClaim(ns, name) {
-  return ipamGet(prefixClaimPath(ns, name), 'prefix_claim_get');
+export function listIPPools() {
+  return ipamList(ipPoolPath(), 'ippool_list');
 }
 
-export function listPrefixClaims(ns) {
-  return ipamList(prefixClaimPath(ns), 'prefix_claim_list');
+export function deleteIPPool(name) {
+  return ipamDelete(ipPoolPath(name), 'ippool_delete');
 }
 
+// IPClaim helpers.
+export function createIPClaim(ns, name, poolName, prefixLength, opts) {
+  return ipamPost(ipClaimPath(ns), ipClaim(ns, name, poolName, prefixLength, opts), 'ipclaim_create');
+}
+
+export function deleteIPClaim(ns, name) {
+  return ipamDelete(ipClaimPath(ns, name), 'ipclaim_delete');
+}
+
+export function getIPClaim(ns, name) {
+  return ipamGet(ipClaimPath(ns, name), 'ipclaim_get');
+}
+
+export function listIPClaims(ns) {
+  return ipamList(ipClaimPath(ns), 'ipclaim_list');
+}
+
+// IPAllocation helpers (system-created; tests only read/list).
+export function listIPAllocations(ns) {
+  return ipamList(ipAllocationPath(ns), 'ipallocation_list');
+}
+
+// ASN helpers.
 export function createASNClaim(ns, name, poolRef) {
   return ipamPost(asnClaimPath(ns), asnClaim(ns, name, poolRef), 'asn_claim_create');
 }
@@ -246,26 +283,6 @@ export function getASNClaim(ns, name) {
 
 export function listASNClaims(ns) {
   return ipamList(asnClaimPath(ns), 'asn_claim_list');
-}
-
-export function createPrefixClass(name, opts) {
-  return ipamPost(prefixClassPath(), ipPrefixClass(name, opts), 'prefix_class_create');
-}
-
-export function createPrefix(name, cidr, classRef, opts) {
-  return ipamPost(prefixPath(), ipPrefix(name, cidr, classRef, opts), 'prefix_create');
-}
-
-export function listPrefixes() {
-  return ipamList(prefixPath(), 'prefix_list');
-}
-
-export function getPrefix(name) {
-  return ipamGet(prefixPath(name), 'prefix_get');
-}
-
-export function deletePrefix(name) {
-  return ipamDelete(prefixPath(name), 'prefix_delete');
 }
 
 export function createASNPoolClass(name, opts) {
@@ -333,73 +350,60 @@ export function projectIDFor(n) {
   return `ipam-perf-${n}`;
 }
 
-// Cross-project prefix claim body — includes projectRef pointing at sourceProjectID.
-export function crossProjectPrefixClaim(ns, name, poolName, sourceProjectID, prefixLength, opts = {}) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'IPPrefixClaim',
-    metadata: { name, namespace: ns },
-    spec: {
-      ipFamily: opts.ipFamily || 'IPv4',
-      prefixLength,
-      prefixRef: {
-        name: poolName,
-        projectRef: { name: sourceProjectID },
-      },
-      reclaimPolicy: opts.reclaimPolicy || 'Delete',
-    },
-  };
-}
-
-// createCrossProjectPrefixClaim posts a cross-project claim with tenant headers
+// createCrossProjectIPClaim posts a cross-project IPClaim with tenant headers
 // for callerProjectID, targeting a pool owned by sourceProjectID.
-export function createCrossProjectPrefixClaim(ns, name, poolName, sourceProjectID, callerProjectID, prefixLength, opts = {}) {
-  const body = crossProjectPrefixClaim(ns, name, poolName, sourceProjectID, prefixLength, opts);
-  const params = withProjectTagged(callerProjectID, 'cross_project_prefix_claim_create');
-  return http.post(`${API_BASE}${prefixClaimPath(ns)}`, JSON.stringify(body), params);
+export function createCrossProjectIPClaim(ns, name, poolName, sourceProjectID, callerProjectID, prefixLength, opts = {}) {
+  const body = crossProjectIPClaim(ns, name, poolName, sourceProjectID, prefixLength, opts);
+  const params = withProjectTagged(callerProjectID, 'cross_project_ipclaim_create');
+  return http.post(`${API_BASE}${ipClaimPath(ns)}`, JSON.stringify(body), params);
 }
 
-export function createPrefixClaimForProject(ns, name, prefixRef, prefixLength, projectID, opts = {}) {
-  const body = ipPrefixClaim(ns, name, prefixRef, prefixLength, opts);
-  const params = withProjectTagged(projectID, 'prefix_claim_create');
-  return http.post(`${API_BASE}${prefixClaimPath(ns)}`, JSON.stringify(body), params);
+export function createIPClaimForProject(ns, name, poolName, prefixLength, projectID, opts = {}) {
+  const body = ipClaim(ns, name, poolName, prefixLength, opts);
+  const params = withProjectTagged(projectID, 'ipclaim_create');
+  return http.post(`${API_BASE}${ipClaimPath(ns)}`, JSON.stringify(body), params);
 }
 
-// buildPrefixClaimRequest returns an http.batch()-compatible descriptor instead
-// of firing the request. Use when multiple claims must be sent concurrently from
-// a single VU to test SELECT...FOR UPDATE contention.
-export function buildPrefixClaimRequest(ns, name, prefixRef, prefixLength, projectID, opts = {}) {
+// buildIPClaimRequest returns an http.batch()-compatible descriptor instead
+// of firing the request. Use when multiple claims must be sent concurrently
+// from a single VU to test SELECT...FOR UPDATE contention.
+export function buildIPClaimRequest(ns, name, poolName, prefixLength, projectID, opts = {}) {
   return {
     method: 'POST',
-    url: `${API_BASE}${prefixClaimPath(ns)}`,
-    body: JSON.stringify(ipPrefixClaim(ns, name, prefixRef, prefixLength, opts)),
-    params: withProjectTagged(projectID, 'prefix_claim_create'),
+    url: `${API_BASE}${ipClaimPath(ns)}`,
+    body: JSON.stringify(ipClaim(ns, name, poolName, prefixLength, opts)),
+    params: withProjectTagged(projectID, 'ipclaim_create'),
   };
 }
 
-export function deletePrefixClaimForProject(ns, name, projectID) {
-  const params = withProjectTagged(projectID, 'prefix_claim_delete');
-  return http.del(`${API_BASE}${prefixClaimPath(ns, name)}`, null, params);
+export function deleteIPClaimForProject(ns, name, projectID) {
+  const params = withProjectTagged(projectID, 'ipclaim_delete');
+  return http.del(`${API_BASE}${ipClaimPath(ns, name)}`, null, params);
 }
 
-export function getPrefixClaimForProject(ns, name, projectID) {
-  const params = withProjectTagged(projectID, 'prefix_claim_get');
-  return http.get(`${API_BASE}${prefixClaimPath(ns, name)}`, params);
+export function getIPClaimForProject(ns, name, projectID) {
+  const params = withProjectTagged(projectID, 'ipclaim_get');
+  return http.get(`${API_BASE}${ipClaimPath(ns, name)}`, params);
 }
 
-export function listPrefixClaimsForProject(ns, projectID) {
-  const params = withProjectTagged(projectID, 'prefix_claim_list');
-  return http.get(`${API_BASE}${prefixClaimPath(ns)}`, params);
+export function listIPClaimsForProject(ns, projectID) {
+  const params = withProjectTagged(projectID, 'ipclaim_list');
+  return http.get(`${API_BASE}${ipClaimPath(ns)}`, params);
 }
 
-export function listPrefixesForProject(projectID) {
-  const params = withProjectTagged(projectID, 'prefix_list');
-  return http.get(`${API_BASE}${prefixPath()}`, params);
+export function listIPPoolsForProject(projectID) {
+  const params = withProjectTagged(projectID, 'ippool_list');
+  return http.get(`${API_BASE}${ipPoolPath()}`, params);
 }
 
-export function getPrefixForProject(name, projectID) {
-  const params = withProjectTagged(projectID, 'prefix_get');
-  return http.get(`${API_BASE}${prefixPath(name)}`, params);
+export function getIPPoolForProject(name, projectID) {
+  const params = withProjectTagged(projectID, 'ippool_get');
+  return http.get(`${API_BASE}${ipPoolPath(name)}`, params);
+}
+
+export function listIPAllocationsForProject(ns, projectID) {
+  const params = withProjectTagged(projectID, 'ipallocation_list');
+  return http.get(`${API_BASE}${ipAllocationPath(ns)}`, params);
 }
 
 export function createASNClaimForProject(ns, name, poolRef, projectID) {
@@ -414,8 +418,7 @@ export function deleteASNClaimForProject(ns, name, projectID) {
 }
 
 // createASNClaimWithClassRefForProject posts an ASNClaim that references a
-// class (not a pool). Used by asn-claim-throughput.js to validate that the
-// classRef-driven claim path is healthy under load.
+// class (not a pool).
 export function createASNClaimWithClassRefForProject(ns, name, classRefName, projectID) {
   const body = asnClaimWithClassRef(ns, name, classRefName);
   const params = withProjectTagged(projectID, 'asn_claim_create');
@@ -424,11 +427,6 @@ export function createASNClaimWithClassRefForProject(ns, name, classRefName, pro
 
 // LIST helpers used by the read-latency scenarios. All accept the project
 // tenant headers so reads stay scoped to the requesting tenant.
-export function listIPAddressesForProject(ns, projectID) {
-  const params = withProjectTagged(projectID, 'ip_addr_list');
-  return http.get(`${API_BASE}${ipAddressPath(ns)}`, params);
-}
-
 export function listASNPoolsForProject(projectID) {
   const params = withProjectTagged(projectID, 'asn_pool_list');
   return http.get(`${API_BASE}${asnPoolPath()}`, params);

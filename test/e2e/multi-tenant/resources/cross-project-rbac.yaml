@@ -7,7 +7,7 @@ rules:
   - apiGroups:
       - ipam.miloapis.com
     resources:
-      - ipprefixes
+      - ippools
     resourceNames:
       - mt-host-shared-pool
     verbs:

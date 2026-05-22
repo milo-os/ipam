@@ -7,13 +7,13 @@
 // shared pool, which is also exhausted).
 //
 // Setup phase:
-//   - Create perf-exhaust-class (visibility: shared, /30 only)
-//   - Create perf-exhaust-pool (192.168.100.0/28) owned by project 0
+//   - Create perf-exhaust-pool (192.168.100.0/28, /30 only, visibility=shared)
+//     owned by project 0
 //   - Bind perf-exhaust-pool-user role to all other perf projects
 //   - Fill the pool with 4 /30 claims (project 0 identity)
 // Main phase: hammer additional claim requests from both same-project and
 //             cross-project callers.
-// Teardown:   delete the 4 fill claims.
+// Teardown:   delete the 4 fill claims, then the pool.
 //
 // Configuration:
 //   VUS           - Concurrent virtual users (default 20)
@@ -24,14 +24,13 @@
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
-  createPrefixClass,
-  createPrefix,
-  deletePrefix,
+  createIPPool,
+  deleteIPPool,
   createClusterRole,
   createClusterRoleBinding,
-  createPrefixClaimForProject,
-  deletePrefixClaimForProject,
-  createCrossProjectPrefixClaim,
+  createIPClaimForProject,
+  deleteIPClaimForProject,
+  createCrossProjectIPClaim,
   nsFor,
   projectIDFor,
 } from '../lib/ipam-client.js';
@@ -41,11 +40,9 @@ const PROJECT_COUNT = parseInt(__ENV.PROJECT_COUNT || '5');
 const VUS = parseInt(__ENV.VUS || '20');
 const DURATION = __ENV.DURATION || '1m';
 const POOL_NAME = 'perf-exhaust-pool';
-const CLASS_NAME = 'perf-exhaust-class';
 const EXHAUST_USER_ROLE = 'perf-exhaust-pool-user';
-// Visibility for the cross-project pool. The server accepts any string for
-// Visibility (plain string field with no enum validation), so 'shared' is
-// accepted today and matches the documented intent.
+// Visibility for the cross-project pool. The apiserver enum is
+// platform|consumer|shared; 'shared' enables cross-project claiming.
 const SHARED_VISIBILITY = __ENV.SHARED_VISIBILITY || 'shared';
 const FILL_NAMESPACE = nsFor(0);
 const OWNER_PROJECT = projectIDFor(0);
@@ -82,26 +79,23 @@ export const options = {
 };
 
 export function setup() {
-  const c = createPrefixClass(CLASS_NAME, {
+  const p = createIPPool(POOL_NAME, '192.168.100.0/28', {
+    ipFamily: 'IPv4',
     visibility: SHARED_VISIBILITY,
     minLen: 30,
     maxLen: 30,
     strategy: 'FirstFit',
   });
-  if (c.status !== 201 && c.status !== 409) {
-    throw new Error(`class create failed: ${c.status} ${c.body}`);
-  }
-
-  const p = createPrefix(POOL_NAME, '192.168.100.0/28', CLASS_NAME, { minLen: 30, maxLen: 30 });
   if (p.status !== 201 && p.status !== 409) {
     throw new Error(`pool create failed: ${p.status} ${p.body}`);
   }
 
   // ClusterRole + bindings so cross-project callers can issue use claims.
+  // CanUsePool targets the ippools resource.
   const role = createClusterRole(EXHAUST_USER_ROLE, [
     {
       apiGroups: ['ipam.miloapis.com'],
-      resources: ['ipprefixes'],
+      resources: ['ippools'],
       resourceNames: [POOL_NAME],
       verbs: ['use'],
     },
@@ -125,7 +119,7 @@ export function setup() {
   const fillNames = [];
   for (let i = 0; i < 4; i++) {
     const name = `exhaust-fill-${i}`;
-    const r = createPrefixClaimForProject(FILL_NAMESPACE, name, POOL_NAME, 30, OWNER_PROJECT);
+    const r = createIPClaimForProject(FILL_NAMESPACE, name, POOL_NAME, 30, OWNER_PROJECT);
     if (r.status === 201) {
       fillNames.push(name);
     } else {
@@ -147,7 +141,7 @@ function record(res, mode, ns, name, callerProject) {
     successes.add(1, { mode });
     successLatency.add(res.timings.duration, { mode });
     denyRate.add(0);
-    deletePrefixClaimForProject(ns, name, callerProject);
+    deleteIPClaimForProject(ns, name, callerProject);
   } else {
     errors.add(1, { mode });
     denyRate.add(0);
@@ -163,20 +157,20 @@ export default function () {
 
   // Alternate same-project (project 0) and cross-project (project 1) probes.
   if (__ITER % 2 === 0) {
-    const r = createPrefixClaimForProject(ns, name, POOL_NAME, 30, OWNER_PROJECT);
+    const r = createIPClaimForProject(ns, name, POOL_NAME, 30, OWNER_PROJECT);
     record(r, 'same', ns, name, OWNER_PROJECT);
   } else {
     const callerIdx = 1 + (__VU % Math.max(1, PROJECT_COUNT - 1));
     const callerProject = projectIDFor(callerIdx);
-    const r = createCrossProjectPrefixClaim(ns, name, POOL_NAME, OWNER_PROJECT, callerProject, 30);
+    const r = createCrossProjectIPClaim(ns, name, POOL_NAME, OWNER_PROJECT, callerProject, 30);
     record(r, 'cross', ns, name, callerProject);
   }
 }
 
 export function teardown(data) {
   for (const name of data.fillNames || []) {
-    deletePrefixClaimForProject(FILL_NAMESPACE, name, OWNER_PROJECT);
+    deleteIPClaimForProject(FILL_NAMESPACE, name, OWNER_PROJECT);
   }
-  deletePrefix(POOL_NAME);
+  deleteIPPool(POOL_NAME);
   console.log('teardown complete');
 }

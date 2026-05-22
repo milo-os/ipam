@@ -12,9 +12,9 @@ import (
 
 type IpamV1alpha1Interface interface {
 	RESTClient() rest.Interface
-	IPPrefixesGetter
-	IPPrefixClaimsGetter
-	IPPrefixClassesGetter
+	IPAllocationsGetter
+	IPClaimsGetter
+	IPPoolsGetter
 }
 
 // IpamV1alpha1Client is used to interact with features provided by the ipam.miloapis.com group.
@@ -22,16 +22,16 @@ type IpamV1alpha1Client struct {
 	restClient rest.Interface
 }
 
-func (c *IpamV1alpha1Client) IPPrefixes() IPPrefixInterface {
-	return newIPPrefixes(c)
+func (c *IpamV1alpha1Client) IPAllocations(namespace string) IPAllocationInterface {
+	return newIPAllocations(c, namespace)
 }
 
-func (c *IpamV1alpha1Client) IPPrefixClaims(namespace string) IPPrefixClaimInterface {
-	return newIPPrefixClaims(c, namespace)
+func (c *IpamV1alpha1Client) IPClaims(namespace string) IPClaimInterface {
+	return newIPClaims(c, namespace)
 }
 
-func (c *IpamV1alpha1Client) IPPrefixClasses() IPPrefixClassInterface {
-	return newIPPrefixClasses(c)
+func (c *IpamV1alpha1Client) IPPools() IPPoolInterface {
+	return newIPPools(c)
 }
 
 // NewForConfig creates a new IpamV1alpha1Client for the given config.

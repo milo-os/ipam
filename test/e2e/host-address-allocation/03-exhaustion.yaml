@@ -2,7 +2,7 @@
 # Combined with host-claim-v4-1 and host-claim-v4-2 these saturate the /29
 # (8 addresses), leaving the pool fully allocated for the overflow check.
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefixClaim
+kind: IPClaim
 metadata:
   name: host-claim-v4-3
   namespace: ($namespace)
@@ -11,12 +11,12 @@ metadata:
 spec:
   ipFamily: IPv4
   prefixLength: 32
-  prefixRef:
+  poolRef:
     name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefixClaim
+kind: IPClaim
 metadata:
   name: host-claim-v4-4
   namespace: ($namespace)
@@ -25,12 +25,12 @@ metadata:
 spec:
   ipFamily: IPv4
   prefixLength: 32
-  prefixRef:
+  poolRef:
     name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefixClaim
+kind: IPClaim
 metadata:
   name: host-claim-v4-5
   namespace: ($namespace)
@@ -39,12 +39,12 @@ metadata:
 spec:
   ipFamily: IPv4
   prefixLength: 32
-  prefixRef:
+  poolRef:
     name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefixClaim
+kind: IPClaim
 metadata:
   name: host-claim-v4-6
   namespace: ($namespace)
@@ -53,12 +53,12 @@ metadata:
 spec:
   ipFamily: IPv4
   prefixLength: 32
-  prefixRef:
+  poolRef:
     name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefixClaim
+kind: IPClaim
 metadata:
   name: host-claim-v4-7
   namespace: ($namespace)
@@ -67,12 +67,12 @@ metadata:
 spec:
   ipFamily: IPv4
   prefixLength: 32
-  prefixRef:
+  poolRef:
     name: host-pool-v4
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPPrefixClaim
+kind: IPClaim
 metadata:
   name: host-claim-v4-8
   namespace: ($namespace)
@@ -81,6 +81,6 @@ metadata:
 spec:
   ipFamily: IPv4
   prefixLength: 32
-  prefixRef:
+  poolRef:
     name: host-pool-v4
   reclaimPolicy: Delete

@@ -13,7 +13,7 @@ rules:
   - apiGroups:
       - ipam.miloapis.com
     resources:
-      - ipprefixes
+      - ippools
     resourceNames:
       - mt-shared-pool
     verbs:

@@ -1,7 +1,7 @@
 // concurrent-claims.js
 //
-// Stress-tests the IPAM service's concurrency guarantee: concurrent
-// IPPrefixClaim CREATE requests must always produce non-overlapping CIDRs.
+// Stress-tests the IPAM service's concurrency guarantee: concurrent IPClaim
+// CREATE requests must always produce non-overlapping CIDRs.
 //
 // Approach:
 //   - burst scenario: constant-vus for DURATION. Each VU creates and deletes
@@ -34,9 +34,9 @@
 import http from 'k6/http';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
-  buildPrefixClaimRequest,
-  createPrefixClaimForProject,
-  deletePrefixClaimForProject,
+  buildIPClaimRequest,
+  createIPClaimForProject,
+  deleteIPClaimForProject,
   nsFor,
   projectIDFor,
 } from '../lib/ipam-client.js';
@@ -116,7 +116,7 @@ export function burst() {
   const ns = nsFor(Math.floor(Math.random() * NAMESPACE_COUNT));
   const claimName = `concurrent-claim-${__VU}-${__ITER}`;
 
-  const createRes = createPrefixClaimForProject(ns, claimName, POOL_NAME, 28, PROJECT);
+  const createRes = createIPClaimForProject(ns, claimName, POOL_NAME, 28, PROJECT);
 
   if (createRes.status === 201) {
     concurrentCreated.add(1);
@@ -126,12 +126,12 @@ export function burst() {
     if (extractCIDR(createRes) === null) {
       missingStatus.add(1);
       if (__ITER < 5) {
-        console.error(`prefix claim ${claimName} created without status.allocatedCIDR: ${createRes.body}`);
+        console.error(`IPClaim ${claimName} created without status.allocatedCIDR: ${createRes.body}`);
       }
     }
 
     // Immediately delete so the pool stays available for subsequent iterations.
-    const delRes = deletePrefixClaimForProject(ns, claimName, PROJECT);
+    const delRes = deleteIPClaimForProject(ns, claimName, PROJECT);
     if (delRes.status !== 200 && delRes.status !== 202 && delRes.status !== 404) {
       concurrentErrors.add(1);
     }
@@ -167,8 +167,8 @@ export function burst() {
 // will produce a duplicate here and fail the ipam_duplicate_cidrs threshold.
 //
 // Phase 2 — sequential drain: fills remaining pool capacity one-by-one,
-// asserting every successive CIDR is unique. Mirrors ipaddress-claim-concurrent
-// and confirms correctness under non-contended conditions as well.
+// asserting every successive CIDR is unique. Confirms correctness under
+// non-contended conditions as well.
 export function uniqueness() {
   const ns = nsFor(0);
   let totalDups = 0;
@@ -176,7 +176,7 @@ export function uniqueness() {
   // --- Phase 1: concurrent batch ---
   const batchRequests = [];
   for (let i = 0; i < VUS; i++) {
-    batchRequests.push(buildPrefixClaimRequest(ns, `concurrent-batch-${i}`, POOL_NAME, 28, PROJECT));
+    batchRequests.push(buildIPClaimRequest(ns, `concurrent-batch-${i}`, POOL_NAME, 28, PROJECT));
   }
   const batchResponses = http.batch(batchRequests);
 
@@ -216,7 +216,7 @@ export function uniqueness() {
 
   // Clean up batch claims before sequential drain.
   for (const name of batchClaims) {
-    deletePrefixClaimForProject(ns, name, PROJECT);
+    deleteIPClaimForProject(ns, name, PROJECT);
   }
 
   // --- Phase 2: sequential drain ---
@@ -227,7 +227,7 @@ export function uniqueness() {
 
   for (let i = 0; i < maxIters; i++) {
     const claimName = `concurrent-unique-${i}`;
-    const res = createPrefixClaimForProject(ns, claimName, POOL_NAME, 28, PROJECT);
+    const res = createIPClaimForProject(ns, claimName, POOL_NAME, 28, PROJECT);
     if (res.status === 507) break;
     if (res.status !== 201) {
       console.error(`sequential drain ${i}: status=${res.status} body=${res.body}`);
@@ -258,6 +258,6 @@ export function uniqueness() {
   );
 
   for (const name of seqClaims) {
-    deletePrefixClaimForProject(ns, name, PROJECT);
+    deleteIPClaimForProject(ns, name, PROJECT);
   }
 }

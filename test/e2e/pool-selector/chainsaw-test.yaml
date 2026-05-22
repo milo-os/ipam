@@ -1,0 +1,123 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pool-selector
+spec:
+  description: |
+    Label-selector-based pool resolution for IPClaim:
+    - A claim with spec.poolSelector matchLabels picks the unique matching
+      IPPool and binds against it (boundAllocationRef set and allocatedCIDR
+      falls inside that pool's CIDR).
+    - A claim whose selector matches no pool returns HTTP 400 with
+      "no IPPool matches spec.poolSelector".
+    - spec.poolRef and spec.poolSelector are mutually exclusive at create
+      time.
+
+  steps:
+    - name: setup
+      description: Three labelled IPPools (two consumer, one infra)
+      try:
+        - create:
+            file: test-data/pools.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for pool in selector-pool-consumer-a selector-pool-consumer-b selector-pool-infra; do
+                for i in $(seq 1 30); do
+                  phase=$(kubectl get ippool "$pool" \
+                    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                  if [ "$phase" = "Ready" ]; then break; fi
+                  sleep 1
+                done
+                if [ "$phase" != "Ready" ]; then
+                  echo "FAIL: $pool not Ready after 30s (phase=$phase)"
+                  exit 1
+                fi
+              done
+            check:
+              ($error == null): true
+
+    - name: claim-by-selector
+      description: |
+        matchLabels {environment=consumer, region=us-east} → binds to
+        selector-pool-consumer-b. Also verifies the resulting IPAllocation's
+        spec.poolRef points back at that pool (since boundAllocationRef
+        names the IPAllocation, not the pool).
+      try:
+        - create:
+            file: test-data/claim-by-selector.yaml
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" selector-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: selector-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-bound-to-us-east.yaml
+        - script:
+            timeout: 30s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              ref=$(kubectl get ipclaim -n "$NAMESPACE" selector-claim -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$ref" ]; then
+                echo "FAIL: empty boundAllocationRef.name"
+                exit 1
+              fi
+              pool=$(kubectl get ipallocation -n "$NAMESPACE" "$ref" -o jsonpath='{.spec.poolRef.name}' 2>/dev/null || echo "")
+              if [ "$pool" != "selector-pool-consumer-b" ]; then
+                echo "FAIL: IPAllocation $ref poolRef=$pool (expected selector-pool-consumer-b)"
+                exit 1
+              fi
+              echo "OK IPAllocation $ref bound to selector-pool-consumer-b"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK IPAllocation ')): true
+
+    - name: claim-no-match-rejected
+      description: Selector matching no pool returns HTTP 400
+      try:
+        - create:
+            file: test-data/claim-no-match.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'no IPPool matches') || contains($error, 'no pool matches') || contains($error, 'no IPPrefix pool matches')): true
+
+    - name: mutually-exclusive-rejected
+      description: Setting both poolRef and poolSelector returns HTTP 400
+      try:
+        - create:
+            file: test-data/claim-both.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'mutually exclusive') || contains($error, '400')): true
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" selector-claim selector-claim-no-match selector-claim-both --ignore-not-found
+              kubectl delete ippool selector-pool-consumer-a selector-pool-consumer-b selector-pool-infra --ignore-not-found
+              echo "pool-selector cleanup done"
+            check:
+              ($error == null): true

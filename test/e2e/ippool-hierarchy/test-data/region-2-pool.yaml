@@ -1,0 +1,13 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: hier-region-2
+spec:
+  visibility: platform
+  parentPoolRef:
+    name: hier-env
+  prefixLength: 12
+  allocation:
+    minPrefixLength: 16
+    maxPrefixLength: 28
+    strategy: FirstFit

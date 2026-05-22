@@ -21,7 +21,7 @@ task -t test/load/Taskfile.yaml k6:run TEST=throughput
 | TestRun                | Script                          | Purpose                                |
 |------------------------|---------------------------------|----------------------------------------|
 | `ipam-perf-setup`      | `setup-pools.js`                | One-time pool/namespace provisioning   |
-| `ipam-perf-throughput` | `prefix-claim-throughput.js`    | IPPrefixClaim p95 < 500ms              |
+| `ipam-perf-throughput` | `prefix-claim-throughput.js`    | IPClaim p95 < 500ms                    |
 | `ipam-perf-asn-throughput` | `asn-claim-throughput.js`   | ASNClaim p95 < 500ms                   |
 | `ipam-perf-exhaustion` | `pool-exhaustion.js`            | Deny-path p95 < 200ms                  |
 | `ipam-perf-reads`      | `read-latency.js`               | List/get latency under load            |

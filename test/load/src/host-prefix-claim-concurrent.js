@@ -1,14 +1,14 @@
 // host-prefix-claim-concurrent.js
 //
 // Measures the throughput and concurrency safety of host-route allocation:
-// IPPrefixClaim creates with prefixLength: 32 (IPv4 /32) against a dedicated
-// /24 pool. Single-address allocation via IPPrefixClaim replaced the former
+// IPClaim creates with prefixLength: 32 (IPv4 /32) against a dedicated /24
+// pool. Single-address allocation via IPClaim replaced the former
 // IPAddressClaim resource.
 //
 // Approach:
-//   - setup() creates a dedicated /24 pool (10.60.0.0/24, 256 addresses).
-//   - Each VU iteration creates a /32 IPPrefixClaim and deletes it inline so
-//     the pool stays available for subsequent iterations.
+//   - setup() creates a dedicated /24 IPPool (10.60.0.0/24, 256 addresses).
+//   - Each VU iteration creates a /32 IPClaim and deletes it inline so the
+//     pool stays available for subsequent iterations.
 //   - All returned status.allocatedCIDR values must be unique; the
 //     SELECT...FOR UPDATE pool-row lock guarantees this.
 //   - teardown() removes all claims and the pool.
@@ -27,18 +27,13 @@
 //   POOL_CIDR       - Parent CIDR for the dedicated pool (default 10.60.0.0/24)
 //   IPAM_API_URL    - Apiserver URL
 
-import http from 'k6/http';
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
-  createPrefixClass,
-  createPrefix,
-  createPrefixClaimForProject,
-  deletePrefixClaimForProject,
-  buildPrefixClaimRequest,
-  ipamDelete,
-  prefixPath,
-  prefixClassPath,
+  createIPPool,
+  deleteIPPool,
+  createIPClaimForProject,
+  deleteIPClaimForProject,
   nsFor,
   projectIDFor,
 } from '../lib/ipam-client.js';
@@ -48,7 +43,6 @@ const DURATION = __ENV.DURATION || '2m';
 const NAMESPACE_COUNT = parseInt(__ENV.NAMESPACE_COUNT || '10');
 const POOL_CIDR = __ENV.POOL_CIDR || '10.60.0.0/24';
 
-const CLASS_NAME = 'perf-host-claim';
 const POOL_NAME = 'perf-host-claim-pool';
 const PROJECT = projectIDFor(0);
 
@@ -96,21 +90,11 @@ export const options = {
   },
 };
 
-// setup creates the dedicated class + /24 pool. Idempotent — 409 is OK.
+// setup creates the dedicated /24 IPPool. Idempotent — 409 is OK.
 export function setup() {
-  const classRes = createPrefixClass(CLASS_NAME, {
-    requiresVerification: false,
-    visibility: 'consumer',
-    minLen: 24,
-    maxLen: 32,
-    strategy: 'FirstFit',
-  });
-  if (classRes.status !== 201 && classRes.status !== 409) {
-    throw new Error(`host prefix class create failed: ${classRes.status} ${classRes.body}`);
-  }
-
-  const poolRes = createPrefix(POOL_NAME, POOL_CIDR, CLASS_NAME, {
+  const poolRes = createIPPool(POOL_NAME, POOL_CIDR, {
     ipFamily: 'IPv4',
+    visibility: 'consumer',
     minLen: 32,
     maxLen: 32,
     strategy: 'FirstFit',
@@ -120,9 +104,9 @@ export function setup() {
   }
 
   console.log(
-    `setup complete: class=${CLASS_NAME} pool=${POOL_NAME} cidr=${POOL_CIDR} (${POOL_SIZE} host addresses)`,
+    `setup complete: pool=${POOL_NAME} cidr=${POOL_CIDR} (${POOL_SIZE} host addresses)`,
   );
-  return { className: CLASS_NAME, poolName: POOL_NAME };
+  return { poolName: POOL_NAME };
 }
 
 function extractAllocatedCIDR(res) {
@@ -144,7 +128,7 @@ export function concurrent() {
   const ns = nsFor(Math.floor(Math.random() * NAMESPACE_COUNT));
   const claimName = `host-concurrent-${__VU}-${__ITER}`;
 
-  const createRes = createPrefixClaimForProject(ns, claimName, POOL_NAME, 32, PROJECT);
+  const createRes = createIPClaimForProject(ns, claimName, POOL_NAME, 32, PROJECT);
 
   if (createRes.status === 201) {
     created.add(1);
@@ -160,7 +144,7 @@ export function concurrent() {
       }
     }
 
-    const delRes = deletePrefixClaimForProject(ns, claimName, PROJECT);
+    const delRes = deleteIPClaimForProject(ns, claimName, PROJECT);
     deleteLatency.add(delRes.timings.duration);
     if (delRes.status !== 200 && delRes.status !== 202 && delRes.status !== 404) {
       errors.add(1);
@@ -189,7 +173,7 @@ export function uniqueness() {
 
   for (let i = 0; i < POOL_SIZE + 16; i++) {
     const claimName = `host-unique-${i}`;
-    const res = createPrefixClaimForProject(ns, claimName, POOL_NAME, 32, PROJECT);
+    const res = createIPClaimForProject(ns, claimName, POOL_NAME, 32, PROJECT);
     if (res.status === 507) break;
     if (res.status !== 201) {
       console.error(`uniqueness create ${i}: status=${res.status} body=${res.body}`);
@@ -218,25 +202,19 @@ export function uniqueness() {
 
   // Release all slots so teardown can delete the pool cleanly.
   for (const name of claims) {
-    deletePrefixClaimForProject(ns, name, PROJECT);
+    deleteIPClaimForProject(ns, name, PROJECT);
   }
 }
 
-// teardown removes the pool and class. The burst scenario frees its claims
-// inline; the uniqueness scenario drains its own. A leftover claim will
-// block the pool delete and surface the leak in the logs.
+// teardown removes the pool. The burst scenario frees its claims inline; the
+// uniqueness scenario drains its own. A leftover claim will block the pool
+// delete and surface the leak in the logs.
 export function teardown(data) {
   if (!data) return;
-  const poolRes = ipamDelete(prefixPath(data.poolName), 'prefix_delete');
+  const poolRes = deleteIPPool(data.poolName);
   if (poolRes.status !== 200 && poolRes.status !== 202 && poolRes.status !== 404) {
     console.error(
       `teardown: pool delete ${data.poolName} status=${poolRes.status} body=${poolRes.body}`,
-    );
-  }
-  const classRes = ipamDelete(prefixClassPath(data.className), 'prefix_class_delete');
-  if (classRes.status !== 200 && classRes.status !== 202 && classRes.status !== 404) {
-    console.error(
-      `teardown: class delete ${data.className} status=${classRes.status} body=${classRes.body}`,
     );
   }
   console.log('host-prefix-claim-concurrent teardown complete');
