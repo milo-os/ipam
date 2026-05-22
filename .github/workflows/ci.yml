@@ -179,6 +179,9 @@ jobs:
       - name: Deploy IPAM service
         run: |
           kubectl apply -k config/overlays/test-infra
+          # Wait for cert-manager to issue the TLS secret before the apiserver pods can mount it.
+          kubectl -n ipam-system wait certificate/ipam-tls \
+            --for=condition=Ready --timeout=120s
           kubectl -n ipam-system wait helmrelease/postgres \
             --for=condition=Ready --timeout=300s
           kubectl -n ipam-system wait pod \

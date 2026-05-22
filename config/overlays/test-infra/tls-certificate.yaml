@@ -1,0 +1,22 @@
+---
+# cert-manager Certificate (not CSI driver) so the built-in cert-manager
+# approver auto-approves the CertificateRequest and writes the TLS secret.
+# The CSI driver's CertificateRequests are not approved by the built-in
+# approver, causing pods to hang in Init:0/1.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ipam-tls
+  namespace: ipam-system
+spec:
+  secretName: ipam-tls
+  duration: 24h
+  renewBefore: 1h
+  dnsNames:
+    - ipam-apiserver
+    - ipam-apiserver.ipam-system
+    - ipam-apiserver.ipam-system.svc
+    - ipam-apiserver.ipam-system.svc.cluster.local
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
