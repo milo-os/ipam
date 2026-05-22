@@ -16,7 +16,3 @@ spec:
       containers:
         - name: apiserver
           imagePullPolicy: Never
-      volumes:
-        - name: tls-certs
-          secret:
-            secretName: ipam-tls

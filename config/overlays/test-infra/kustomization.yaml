@@ -25,6 +25,10 @@ patches:
     target:
       kind: Deployment
       name: ipam-apiserver
+  - path: patches/tls-volume-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
 
 labels:
   - includeSelectors: false
