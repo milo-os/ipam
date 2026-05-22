@@ -58,20 +58,6 @@ spec:
               echo "all pools Ready"
             check:
               ($error == null): true
-      finally:
-        # Mirror the cluster-scoped resources created in this step so the suite
-        # leaves no leaks behind. The classes, pools, ClusterRole and
-        # ClusterRoleBinding are all cluster-scoped, so the per-test namespace
-        # teardown does not clean them up.
-        - script:
-            content: |
-              kubectl delete ipprefix mt-alpha-pool mt-beta-pool mt-shared-pool --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefixclass mt-consumer-private mt-consumer-shared --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete clusterrolebinding mt-shared-pool-user-project-beta --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete clusterrole mt-shared-pool-user --ignore-not-found=true >/dev/null 2>&1 || true
-              echo "seed-classes-pools-rbac cleanup done"
-            check:
-              ($error == null): true
 
     - name: same-project-claim-alpha
       description: |
