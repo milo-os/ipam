@@ -176,35 +176,17 @@ jobs:
       - name: Load image into kind
         run: task --yes dev:load
 
-      - name: Install dependencies (postgres via Flux HelmRelease)
+      - name: Deploy IPAM service
         run: |
-          # Namespace must exist before the postgres HelmRelease can be applied.
-          kubectl apply -f config/components/namespace/namespace.yaml
-          # Apply the postgres HelmRelease + HelmRepository using the test-infra kubeconfig.
-          # The task wrapper resolves KUBECONFIG via the test-infra task vars, so we call
-          # kubectl directly with our exported KUBECONFIG here.
-          kubectl apply -k config/components/postgres
-          # Wait for postgres HelmRelease to be reconciled and the pod to be ready.
+          kubectl apply -k config/overlays/test-infra
+          kubectl apply -f config/overlays/dev/secret.yaml
+          kubectl apply -f config/overlays/dev/anonymous-rbac.yaml
+          # Wait for postgres before the IPAM apiserver starts (it needs the DB).
           kubectl -n ipam-system wait helmrelease/postgres \
             --for=condition=Ready --timeout=300s
           kubectl -n ipam-system wait pod \
             -l app.kubernetes.io/name=postgresql \
             --for=condition=Ready --timeout=180s
-
-      - name: Deploy IPAM service
-        run: |
-          # Apply the test-infra overlay (no cert-manager CSI, uses insecureSkipTLSVerify).
-          # We also apply the postgres-credentials secret and anonymous RBAC that the
-          # dev overlay bundles, since test-infra overlay does not include them.
-          kubectl apply -k config/overlays/test-infra
-          # Apply postgres credentials secret separately (the test-infra overlay
-          # omits it so that it can be injected from external secret management in
-          # real clusters; in CI we apply the same dev credentials).
-          kubectl apply -f config/overlays/dev/secret.yaml
-          # Grant anonymous access so chainsaw can reach the aggregated API without
-          # bearing service-account tokens (same approach as the dev overlay).
-          kubectl apply -f config/overlays/dev/anonymous-rbac.yaml
-          # Wait for the apiserver pods and the APIService to be ready.
           kubectl wait --for=condition=Ready pod \
             -l app=ipam-apiserver -n ipam-system --timeout=180s
           kubectl wait --for=condition=Available \
