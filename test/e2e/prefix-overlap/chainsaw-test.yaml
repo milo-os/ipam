@@ -25,15 +25,22 @@ spec:
             file: test-data/class.yaml
         - create:
             file: test-data/parent.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: overlap-parent
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix overlap-parent \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: overlap-parent not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: apply-10-claims-simultaneously
       description: Create 10 claims in a single apply block; all must reach Bound

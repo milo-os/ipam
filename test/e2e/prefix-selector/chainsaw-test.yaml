@@ -21,15 +21,22 @@ spec:
             file: test-data/class.yaml
         - create:
             file: test-data/pools.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: selector-pool-consumer-b
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix selector-pool-consumer-b \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: selector-pool-consumer-b not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: claim-by-selector
       description: matchLabels {environment=consumer, region=us-east} → binds to selector-pool-consumer-b

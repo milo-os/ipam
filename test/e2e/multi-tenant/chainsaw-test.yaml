@@ -39,33 +39,25 @@ spec:
             file: resources/pools.yaml
         - create:
             file: resources/rbac.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: mt-alpha-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: mt-beta-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: mt-shared-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 60s
+            content: |
+              set -e
+              for pool in mt-alpha-pool mt-beta-pool mt-shared-pool; do
+                for i in $(seq 1 30); do
+                  ready=$(kubectl get ipprefix "$pool" \
+                    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                  if [ "$ready" = "True" ]; then break; fi
+                  sleep 1
+                done
+                if [ "$ready" != "True" ]; then
+                  echo "FAIL: $pool not Ready after 30s"
+                  exit 1
+                fi
+              done
+              echo "all pools Ready"
+            check:
+              ($error == null): true
       finally:
         # Mirror the cluster-scoped resources created in this step so the suite
         # leaves no leaks behind. The classes, pools, ClusterRole and
@@ -122,16 +114,25 @@ spec:
             check:
               ($error == null): true
               (contains($stdout, 'OK alpha same-project claim 201')): true
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: mt-alpha-claim
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-alpha-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: mt-alpha-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - script:
             env:
               - name: NAMESPACE
@@ -191,16 +192,25 @@ spec:
             check:
               ($error == null): true
               (contains($stdout, 'OK beta same-project claim 201')): true
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: mt-beta-claim
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-beta-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: mt-beta-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - script:
             env:
               - name: NAMESPACE
@@ -351,16 +361,25 @@ spec:
       try:
         - create:
             file: resources/concurrent-claims.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            namespace: ($namespace)
-            selector: mt-concurrent=true
-            timeout: 60s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 75s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 60); do
+                count=$(kubectl get ipprefixclaim -n "$NAMESPACE" -l mt-concurrent=true \
+                  -o jsonpath='{.items[*].status.phase}' 2>/dev/null | tr ' ' '\n' | grep -c "^Bound$" || echo "0")
+                if [ "$count" = "4" ]; then break; fi
+                sleep 1
+              done
+              if [ "$count" != "4" ]; then
+                echo "FAIL: only $count/4 concurrent claims Bound after 60s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - script:
             env:
               - name: NAMESPACE
@@ -514,24 +533,38 @@ spec:
             file: resources/cross-project-pools.yaml
         - create:
             file: resources/cross-project-rbac.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: mt-host-shared-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: ASNPool
-            name: mt-asn-shared-pool
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.capacity.total}'
-                value: '20'
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix mt-host-shared-pool \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: mt-host-shared-pool not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                total=$(kubectl get asnpool mt-asn-shared-pool \
+                  -o jsonpath='{.status.capacity.total}' 2>/dev/null || echo "")
+                if [ "$total" = "20" ]; then break; fi
+                sleep 1
+              done
+              if [ "$total" != "20" ]; then
+                echo "FAIL: mt-asn-shared-pool capacity.total not 20 after 30s (got: $total)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: cross-project-address-claim-beta-from-shared
       description: |
