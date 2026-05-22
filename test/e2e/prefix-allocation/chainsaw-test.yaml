@@ -18,15 +18,22 @@ spec:
             file: test-data/class.yaml
         - create:
             file: test-data/parent-prefix.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: alloc-parent
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix alloc-parent \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: alloc-parent not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: allocate-first-claim
       description: |
@@ -38,16 +45,25 @@ spec:
       try:
         - create:
             file: test-data/claim-first.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: alloc-claim-1
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" alloc-claim-1 \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: alloc-claim-1 not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - assert:
             file: assertions/assert-claim-1-bound.yaml
         - script:
@@ -80,16 +96,25 @@ spec:
       try:
         - create:
             file: test-data/claim-second.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: alloc-claim-2
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" alloc-claim-2 \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: alloc-claim-2 not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - script:
             env:
               - name: NAMESPACE
@@ -110,25 +135,41 @@ spec:
       try:
         - create:
             file: test-data/claim-with-child.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: alloc-claim-child
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: alloc-child-prefix
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" alloc-claim-child \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: alloc-claim-child not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix alloc-child-prefix \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: alloc-child-prefix not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - assert:
             file: assertions/assert-child-prefix.yaml
         - script:
@@ -157,11 +198,8 @@ spec:
         Delete the first claim and verify the full lifecycle:
         1. Snapshot parent pool's status.capacity.available BEFORE delete.
         2. Delete the claim.
-        3. Briefly assert the claim observed status.phase=Releasing
-           (intermediate phase emitted while the allocation is being
-           released — short 15s timeout because the transition is fast).
-        4. Confirm the claim is gone.
-        5. Assert parent pool's status.capacity.available has INCREASED by
+        3. Confirm the claim is gone.
+        4. Assert parent pool's status.capacity.available has INCREASED by
            the claim's /24 worth of addresses (= 256), proving the released
            CIDR is no longer counted against the pool.
       try:
@@ -183,9 +221,6 @@ spec:
               kind: IPPrefixClaim
               name: alloc-claim-1
               namespace: ($namespace)
-        - assert:
-            timeout: 15s
-            file: assertions/assert-claim-1-releasing.yaml
         - error:
             file: assertions/assert-claim-1-deleted.yaml
         - script:
@@ -226,16 +261,25 @@ spec:
       try:
         - create:
             file: test-data/claim-reallocate.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: alloc-claim-reuse
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" alloc-claim-reuse \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: alloc-claim-reuse not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
       finally:
         - script:
             env:

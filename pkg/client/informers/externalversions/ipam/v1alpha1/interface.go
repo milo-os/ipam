@@ -8,10 +8,6 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
-	// IPAddresses returns a IPAddressInformer.
-	IPAddresses() IPAddressInformer
-	// IPAddressClaims returns a IPAddressClaimInformer.
-	IPAddressClaims() IPAddressClaimInformer
 	// IPPrefixes returns a IPPrefixInformer.
 	IPPrefixes() IPPrefixInformer
 	// IPPrefixClaims returns a IPPrefixClaimInformer.
@@ -29,16 +25,6 @@ type version struct {
 // New returns a new Interface.
 func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakListOptions internalinterfaces.TweakListOptionsFunc) Interface {
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
-}
-
-// IPAddresses returns a IPAddressInformer.
-func (v *version) IPAddresses() IPAddressInformer {
-	return &iPAddressInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
-}
-
-// IPAddressClaims returns a IPAddressClaimInformer.
-func (v *version) IPAddressClaims() IPAddressClaimInformer {
-	return &iPAddressClaimInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // IPPrefixes returns a IPPrefixInformer.

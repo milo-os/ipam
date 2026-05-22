@@ -5,20 +5,30 @@ namespace: ipam-system
 
 resources:
   - ../../base
+  - secret.yaml
+  - anonymous-rbac.yaml
+  - tls-certificate.yaml
 
 components:
   - ../../components/namespace
   - ../../components/api-registration
-  - ../../components/cert-manager-ca
   - ../../components/postgres
 
 images:
-  - name: ghcr.io/datum-cloud/ipam-apiserver
+  - name: ghcr.io/milo-os/ipam
     newName: ipam-apiserver
     newTag: dev
 
 patches:
   - path: patches/apiservice-patch.yaml
+  - path: patches/deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+  - path: patches/tls-volume-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
 
 labels:
   - includeSelectors: false

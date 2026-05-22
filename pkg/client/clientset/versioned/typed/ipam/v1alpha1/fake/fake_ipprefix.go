@@ -16,7 +16,7 @@ type fakeIPPrefixes struct {
 
 func newFakeIPPrefixes(fake *FakeIpamV1alpha1) ipamv1alpha1.IPPrefixInterface {
 	return &fakeIPPrefixes{
-		gentype.NewFakeClientWithList[*v1alpha1.IPPrefix, *v1alpha1.IPPrefixList](
+		gentype.NewFakeClientWithList(
 			fake.Fake,
 			"",
 			v1alpha1.SchemeGroupVersion.WithResource("ipprefixes"),

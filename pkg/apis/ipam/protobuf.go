@@ -26,17 +26,4 @@ func (in *IPPrefixClaim) Unmarshal(data []byte) error     { return json.Unmarsha
 func (in *IPPrefixClaimList) Marshal() ([]byte, error)    { return json.Marshal(in) }
 func (in *IPPrefixClaimList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
 
-// --- IPAddress ---
-
-func (in *IPAddress) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *IPAddress) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *IPAddressList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *IPAddressList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
-
-// --- IPAddressClaim ---
-
-func (in *IPAddressClaim) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *IPAddressClaim) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *IPAddressClaimList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *IPAddressClaimList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
 

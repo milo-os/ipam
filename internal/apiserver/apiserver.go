@@ -23,8 +23,6 @@ import (
 	_ "go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
-	"go.miloapis.com/ipam/internal/registry/ipam/ipaddress"
-	"go.miloapis.com/ipam/internal/registry/ipam/ipaddressclaim"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipprefix"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipprefixclaim"
 	"go.miloapis.com/ipam/pkg/apis/ipam/install"
@@ -180,32 +178,6 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	}
 	v1alpha1Storage["ipprefixclaims"] = prefixClaimStore
 	v1alpha1Storage["ipprefixclaims/status"] = prefixClaimStatusStore
-
-	// IPAddress — namespaced, with status subresource.
-	addrStore, addrStatusStore, err := ipaddress.NewStorage(Scheme, c.GenericConfig.RESTOptionsGetter)
-	if err != nil {
-		return nil, fmt.Errorf("create IPAddress storage: %w", err)
-	}
-	v1alpha1Storage["ipaddresses"] = addrStore
-	v1alpha1Storage["ipaddresses/status"] = addrStatusStore
-
-	// IPAddressClaim — namespaced, with status subresource. poolChecker
-	// is passed so cross-project allocation (prefixSelector.projectRef
-	// targeting another project) goes through the same SAR + visibility
-	// gate as IPPrefixClaim.
-	addrClaimStore, addrClaimStatusStore, err := ipaddressclaim.NewAllocatingStorage(
-		Scheme,
-		c.GenericConfig.RESTOptionsGetter,
-		c.ExtraConfig.PrefixAllocator,
-		c.ExtraConfig.AllocatorPool,
-		allocCodec,
-		c.ExtraConfig.PoolChecker,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("create IPAddressClaim storage: %w", err)
-	}
-	v1alpha1Storage["ipaddressclaims"] = addrClaimStore
-	v1alpha1Storage["ipaddressclaims/status"] = addrClaimStatusStore
 
 	apiGroupInfo.VersionedResourcesStorageMap["v1alpha1"] = v1alpha1Storage
 

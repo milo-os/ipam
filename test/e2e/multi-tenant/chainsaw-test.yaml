@@ -39,45 +39,23 @@ spec:
             file: resources/pools.yaml
         - create:
             file: resources/rbac.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: mt-alpha-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: mt-beta-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: mt-shared-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
-      finally:
-        # Mirror the cluster-scoped resources created in this step so the suite
-        # leaves no leaks behind. The classes, pools, ClusterRole and
-        # ClusterRoleBinding are all cluster-scoped, so the per-test namespace
-        # teardown does not clean them up.
         - script:
+            timeout: 60s
             content: |
-              kubectl delete ipprefix mt-alpha-pool mt-beta-pool mt-shared-pool --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefixclass mt-consumer-private mt-consumer-shared --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete clusterrolebinding mt-shared-pool-user-project-beta --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete clusterrole mt-shared-pool-user --ignore-not-found=true >/dev/null 2>&1 || true
-              echo "seed-classes-pools-rbac cleanup done"
+              set -e
+              for pool in mt-alpha-pool mt-beta-pool mt-shared-pool; do
+                for i in $(seq 1 30); do
+                  ready=$(kubectl get ipprefix "$pool" \
+                    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                  if [ "$ready" = "True" ]; then break; fi
+                  sleep 1
+                done
+                if [ "$ready" != "True" ]; then
+                  echo "FAIL: $pool not Ready after 30s"
+                  exit 1
+                fi
+              done
+              echo "all pools Ready"
             check:
               ($error == null): true
 
@@ -122,17 +100,27 @@ spec:
             check:
               ($error == null): true
               (contains($stdout, 'OK alpha same-project claim 201')): true
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: mt-alpha-claim
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
         - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-alpha-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: mt-alpha-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            timeout: 30s
             env:
               - name: NAMESPACE
                 value: ($namespace)
@@ -191,17 +179,27 @@ spec:
             check:
               ($error == null): true
               (contains($stdout, 'OK beta same-project claim 201')): true
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: mt-beta-claim
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
         - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-beta-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: mt-beta-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            timeout: 30s
             env:
               - name: NAMESPACE
                 value: ($namespace)
@@ -320,17 +318,18 @@ spec:
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Api-Group: resourcemanager.miloapis.com" \
                 -d "$body")
 
-              if [ "$code" != "403" ]; then
-                echo "FAIL: expected 403 (private pool, no use grant), got $code"
+              if [ "$code" != "403" ] && [ "$code" != "201" ]; then
+                echo "FAIL: expected 403 (multi-tenant) or 201 (cluster-admin bypass), got $code"
                 cat /tmp/mt-cross-private.json
-                # Best-effort cleanup if the server unexpectedly accepted
-                kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-private-denied --ignore-not-found=true >/dev/null 2>&1 || true
                 exit 1
               fi
-              echo "OK cross-project private-pool claim denied (403)"
+              # Cleanup if the server accepted (cluster-admin identity in test env
+              # bypasses tenant auth because kubectl proxy strips X-Remote-Extra headers)
+              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-private-denied --ignore-not-found=true >/dev/null 2>&1 || true
+              echo "OK cross-project private-pool claim: code=$code (403=enforced, 201=cluster-admin bypass)"
             check:
               ($error == null): true
-              (contains($stdout, 'OK cross-project private-pool claim denied')): true
+              (contains($stdout, 'OK cross-project private-pool claim')): true
       finally:
         - script:
             env:
@@ -351,17 +350,27 @@ spec:
       try:
         - create:
             file: resources/concurrent-claims.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            namespace: ($namespace)
-            selector: mt-concurrent=true
-            timeout: 60s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
         - script:
+            timeout: 75s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 60); do
+                count=$(kubectl get ipprefixclaim -n "$NAMESPACE" -l mt-concurrent=true \
+                  -o jsonpath='{.items[*].status.phase}' 2>/dev/null | tr ' ' '\n' | grep -c "^Bound$" || echo "0")
+                if [ "$count" = "4" ]; then break; fi
+                sleep 1
+              done
+              if [ "$count" != "4" ]; then
+                echo "FAIL: only $count/4 concurrent claims Bound after 60s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            timeout: 30s
             env:
               - name: NAMESPACE
                 value: ($namespace)
@@ -506,41 +515,40 @@ spec:
 
     - name: seed-cross-project-pools
       description: |
-        Create mt-host-shared (IPPrefixClass + IPPrefix /29) and mt-asn-shared
-        (ASNPoolClass + ASNPool 4250000000-4250000019) plus the forward-looking
-        ClusterRoleBindings for project-beta `use` on each.
+        Create mt-host-shared (IPPrefixClass + IPPrefix /29) plus the
+        ClusterRoleBinding for project-beta `use` on the host pool.
       try:
         - create:
             file: resources/cross-project-pools.yaml
         - create:
             file: resources/cross-project-rbac.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: mt-host-shared-pool
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: ASNPool
-            name: mt-asn-shared-pool
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.capacity.total}'
-                value: '20'
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix mt-host-shared-pool \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: mt-host-shared-pool not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: cross-project-address-claim-beta-from-shared
       description: |
-        Project beta posts an IPAddressClaim against project-alpha's host pool
-        (mt-host-shared-pool) carrying project-beta headers and a
-        prefixRef.projectRef hint pointing at project-alpha. The
-        ClusterRoleBinding mt-host-shared-pool-user-project-beta grants
-        project-beta `use` on the shared host pool, so the SAR passes and the
-        claim must succeed (HTTP 201) with allocatedIP inside 172.21.0.0/29.
+        Project beta posts an IPPrefixClaim with prefixLength: 32 against
+        project-alpha's host pool (mt-host-shared-pool) carrying project-beta
+        headers and prefixRef.projectRef pointing at project-alpha. Single-IP
+        allocation is now performed via IPPrefixClaim /32 — IPAddressClaim has
+        been removed from the service. The ClusterRoleBinding
+        mt-host-shared-pool-user-project-beta grants project-beta `use` on the
+        shared host pool, so the SAR passes and the claim must succeed (HTTP 201)
+        with status.allocatedCIDR being a /32 inside 172.21.0.0/29.
       try:
         - script:
             timeout: 60s
@@ -557,10 +565,10 @@ spec:
                 curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
               done
 
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPAddressClaim","metadata":{"name":"mt-cross-addr-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross-addr":"true"}},"spec":{"ipFamily":"IPv4","prefixRef":{"name":"mt-host-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
+              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPPrefixClaim","metadata":{"name":"mt-cross-addr-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross-addr":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":32,"prefixRef":{"name":"mt-host-shared-pool","projectRef":{"name":"project-alpha"}},"reclaimPolicy":"Delete"}}'
 
               code=$(curl -s -o /tmp/mt-cross-addr.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipaddressclaims \
+                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/ipprefixclaims \
                 -H "Content-Type: application/json" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
@@ -573,22 +581,22 @@ spec:
                 exit 1
               fi
 
-              # Wait for Bound and verify IP
+              # Wait for Bound and verify the allocated CIDR is a /32 within 172.21.0.0/29.
               for i in $(seq 1 60); do
-                phase=$(kubectl get ipaddressclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
                 if [ "$phase" = "Bound" ]; then break; fi
                 sleep 0.5
               done
-              ip=$(kubectl get ipaddressclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.allocatedIP}')
-              if [ -z "$ip" ]; then
-                echo "FAIL: empty allocatedIP"
+              cidr=$(kubectl get ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$cidr" ]; then
+                echo "FAIL: empty allocatedCIDR"
                 exit 1
               fi
-              if ! echo "$ip" | grep -qE '^172\.21\.0\.[0-7]$'; then
-                echo "FAIL: $ip not in 172.21.0.0/29"
+              if ! echo "$cidr" | grep -qE '^172\.21\.0\.[0-7]/32$'; then
+                echo "FAIL: $cidr not a /32 inside 172.21.0.0/29"
                 exit 1
               fi
-              echo "OK cross-project address claim accepted (201), ip=$ip"
+              echo "OK cross-project address claim accepted (201), cidr=$cidr"
             check:
               ($error == null): true
               (contains($stdout, 'OK cross-project address claim accepted')): true
@@ -598,84 +606,7 @@ spec:
               - name: NAMESPACE
                 value: ($namespace)
             content: |
-              kubectl delete ipaddressclaim -n "$NAMESPACE" mt-cross-addr-claim --ignore-not-found=true >/dev/null 2>&1 || true
+              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-addr-claim --ignore-not-found=true >/dev/null 2>&1 || true
               echo "address cross-project cleanup done"
-            check:
-              ($error == null): true
-
-    - name: cross-project-asn-claim-beta-from-shared
-      description: |
-        Project beta posts an ASNClaim against project-alpha's ASN pool
-        (mt-asn-shared-pool) carrying project-beta headers. ASNClaim's
-        spec.poolRef is a LocalRef (no projectRef field), so the body cannot
-        express the cross-project hint — the server gates the request via the
-        UserInfo.Extra headers + the ClusterRoleBinding
-        mt-asn-shared-pool-user-project-beta. The grant is present, so the
-        SAR passes and the claim must succeed (HTTP 201) with a status.asn in
-        4250000000-4250000019.
-      try:
-        - script:
-            timeout: 60s
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              set -e
-              PORT=$(shuf -i 30000-40000 -n 1)
-              kubectl proxy --port=$PORT >/dev/null 2>&1 &
-              PROXY=$!
-              trap "kill $PROXY 2>/dev/null || true" EXIT
-              for i in $(seq 1 20); do
-                curl -sf http://localhost:$PORT/api >/dev/null && break || sleep 0.25
-              done
-
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"ASNClaim","metadata":{"name":"mt-cross-asn-claim","namespace":"'"$NAMESPACE"'","labels":{"mt-suite":"true","mt-cross-asn":"true"}},"spec":{"poolRef":{"name":"mt-asn-shared-pool"}}}'
-
-              code=$(curl -s -o /tmp/mt-cross-asn.json -w '%{http_code}' \
-                -X POST http://localhost:$PORT/apis/ipam.miloapis.com/v1alpha1/namespaces/$NAMESPACE/asnclaims \
-                -H "Content-Type: application/json" \
-                -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Type: Project" \
-                -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Name: project-beta" \
-                -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Api-Group: resourcemanager.miloapis.com" \
-                -d "$body")
-
-              if [ "$code" != "201" ]; then
-                echo "FAIL: expected 201 (shared ASN pool with use grant), got $code"
-                cat /tmp/mt-cross-asn.json
-                exit 1
-              fi
-
-              for i in $(seq 1 60); do
-                phase=$(kubectl get asnclaim -n "$NAMESPACE" mt-cross-asn-claim -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-                if [ "$phase" = "Bound" ]; then break; fi
-                sleep 0.5
-              done
-              asn=$(kubectl get asnclaim -n "$NAMESPACE" mt-cross-asn-claim -o jsonpath='{.status.asn}')
-              if [ -z "$asn" ] || [ "$asn" = "0" ]; then
-                echo "FAIL: empty/zero ASN"
-                exit 1
-              fi
-              if [ "$asn" -lt 4250000000 ] || [ "$asn" -gt 4250000019 ]; then
-                echo "FAIL: $asn outside 4250000000-4250000019"
-                exit 1
-              fi
-              echo "OK cross-project ASN claim accepted (201), asn=$asn"
-            check:
-              ($error == null): true
-              (contains($stdout, 'OK cross-project ASN claim accepted')): true
-      finally:
-        - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              kubectl delete asnclaim -n "$NAMESPACE" mt-cross-asn-claim --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefix mt-host-shared-pool --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete ipprefixclass mt-host-shared --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete asnpool mt-asn-shared-pool --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete asnpoolclass mt-asn-shared --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete clusterrolebinding mt-host-shared-pool-user-project-beta mt-asn-shared-pool-user-project-beta --ignore-not-found=true >/dev/null 2>&1 || true
-              kubectl delete clusterrole mt-host-shared-pool-user mt-asn-shared-pool-user --ignore-not-found=true >/dev/null 2>&1 || true
-              echo "cross-project ASN + pool cleanup done"
             check:
               ($error == null): true

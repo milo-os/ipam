@@ -110,6 +110,124 @@ jobs:
             echo "  ok  $f"
           done
 
+  e2e:
+    name: End-to-end tests (Chainsaw)
+    runs-on: ubuntu-latest
+    env:
+      TASK_X_REMOTE_TASKFILES: "1"
+      # test-infra writes kubeconfig here when running outside the test-infra repo
+      KUBECONFIG: .test-infra/kubeconfig
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install kind
+        run: |
+          KIND_VERSION="v0.30.0"
+          curl -fsSL -o kind "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          chmod +x kind
+          sudo mv kind /usr/local/bin/kind
+
+      - name: Install kubectl
+        run: |
+          KUBECTL_VERSION="$(curl -sL https://dl.k8s.io/release/stable.txt)"
+          curl -fsSL -o kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/kubectl
+
+      - name: Install kustomize
+        run: |
+          curl -sLo /tmp/kustomize.tgz https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz
+          tar -xzf /tmp/kustomize.tgz -C /tmp
+          sudo mv /tmp/kustomize /usr/local/bin/
+
+      - name: Install Helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Install Flux CLI
+        run: |
+          curl -fsSL https://fluxcd.io/install.sh | sudo bash
+
+      - name: Install Chainsaw
+        run: |
+          CHAINSAW_VERSION="v0.2.12"
+          curl -fsSL -o /tmp/chainsaw.tgz \
+            "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_linux_amd64.tar.gz"
+          tar -xzf /tmp/chainsaw.tgz -C /tmp chainsaw
+          sudo mv /tmp/chainsaw /usr/local/bin/chainsaw
+
+      - name: Spin up kind cluster (test-infra)
+        run: task --yes test-infra:cluster-up
+
+      - name: Build IPAM container image
+        run: task --yes dev:build
+
+      - name: Load image into kind
+        run: task --yes dev:load
+
+      - name: Create control-plane-ca configmap
+        run: |
+          # The aggregated apiserver uses --requestheader-client-ca-file to verify
+          # the front proxy identity. In kind the cert lives in the
+          # extension-apiserver-authentication ConfigMap in kube-system.
+          kubectl create namespace ipam-system --dry-run=client -o yaml | kubectl apply -f -
+          kubectl get configmap extension-apiserver-authentication -n kube-system \
+            -o jsonpath='{.data.requestheader-client-ca-file}' > /tmp/requestheader-ca.crt
+          kubectl create configmap control-plane-ca \
+            -n ipam-system \
+            --from-file=ca.crt=/tmp/requestheader-ca.crt \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy IPAM service
+        run: |
+          kubectl apply -k config/overlays/test-infra
+          # Wait for cert-manager to issue the TLS secret before the apiserver pods can mount it.
+          kubectl -n ipam-system wait certificate/ipam-tls \
+            --for=condition=Ready --timeout=120s
+          kubectl -n ipam-system wait helmrelease/postgres \
+            --for=condition=Ready --timeout=300s
+          kubectl -n ipam-system wait pod \
+            -l app.kubernetes.io/name=postgresql \
+            --for=condition=Ready --timeout=180s
+          kubectl wait --for=condition=Ready pod \
+            -l app=ipam-apiserver -n ipam-system --timeout=180s
+          kubectl wait --for=condition=Available \
+            apiservice/v1alpha1.ipam.miloapis.com --timeout=180s
+
+      - name: Run Chainsaw e2e suites
+        run: chainsaw test test/e2e/
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== Pods ==="
+          kubectl get pods -A
+          echo "=== IPAM pod describe ==="
+          kubectl describe pods -n ipam-system -l app=ipam-apiserver || true
+          echo "=== IPAM apiserver logs ==="
+          kubectl logs -n ipam-system -l app=ipam-apiserver --all-containers --tail=100 || true
+          echo "=== CertificateRequests ==="
+          kubectl get certificaterequests -n ipam-system -o wide || true
+          echo "=== Events ==="
+          kubectl get events -n ipam-system --sort-by='.lastTimestamp' | tail -60 || true
+          echo "=== APIService ==="
+          kubectl get apiservice v1alpha1.ipam.miloapis.com -o yaml || true
+
+      - name: Tear down kind cluster
+        if: always()
+        run: task --yes test-infra:cluster-down
+
   observability:
     name: Verify observability artifacts
     runs-on: ubuntu-latest

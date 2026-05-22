@@ -1,0 +1,18 @@
+---
+# In kind, images are loaded via `kind load docker-image` and are never
+# pulled from a registry. Set Never to prevent Kyverno or other admission
+# controllers from mutating imagePullPolicy to Always, which would fail
+# because ipam-apiserver:dev doesn't exist on any public registry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-apiserver
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: migrate
+          imagePullPolicy: Never
+      containers:
+        - name: apiserver
+          imagePullPolicy: Never

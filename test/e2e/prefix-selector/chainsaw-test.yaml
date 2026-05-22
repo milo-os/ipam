@@ -21,31 +21,47 @@ spec:
             file: test-data/class.yaml
         - create:
             file: test-data/pools.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefix
-            name: selector-pool-consumer-b
-            timeout: 30s
-            for:
-              condition:
-                name: Ready
-                value: 'True'
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                ready=$(kubectl get ipprefix selector-pool-consumer-b \
+                  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
+                if [ "$ready" = "True" ]; then break; fi
+                sleep 1
+              done
+              if [ "$ready" != "True" ]; then
+                echo "FAIL: selector-pool-consumer-b not Ready after 30s"
+                exit 1
+              fi
+            check:
+              ($error == null): true
 
     - name: claim-by-selector
       description: matchLabels {environment=consumer, region=us-east} → binds to selector-pool-consumer-b
       try:
         - create:
             file: test-data/claim-by-selector.yaml
-        - wait:
-            apiVersion: ipam.miloapis.com/v1alpha1
-            kind: IPPrefixClaim
-            name: selector-claim
-            namespace: ($namespace)
-            timeout: 30s
-            for:
-              jsonPath:
-                path: '{.status.phase}'
-                value: 'Bound'
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipprefixclaim -n "$NAMESPACE" selector-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: selector-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
         - assert:
             file: assertions/assert-bound-to-us-east.yaml
 

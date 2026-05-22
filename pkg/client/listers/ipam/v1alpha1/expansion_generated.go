@@ -2,34 +2,18 @@
 
 package v1alpha1
 
-// IPAddressListerExpansion allows custom methods to be added to
-// IPAddressLister.
-type IPAddressListerExpansion interface{}
-
-// IPAddressNamespaceListerExpansion allows custom methods to be added to
-// IPAddressNamespaceLister.
-type IPAddressNamespaceListerExpansion interface{}
-
-// IPAddressClaimListerExpansion allows custom methods to be added to
-// IPAddressClaimLister.
-type IPAddressClaimListerExpansion interface{}
-
-// IPAddressClaimNamespaceListerExpansion allows custom methods to be added to
-// IPAddressClaimNamespaceLister.
-type IPAddressClaimNamespaceListerExpansion interface{}
-
 // IPPrefixListerExpansion allows custom methods to be added to
 // IPPrefixLister.
-type IPPrefixListerExpansion interface{}
+type IPPrefixListerExpansion any
 
 // IPPrefixClaimListerExpansion allows custom methods to be added to
 // IPPrefixClaimLister.
-type IPPrefixClaimListerExpansion interface{}
+type IPPrefixClaimListerExpansion any
 
 // IPPrefixClaimNamespaceListerExpansion allows custom methods to be added to
 // IPPrefixClaimNamespaceLister.
-type IPPrefixClaimNamespaceListerExpansion interface{}
+type IPPrefixClaimNamespaceListerExpansion any
 
 // IPPrefixClassListerExpansion allows custom methods to be added to
 // IPPrefixClassLister.
-type IPPrefixClassListerExpansion interface{}
+type IPPrefixClassListerExpansion any

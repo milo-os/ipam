@@ -38,10 +38,6 @@ type PrefixAllocator interface {
 	// pool identified by poolKey and returns its CIDR string.
 	AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, error)
 
-	// AllocateSingleAddress reserves a single host address within the pool
-	// identified by poolKey and returns its IP string (without prefix).
-	AllocateSingleAddress(ctx context.Context, tx pgx.Tx, poolKey string, ipFamily string, claimKey string, ownerProject string) (string, error)
-
 	// InsertObject writes a generic API object row into ipam_objects inside
 	// the supplied transaction and returns the assigned resource_version.
 	// Callers use the returned rv to populate metadata.resourceVersion on
