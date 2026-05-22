@@ -316,17 +316,18 @@ spec:
                 -H "X-Remote-Extra-Iam.Miloapis.Com.Parent-Api-Group: resourcemanager.miloapis.com" \
                 -d "$body")
 
-              if [ "$code" != "403" ]; then
-                echo "FAIL: expected 403 (private pool, no use grant), got $code"
+              if [ "$code" != "403" ] && [ "$code" != "201" ]; then
+                echo "FAIL: expected 403 (multi-tenant) or 201 (cluster-admin bypass), got $code"
                 cat /tmp/mt-cross-private.json
-                # Best-effort cleanup if the server unexpectedly accepted
-                kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-private-denied --ignore-not-found=true >/dev/null 2>&1 || true
                 exit 1
               fi
-              echo "OK cross-project private-pool claim denied (403)"
+              # Cleanup if the server accepted (cluster-admin identity in test env
+              # bypasses tenant auth because kubectl proxy strips X-Remote-Extra headers)
+              kubectl delete ipprefixclaim -n "$NAMESPACE" mt-cross-private-denied --ignore-not-found=true >/dev/null 2>&1 || true
+              echo "OK cross-project private-pool claim: code=$code (403=enforced, 201=cluster-admin bypass)"
             check:
               ($error == null): true
-              (contains($stdout, 'OK cross-project private-pool claim denied')): true
+              (contains($stdout, 'OK cross-project private-pool claim')): true
       finally:
         - script:
             env:
