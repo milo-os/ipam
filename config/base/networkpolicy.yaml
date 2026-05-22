@@ -79,3 +79,12 @@ spec:
           port: 6443
         - protocol: TCP
           port: 443
+    # In-cluster client uses kubernetes.default.svc:443 for admission
+    # informers (Namespace, WebhookConfigurations, FlowSchemas, etc.).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+      ports:
+        - protocol: TCP
+          port: 443
