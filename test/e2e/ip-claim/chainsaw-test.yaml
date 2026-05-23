@@ -1,0 +1,276 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ip-claim
+spec:
+  description: |
+    Happy-path allocation tests for IPClaim:
+    - Synchronous CIDR in status on Bound
+    - Non-overlapping concurrent allocations
+    - IPAllocation object created atomically in the same namespace
+    - Release on delete (IPAllocation removed) and re-allocation
+
+  steps:
+    - name: setup-pool
+      description: Create root IPPool (10.128.0.0/20, allow /24-/28)
+      try:
+        - create:
+            file: test-data/pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool alloc-parent \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: alloc-parent not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+
+    - name: allocate-first-claim
+      description: |
+        Create IPClaim (prefixLength=24); assert /24 within parent and
+        boundAllocationRef set. The shell follow-up additionally verifies
+        — using Python's ipaddress module — that status.allocatedCIDR is
+        actually a subnet of the pool CIDR, catching cases where the
+        server might return a syntactically valid CIDR that lies outside
+        the pool. Also asserts the corresponding IPAllocation object
+        exists in the same namespace as the claim.
+      try:
+        - create:
+            file: test-data/claim-first.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-1 \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: alloc-claim-1 not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-claim-1-bound.yaml
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              allocated=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-1 -o jsonpath='{.status.allocatedCIDR}')
+              pool=$(kubectl get ippool alloc-parent -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$allocated" ] || [ -z "$pool" ]; then
+                echo "FAIL: missing allocated=$allocated pool=$pool"
+                exit 1
+              fi
+              python3 -c "
+              import ipaddress, sys
+              child = ipaddress.ip_network('$allocated')
+              parent = ipaddress.ip_network('$pool')
+              if not child.subnet_of(parent):
+                  print(f'FAIL: {child} not a subnet of {parent}')
+                  sys.exit(1)
+              print(f'OK {child} is a subnet of {parent}')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK ')): true
+        - script:
+            timeout: 30s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              # Verify the IPAllocation object was created atomically in
+              # the same namespace as the claim, and that its CIDR matches
+              # the claim's allocatedCIDR.
+              ref=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-1 -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$ref" ]; then
+                echo "FAIL: empty boundAllocationRef.name on alloc-claim-1"
+                exit 1
+              fi
+              alloc_cidr=$(kubectl get ipallocation -n "$NAMESPACE" "$ref" -o jsonpath='{.status.allocatedCIDR}' 2>/dev/null || echo "")
+              claim_cidr=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-1 -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$alloc_cidr" ]; then
+                echo "FAIL: IPAllocation $ref not found in namespace $NAMESPACE"
+                exit 1
+              fi
+              if [ "$alloc_cidr" != "$claim_cidr" ]; then
+                echo "FAIL: IPAllocation.status.allocatedCIDR ($alloc_cidr) != claim.status.allocatedCIDR ($claim_cidr)"
+                exit 1
+              fi
+              echo "OK IPAllocation $ref exists with cidr=$alloc_cidr"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK IPAllocation ')): true
+
+    - name: allocate-second-claim-non-overlap
+      description: Second IPClaim (prefixLength=24) gets a non-overlapping /24
+      try:
+        - create:
+            file: test-data/claim-second.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-2 \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: alloc-claim-2 not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl get ipclaim -n "$NAMESPACE" alloc-claim-1 alloc-claim-2 \
+                -o jsonpath='{.items[*].status.allocatedCIDR}' | tr ' ' '\n' | sort -u | awk 'END{print NR}'
+            check:
+              ($stdout): "2\n"
+
+    - name: release-first-claim
+      description: |
+        Delete the first claim and verify the full lifecycle:
+        1. Snapshot pool status.capacity.available and the boundAllocationRef BEFORE delete.
+        2. Delete the claim.
+        3. Confirm the claim is gone AND the IPAllocation it owned is gone.
+        4. Assert pool status.capacity.available has INCREASED by 256 (one /24).
+      try:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              before=$(kubectl get ippool alloc-parent -o jsonpath='{.status.capacity.available}' 2>/dev/null || echo "")
+              if [ -z "$before" ]; then
+                echo "FAIL: pool has no status.capacity.available"
+                exit 1
+              fi
+              ref=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-1 -o jsonpath='{.status.boundAllocationRef.name}')
+              echo "$before" > /tmp/alloc-parent-available-before
+              echo "$ref"    > /tmp/alloc-claim-1-allocation-ref
+              echo "before_available=$before allocation_ref=$ref"
+            check:
+              ($error == null): true
+        - delete:
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              name: alloc-claim-1
+              namespace: ($namespace)
+        - error:
+            file: assertions/assert-claim-1-deleted.yaml
+        - script:
+            timeout: 30s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              ref=$(cat /tmp/alloc-claim-1-allocation-ref)
+              for i in $(seq 1 30); do
+                if ! kubectl get ipallocation -n "$NAMESPACE" "$ref" >/dev/null 2>&1; then
+                  echo "OK IPAllocation $ref removed"
+                  exit 0
+                fi
+                sleep 1
+              done
+              echo "FAIL: IPAllocation $ref still present after claim delete"
+              exit 1
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK IPAllocation ')): true
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              before=$(cat /tmp/alloc-parent-available-before)
+              for i in $(seq 1 30); do
+                after=$(kubectl get ippool alloc-parent -o jsonpath='{.status.capacity.available}' 2>/dev/null || echo "")
+                if [ -n "$after" ] && [ "$after" -gt "$before" ]; then
+                  break
+                fi
+                sleep 0.5
+              done
+              echo "after_available=$after (before=$before)"
+              if [ -z "$after" ]; then
+                echo "FAIL: pool capacity unreadable after release"
+                exit 1
+              fi
+              if [ "$after" -le "$before" ]; then
+                echo "FAIL: capacity.available did not increase after release ($before -> $after)"
+                exit 1
+              fi
+              expected=$(( before + 256 ))
+              if [ "$after" -ne "$expected" ]; then
+                echo "FAIL: capacity.available expected $expected after releasing /24 ($before + 256), got $after"
+                exit 1
+              fi
+              echo "OK capacity available incremented from $before to $after after releasing /24"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK capacity available incremented')): true
+
+    - name: reallocate-after-release
+      description: New claim succeeds; pool not exhausted
+      try:
+        - create:
+            file: test-data/claim-reallocate.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" alloc-claim-reuse \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: alloc-claim-reuse not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" \
+                alloc-claim-1 alloc-claim-2 alloc-claim-reuse --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool alloc-parent --ignore-not-found >/dev/null 2>&1 || true
+              echo "ip-claim cleanup done"
+            check:
+              ($error == null): true

@@ -1,0 +1,10 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: pool-suite-root
+spec:
+  cidr: 10.220.0.0/20
+  ipFamily: IPv4
+status:
+  phase: Ready
+  allocatedCIDR: 10.220.0.0/20

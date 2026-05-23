@@ -42,15 +42,26 @@ const (
 	ClaimError     ClaimPhase = "Error"
 )
 
-// PrefixPhase is the high-level lifecycle phase of an IP prefix.
+// AllocationPhase is the high-level lifecycle phase of an IPAllocation.
 // +kubebuilder:validation:Enum=Pending;Ready;Exhausted;Error
-type PrefixPhase string
+type AllocationPhase string
 
 const (
-	PrefixPending   PrefixPhase = "Pending"
-	PrefixReady     PrefixPhase = "Ready"
-	PrefixExhausted PrefixPhase = "Exhausted"
-	PrefixError     PrefixPhase = "Error"
+	AllocationPending   AllocationPhase = "Pending"
+	AllocationReady     AllocationPhase = "Ready"
+	AllocationExhausted AllocationPhase = "Exhausted"
+	AllocationError     AllocationPhase = "Error"
+)
+
+// PoolPhase is the high-level lifecycle phase of an IPPool.
+// +kubebuilder:validation:Enum=Pending;Ready;Exhausted;Error
+type PoolPhase string
+
+const (
+	PoolPending   PoolPhase = "Pending"
+	PoolReady     PoolPhase = "Ready"
+	PoolExhausted PoolPhase = "Exhausted"
+	PoolError     PoolPhase = "Error"
 )
 
 // LocalRef references another IPAM object in the same namespace by name.
@@ -67,16 +78,16 @@ type NamespacedRef struct {
 	ProjectRef *LocalRef `json:"projectRef,omitempty"`
 }
 
-// PrefixSelector picks a parent IPPrefix by labels, optionally scoped to a
+// PoolSelector picks a parent IPPool by labels, optionally scoped to a
 // specific project for cross-project shared pools.
-type PrefixSelector struct {
+type PoolSelector struct {
 	// +optional
 	*metav1.LabelSelector `json:",inline"`
 	// +optional
 	ProjectRef *LocalRef `json:"projectRef,omitempty"`
 }
 
-// Pool visibility constants for IPPrefixClass.spec.visibility.
+// Pool visibility constants for IPPool.spec.visibility.
 const (
 	VisibilityPlatform string = "platform"
 	VisibilityConsumer string = "consumer"
@@ -91,120 +102,70 @@ type ObjectRef struct {
 	Name      string `json:"name"`
 }
 
-// AllocationSpec configures sub-allocation behaviour for a prefix.
+// AllocationSpec configures sub-allocation behaviour for a pool.
 type AllocationSpec struct {
 	MinPrefixLength int      `json:"minPrefixLength,omitempty"`
 	MaxPrefixLength int      `json:"maxPrefixLength,omitempty"`
 	Strategy        Strategy `json:"strategy,omitempty"`
 }
 
-// PrefixCapacity reports utilization for an IPPrefix.
-type PrefixCapacity struct {
+// PoolCapacity reports utilization for an IPPool.
+type PoolCapacity struct {
 	Total     int64 `json:"total"`
 	Allocated int64 `json:"allocated"`
 	Available int64 `json:"available"`
 }
 
-// IPPrefixTemplate is the metadata + spec used to materialise an IPPrefix
-// child created atomically with an IPPrefixClaim.
-type IPPrefixTemplate struct {
-	Metadata metav1.ObjectMeta `json:"metadata,omitempty"`
-	Spec     IPPrefixSpec      `json:"spec"`
-}
-
 // ----------------------------------------------------------------------------
-// IPPrefixClass — cluster-scoped class of prefix pools.
+// IPPool — cluster-scoped allocatable address space.
 // ----------------------------------------------------------------------------
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=ippc
+// +kubebuilder:resource:scope=Cluster,shortName=ippool
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Visibility",type=string,JSONPath=`.spec.visibility`
-// +kubebuilder:printcolumn:name="ReqVerify",type=boolean,JSONPath=`.spec.requiresVerification`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +genclient
-// +genclient:nonNamespaced
-
-// IPPrefixClass declares operational properties shared by a class of
-// IPPrefix pools.
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPPrefixClass struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec IPPrefixClassSpec `json:"spec,omitempty"`
-}
-
-type IPPrefixClassSpec struct {
-	// Visibility controls cross-project access semantics for IPPrefix
-	// pools that reference this class. "platform" pools are platform-only
-	// (callers see them only when running with platform scope);
-	// "consumer" pools are visible to a single project; "shared" pools
-	// are eligible for cross-project allocation via prefixSelector.projectRef
-	// gated by a SubjectAccessReview.
-	// +optional
-	// +kubebuilder:validation:Enum=platform;consumer;shared
-	Visibility string `json:"visibility,omitempty"`
-	// +optional
-	DefaultAllocation AllocationSpec `json:"defaultAllocation,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-
-// IPPrefixClassList is a list of IPPrefixClass.
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPPrefixClassList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []IPPrefixClass `json:"items"`
-}
-
-// ----------------------------------------------------------------------------
-// IPPrefix
-// ----------------------------------------------------------------------------
-
-// +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=ipp
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.spec.cidr`
-// +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
-// +kubebuilder:printcolumn:name="Class",type=string,JSONPath=`.spec.classRef.name`
+// +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.status.allocatedCIDR`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +genclient
 // +genclient:nonNamespaced
 
-// IPPrefix is a CIDR pool from which sub-prefixes or addresses can be
-// allocated.
+// IPPool is an allocatable address space. Root pools declare a CIDR
+// directly; child pools carve a sub-prefix from a parent pool.
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPPrefix struct {
+type IPPool struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   IPPrefixSpec   `json:"spec,omitempty"`
-	Status IPPrefixStatus `json:"status,omitempty"`
+	Spec   IPPoolSpec   `json:"spec,omitempty"`
+	Status IPPoolStatus `json:"status,omitempty"`
 }
 
-type IPPrefixSpec struct {
-	// CIDR is the parent prefix in canonical form, e.g. "10.0.0.0/8"
-	// (IPv4) or "2001:db8::/32" (IPv6). Validation parses with
-	// net.ParseCIDR and rejects malformed values.
-	CIDR     string   `json:"cidr"`
-	IPFamily IPFamily `json:"ipFamily"`
-	ClassRef LocalRef `json:"classRef"`
-	// +optional
-	Allocation AllocationSpec `json:"allocation,omitempty"`
-	// +optional
-	ParentRef *ObjectRef `json:"parentRef,omitempty"`
-}
-
-type IPPrefixStatus struct {
-	// +optional
-	Phase PrefixPhase `json:"phase,omitempty"`
+type IPPoolSpec struct {
 	// +optional
 	CIDR string `json:"cidr,omitempty"`
 	// +optional
-	Capacity PrefixCapacity `json:"capacity,omitempty"`
+	IPFamily IPFamily `json:"ipFamily,omitempty"`
+	// +optional
+	ParentPoolRef *LocalRef `json:"parentPoolRef,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=128
+	PrefixLength int `json:"prefixLength,omitempty"`
+	// +optional
+	Allocation AllocationSpec `json:"allocation,omitempty"`
+	// +optional
+	// +kubebuilder:validation:Enum=platform;consumer;shared
+	Visibility string `json:"visibility,omitempty"`
+}
+
+type IPPoolStatus struct {
+	// +optional
+	Phase PoolPhase `json:"phase,omitempty"`
+	// +optional
+	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
+	// +optional
+	Capacity PoolCapacity `json:"capacity,omitempty"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -213,36 +174,83 @@ type IPPrefixStatus struct {
 
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPPrefixList struct {
+type IPPoolList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []IPPrefix `json:"items"`
+	Items           []IPPool `json:"items"`
 }
 
 // ----------------------------------------------------------------------------
-// IPPrefixClaim
+// IPAllocation — namespace-scoped, system-created allocation record.
 // ----------------------------------------------------------------------------
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName=ippc
+// +kubebuilder:resource:shortName=ipalloc
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.status.allocatedCIDR`
+// +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.spec.poolRef.name`
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +genclient
+
+// IPAllocation records a CIDR carved out of an IPPool by an IPClaim.
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type IPAllocation struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   IPAllocationSpec   `json:"spec,omitempty"`
+	Status IPAllocationStatus `json:"status,omitempty"`
+}
+
+type IPAllocationSpec struct {
+	IPFamily IPFamily `json:"ipFamily"`
+	PoolRef  LocalRef `json:"poolRef"`
+}
+
+type IPAllocationStatus struct {
+	// +optional
+	Phase AllocationPhase `json:"phase,omitempty"`
+	// +optional
+	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type IPAllocationList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []IPAllocation `json:"items"`
+}
+
+// ----------------------------------------------------------------------------
+// IPClaim
+// ----------------------------------------------------------------------------
+
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:shortName=ipclaim
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.status.allocatedCIDR`
-// +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.status.boundPrefixRef.name`
+// +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.spec.poolRef.name`
 // +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
 // +kubebuilder:printcolumn:name="Length",type=integer,JSONPath=`.spec.prefixLength`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPPrefixClaim struct {
+type IPClaim struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   IPPrefixClaimSpec   `json:"spec,omitempty"`
-	Status IPPrefixClaimStatus `json:"status,omitempty"`
+	Spec   IPClaimSpec   `json:"spec,omitempty"`
+	Status IPClaimStatus `json:"status,omitempty"`
 }
 
-type IPPrefixClaimSpec struct {
+type IPClaimSpec struct {
 	IPFamily IPFamily `json:"ipFamily"`
 	// PrefixLength is the requested sub-prefix size in bits. Must be a
 	// valid mask length for the chosen ipFamily (0-32 for IPv4, 0-128
@@ -251,24 +259,22 @@ type IPPrefixClaimSpec struct {
 	// +kubebuilder:validation:Maximum=128
 	PrefixLength int `json:"prefixLength"`
 	// +optional
-	PrefixSelector *PrefixSelector `json:"prefixSelector,omitempty"`
+	PoolSelector *PoolSelector `json:"poolSelector,omitempty"`
 	// +optional
-	PrefixRef *NamespacedRef `json:"prefixRef,omitempty"`
-	// +optional
-	ChildPrefixTemplate *IPPrefixTemplate `json:"childPrefixTemplate,omitempty"`
+	PoolRef *NamespacedRef `json:"poolRef,omitempty"`
 	// +optional
 	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
 	// +optional
 	OwnerRef *ObjectRef `json:"ownerRef,omitempty"`
 }
 
-type IPPrefixClaimStatus struct {
+type IPClaimStatus struct {
 	// +optional
 	Phase ClaimPhase `json:"phase,omitempty"`
 	// +optional
 	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
 	// +optional
-	BoundPrefixRef *LocalRef `json:"boundPrefixRef,omitempty"`
+	BoundAllocationRef *LocalRef `json:"boundAllocationRef,omitempty"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type
@@ -277,108 +283,8 @@ type IPPrefixClaimStatus struct {
 
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPPrefixClaimList struct {
+type IPClaimList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []IPPrefixClaim `json:"items"`
+	Items           []IPClaim `json:"items"`
 }
-
-// ----------------------------------------------------------------------------
-// IPAddress
-// ----------------------------------------------------------------------------
-
-// +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName=ipa
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Address",type=string,JSONPath=`.spec.address`
-// +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
-// +kubebuilder:printcolumn:name="Prefix",type=string,JSONPath=`.spec.prefixRef.name`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +genclient
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPAddress struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   IPAddressSpec   `json:"spec,omitempty"`
-	Status IPAddressStatus `json:"status,omitempty"`
-}
-
-type IPAddressSpec struct {
-	Address   string   `json:"address"`
-	IPFamily  IPFamily `json:"ipFamily"`
-	PrefixRef LocalRef `json:"prefixRef"`
-	// +optional
-	ClaimRef *LocalRef `json:"claimRef,omitempty"`
-}
-
-type IPAddressStatus struct {
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPAddressList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []IPAddress `json:"items"`
-}
-
-// ----------------------------------------------------------------------------
-// IPAddressClaim
-// ----------------------------------------------------------------------------
-
-// +kubebuilder:object:root=true
-// +kubebuilder:resource:shortName=ipac
-// +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="IP",type=string,JSONPath=`.status.allocatedIP`
-// +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.spec.prefixRef.name`
-// +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
-// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
-// +genclient
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPAddressClaim struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec   IPAddressClaimSpec   `json:"spec,omitempty"`
-	Status IPAddressClaimStatus `json:"status,omitempty"`
-}
-
-type IPAddressClaimSpec struct {
-	IPFamily IPFamily `json:"ipFamily"`
-	// +optional
-	PrefixSelector *PrefixSelector `json:"prefixSelector,omitempty"`
-	// +optional
-	PrefixRef *NamespacedRef `json:"prefixRef,omitempty"`
-	// +optional
-	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
-	// +optional
-	OwnerRef *ObjectRef `json:"ownerRef,omitempty"`
-}
-
-type IPAddressClaimStatus struct {
-	// +optional
-	Phase ClaimPhase `json:"phase,omitempty"`
-	// +optional
-	AllocatedIP string `json:"allocatedIP,omitempty"`
-	// +optional
-	BoundAddressRef *LocalRef `json:"boundAddressRef,omitempty"`
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	Conditions []metav1.Condition `json:"conditions,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type IPAddressClaimList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []IPAddressClaim `json:"items"`
-}
-

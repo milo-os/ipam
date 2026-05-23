@@ -26,10 +26,10 @@ subjects:
     name: iam.miloapis.com:platform-admin
 ---
 # ipam-provider — operator role for the team that manages address pools.
-# Full CRUD on pool resources (IPPrefix, IPPrefixClass, ASNPool,
-# ASNPoolClass), plus read access to claims so providers can see what's
-# currently consuming each pool. Does NOT grant CRUD on claims; consumer
-# projects own their own claims via the ipam-consumer role.
+# Full CRUD on pool resources (IPPool, ASNPool, ASNPoolClass), plus read
+# access to claims so providers can see what's currently consuming each pool.
+# Does NOT grant CRUD on claims; consumer projects own their own claims via
+# the ipam-consumer role.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -37,19 +37,16 @@ metadata:
 rules:
   - apiGroups: ["ipam.miloapis.com"]
     resources:
-      - ipprefixes
-      - ipprefixes/status
-      - ipprefixclasses
-      - ipaddresses
-      - ipaddresses/status
+      - ippools
+      - ippools/status
       - asnpools
       - asnpools/status
       - asnpoolclasses
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
   - apiGroups: ["ipam.miloapis.com"]
     resources:
-      - ipprefixclaims
-      - ipaddressclaims
+      - ipclaims
+      - ipallocations
       - asnclaims
     verbs: ["get", "list", "watch"]
   # "use" is the verb checked by PoolAccessChecker.CanUsePool when a
@@ -57,7 +54,7 @@ rules:
   # implicitly authorises cross-project allocation; providers controlling
   # the pool grant this verb to the consumer groups they want to admit.
   - apiGroups: ["ipam.miloapis.com"]
-    resources: ["ipprefixes", "asnpools"]
+    resources: ["ippools", "asnpools"]
     verbs: ["use"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -83,15 +80,13 @@ metadata:
 rules:
   - apiGroups: ["ipam.miloapis.com"]
     resources:
-      - ipprefixclaims
-      - ipaddressclaims
+      - ipclaims
       - asnclaims
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["ipam.miloapis.com"]
     resources:
-      - ipprefixes
-      - ipaddresses
-      - ipprefixclasses
+      - ippools
+      - ipallocations
       - asnpools
       - asnpoolclasses
     verbs: ["get", "list", "watch"]

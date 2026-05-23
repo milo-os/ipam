@@ -13,98 +13,62 @@ import (
 // named type, so conversion is a series of mechanical field copies.
 func RegisterConversions(s *runtime.Scheme) error {
 	pairs := []struct {
-		internal, external interface{}
+		internal, external any
 		toInternal         conversion.ConversionFunc
 		toExternal         conversion.ConversionFunc
 	}{
 		{
-			(*ipam.IPPrefixClass)(nil), (*IPPrefixClass)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPPrefixClass_To_ipam(a.(*IPPrefixClass), b.(*ipam.IPPrefixClass))
+			(*ipam.IPPool)(nil), (*IPPool)(nil),
+			func(a, b any, sc conversion.Scope) error {
+				return convert_v1alpha1_IPPool_To_ipam(a.(*IPPool), b.(*ipam.IPPool))
 			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPPrefixClass_To_v1alpha1(a.(*ipam.IPPrefixClass), b.(*IPPrefixClass))
-			},
-		},
-		{
-			(*ipam.IPPrefixClassList)(nil), (*IPPrefixClassList)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPPrefixClassList_To_ipam(a.(*IPPrefixClassList), b.(*ipam.IPPrefixClassList))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPPrefixClassList_To_v1alpha1(a.(*ipam.IPPrefixClassList), b.(*IPPrefixClassList))
+			func(a, b any, sc conversion.Scope) error {
+				return convert_ipam_IPPool_To_v1alpha1(a.(*ipam.IPPool), b.(*IPPool))
 			},
 		},
 		{
-			(*ipam.IPPrefix)(nil), (*IPPrefix)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPPrefix_To_ipam(a.(*IPPrefix), b.(*ipam.IPPrefix))
+			(*ipam.IPPoolList)(nil), (*IPPoolList)(nil),
+			func(a, b any, sc conversion.Scope) error {
+				return convert_v1alpha1_IPPoolList_To_ipam(a.(*IPPoolList), b.(*ipam.IPPoolList))
 			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPPrefix_To_v1alpha1(a.(*ipam.IPPrefix), b.(*IPPrefix))
-			},
-		},
-		{
-			(*ipam.IPPrefixList)(nil), (*IPPrefixList)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPPrefixList_To_ipam(a.(*IPPrefixList), b.(*ipam.IPPrefixList))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPPrefixList_To_v1alpha1(a.(*ipam.IPPrefixList), b.(*IPPrefixList))
+			func(a, b any, sc conversion.Scope) error {
+				return convert_ipam_IPPoolList_To_v1alpha1(a.(*ipam.IPPoolList), b.(*IPPoolList))
 			},
 		},
 		{
-			(*ipam.IPPrefixClaim)(nil), (*IPPrefixClaim)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPPrefixClaim_To_ipam(a.(*IPPrefixClaim), b.(*ipam.IPPrefixClaim))
+			(*ipam.IPAllocation)(nil), (*IPAllocation)(nil),
+			func(a, b any, sc conversion.Scope) error {
+				return convert_v1alpha1_IPAllocation_To_ipam(a.(*IPAllocation), b.(*ipam.IPAllocation))
 			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPPrefixClaim_To_v1alpha1(a.(*ipam.IPPrefixClaim), b.(*IPPrefixClaim))
-			},
-		},
-		{
-			(*ipam.IPPrefixClaimList)(nil), (*IPPrefixClaimList)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPPrefixClaimList_To_ipam(a.(*IPPrefixClaimList), b.(*ipam.IPPrefixClaimList))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPPrefixClaimList_To_v1alpha1(a.(*ipam.IPPrefixClaimList), b.(*IPPrefixClaimList))
+			func(a, b any, sc conversion.Scope) error {
+				return convert_ipam_IPAllocation_To_v1alpha1(a.(*ipam.IPAllocation), b.(*IPAllocation))
 			},
 		},
 		{
-			(*ipam.IPAddress)(nil), (*IPAddress)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPAddress_To_ipam(a.(*IPAddress), b.(*ipam.IPAddress))
+			(*ipam.IPAllocationList)(nil), (*IPAllocationList)(nil),
+			func(a, b any, sc conversion.Scope) error {
+				return convert_v1alpha1_IPAllocationList_To_ipam(a.(*IPAllocationList), b.(*ipam.IPAllocationList))
 			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPAddress_To_v1alpha1(a.(*ipam.IPAddress), b.(*IPAddress))
-			},
-		},
-		{
-			(*ipam.IPAddressList)(nil), (*IPAddressList)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPAddressList_To_ipam(a.(*IPAddressList), b.(*ipam.IPAddressList))
-			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPAddressList_To_v1alpha1(a.(*ipam.IPAddressList), b.(*IPAddressList))
+			func(a, b any, sc conversion.Scope) error {
+				return convert_ipam_IPAllocationList_To_v1alpha1(a.(*ipam.IPAllocationList), b.(*IPAllocationList))
 			},
 		},
 		{
-			(*ipam.IPAddressClaim)(nil), (*IPAddressClaim)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPAddressClaim_To_ipam(a.(*IPAddressClaim), b.(*ipam.IPAddressClaim))
+			(*ipam.IPClaim)(nil), (*IPClaim)(nil),
+			func(a, b any, sc conversion.Scope) error {
+				return convert_v1alpha1_IPClaim_To_ipam(a.(*IPClaim), b.(*ipam.IPClaim))
 			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPAddressClaim_To_v1alpha1(a.(*ipam.IPAddressClaim), b.(*IPAddressClaim))
+			func(a, b any, sc conversion.Scope) error {
+				return convert_ipam_IPClaim_To_v1alpha1(a.(*ipam.IPClaim), b.(*IPClaim))
 			},
 		},
 		{
-			(*ipam.IPAddressClaimList)(nil), (*IPAddressClaimList)(nil),
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_v1alpha1_IPAddressClaimList_To_ipam(a.(*IPAddressClaimList), b.(*ipam.IPAddressClaimList))
+			(*ipam.IPClaimList)(nil), (*IPClaimList)(nil),
+			func(a, b any, sc conversion.Scope) error {
+				return convert_v1alpha1_IPClaimList_To_ipam(a.(*IPClaimList), b.(*ipam.IPClaimList))
 			},
-			func(a, b interface{}, sc conversion.Scope) error {
-				return convert_ipam_IPAddressClaimList_To_v1alpha1(a.(*ipam.IPAddressClaimList), b.(*IPAddressClaimList))
+			func(a, b any, sc conversion.Scope) error {
+				return convert_ipam_IPClaimList_To_v1alpha1(a.(*ipam.IPClaimList), b.(*IPClaimList))
 			},
 		},
 	}

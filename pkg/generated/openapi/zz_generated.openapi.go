@@ -16,96 +16,87 @@ import (
 
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.AllocationSpec":             schema_pkg_apis_ipam_v1alpha1_AllocationSpec(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddress":                  schema_pkg_apis_ipam_v1alpha1_IPAddress(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaim":             schema_pkg_apis_ipam_v1alpha1_IPAddressClaim(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaimList":         schema_pkg_apis_ipam_v1alpha1_IPAddressClaimList(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaimSpec":         schema_pkg_apis_ipam_v1alpha1_IPAddressClaimSpec(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaimStatus":       schema_pkg_apis_ipam_v1alpha1_IPAddressClaimStatus(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressList":              schema_pkg_apis_ipam_v1alpha1_IPAddressList(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressSpec":              schema_pkg_apis_ipam_v1alpha1_IPAddressSpec(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressStatus":            schema_pkg_apis_ipam_v1alpha1_IPAddressStatus(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefix":                   schema_pkg_apis_ipam_v1alpha1_IPPrefix(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaim":              schema_pkg_apis_ipam_v1alpha1_IPPrefixClaim(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaimList":          schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimList(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaimSpec":          schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimSpec(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaimStatus":        schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimStatus(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClass":              schema_pkg_apis_ipam_v1alpha1_IPPrefixClass(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClassList":          schema_pkg_apis_ipam_v1alpha1_IPPrefixClassList(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClassSpec":          schema_pkg_apis_ipam_v1alpha1_IPPrefixClassSpec(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixList":               schema_pkg_apis_ipam_v1alpha1_IPPrefixList(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixSpec":               schema_pkg_apis_ipam_v1alpha1_IPPrefixSpec(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixStatus":             schema_pkg_apis_ipam_v1alpha1_IPPrefixStatus(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixTemplate":           schema_pkg_apis_ipam_v1alpha1_IPPrefixTemplate(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef":                   schema_pkg_apis_ipam_v1alpha1_LocalRef(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef":              schema_pkg_apis_ipam_v1alpha1_NamespacedRef(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef":                  schema_pkg_apis_ipam_v1alpha1_ObjectRef(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PrefixCapacity":             schema_pkg_apis_ipam_v1alpha1_PrefixCapacity(ref),
-		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PrefixSelector":             schema_pkg_apis_ipam_v1alpha1_PrefixSelector(ref),
-		resource.Quantity{}.OpenAPIModelName():                                   schema_apimachinery_pkg_api_resource_Quantity(ref),
-		v1.APIGroup{}.OpenAPIModelName():                                         schema_pkg_apis_meta_v1_APIGroup(ref),
-		v1.APIGroupList{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_APIGroupList(ref),
-		v1.APIResource{}.OpenAPIModelName():                                      schema_pkg_apis_meta_v1_APIResource(ref),
-		v1.APIResourceList{}.OpenAPIModelName():                                  schema_pkg_apis_meta_v1_APIResourceList(ref),
-		v1.APIVersions{}.OpenAPIModelName():                                      schema_pkg_apis_meta_v1_APIVersions(ref),
-		v1.ApplyOptions{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_ApplyOptions(ref),
-		v1.Condition{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_Condition(ref),
-		v1.CreateOptions{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_CreateOptions(ref),
-		v1.DeleteOptions{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_DeleteOptions(ref),
-		v1.Duration{}.OpenAPIModelName():                                         schema_pkg_apis_meta_v1_Duration(ref),
-		v1.FieldSelectorRequirement{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
-		v1.FieldsV1{}.OpenAPIModelName():                                         schema_pkg_apis_meta_v1_FieldsV1(ref),
-		v1.GetOptions{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_GetOptions(ref),
-		v1.GroupKind{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_GroupKind(ref),
-		v1.GroupResource{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_GroupResource(ref),
-		v1.GroupVersion{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_GroupVersion(ref),
-		v1.GroupVersionForDiscovery{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
-		v1.GroupVersionKind{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_GroupVersionKind(ref),
-		v1.GroupVersionResource{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_GroupVersionResource(ref),
-		v1.InternalEvent{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_InternalEvent(ref),
-		v1.LabelSelector{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_LabelSelector(ref),
-		v1.LabelSelectorRequirement{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
-		v1.List{}.OpenAPIModelName():                                             schema_pkg_apis_meta_v1_List(ref),
-		v1.ListMeta{}.OpenAPIModelName():                                         schema_pkg_apis_meta_v1_ListMeta(ref),
-		v1.ListOptions{}.OpenAPIModelName():                                      schema_pkg_apis_meta_v1_ListOptions(ref),
-		v1.ManagedFieldsEntry{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
-		v1.MicroTime{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_MicroTime(ref),
-		v1.ObjectMeta{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_ObjectMeta(ref),
-		v1.OwnerReference{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_OwnerReference(ref),
-		v1.PartialObjectMetadata{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
-		v1.PartialObjectMetadataList{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
-		v1.Patch{}.OpenAPIModelName():                                            schema_pkg_apis_meta_v1_Patch(ref),
-		v1.PatchOptions{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_PatchOptions(ref),
-		v1.Preconditions{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_Preconditions(ref),
-		v1.RootPaths{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_RootPaths(ref),
-		v1.ServerAddressByClientCIDR{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
-		v1.ShardInfo{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_ShardInfo(ref),
-		v1.Status{}.OpenAPIModelName():                                           schema_pkg_apis_meta_v1_Status(ref),
-		v1.StatusCause{}.OpenAPIModelName():                                      schema_pkg_apis_meta_v1_StatusCause(ref),
-		v1.StatusDetails{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_StatusDetails(ref),
-		v1.Table{}.OpenAPIModelName():                                            schema_pkg_apis_meta_v1_Table(ref),
-		v1.TableColumnDefinition{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
-		v1.TableOptions{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_TableOptions(ref),
-		v1.TableRow{}.OpenAPIModelName():                                         schema_pkg_apis_meta_v1_TableRow(ref),
-		v1.TableRowCondition{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_TableRowCondition(ref),
-		v1.Time{}.OpenAPIModelName():                                             schema_pkg_apis_meta_v1_Time(ref),
-		v1.Timestamp{}.OpenAPIModelName():                                        schema_pkg_apis_meta_v1_Timestamp(ref),
-		v1.TypeMeta{}.OpenAPIModelName():                                         schema_pkg_apis_meta_v1_TypeMeta(ref),
-		v1.UpdateOptions{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_UpdateOptions(ref),
-		v1.WatchEvent{}.OpenAPIModelName():                                       schema_pkg_apis_meta_v1_WatchEvent(ref),
-		runtime.RawExtension{}.OpenAPIModelName():                                schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
-		runtime.TypeMeta{}.OpenAPIModelName():                                    schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
-		runtime.Unknown{}.OpenAPIModelName():                                     schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
-		version.Info{}.OpenAPIModelName():                                        schema_k8sio_apimachinery_pkg_version_Info(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.AllocationSpec":     schema_pkg_apis_ipam_v1alpha1_AllocationSpec(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocation":       schema_pkg_apis_ipam_v1alpha1_IPAllocation(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocationList":   schema_pkg_apis_ipam_v1alpha1_IPAllocationList(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocationSpec":   schema_pkg_apis_ipam_v1alpha1_IPAllocationSpec(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocationStatus": schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaim":            schema_pkg_apis_ipam_v1alpha1_IPClaim(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaimList":        schema_pkg_apis_ipam_v1alpha1_IPClaimList(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaimSpec":        schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaimStatus":      schema_pkg_apis_ipam_v1alpha1_IPClaimStatus(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPool":             schema_pkg_apis_ipam_v1alpha1_IPPool(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPoolList":         schema_pkg_apis_ipam_v1alpha1_IPPoolList(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPoolSpec":         schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPoolStatus":       schema_pkg_apis_ipam_v1alpha1_IPPoolStatus(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef":           schema_pkg_apis_ipam_v1alpha1_LocalRef(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef":      schema_pkg_apis_ipam_v1alpha1_NamespacedRef(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef":          schema_pkg_apis_ipam_v1alpha1_ObjectRef(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PoolCapacity":       schema_pkg_apis_ipam_v1alpha1_PoolCapacity(ref),
+		"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PoolSelector":       schema_pkg_apis_ipam_v1alpha1_PoolSelector(ref),
+		resource.Quantity{}.OpenAPIModelName():                           schema_apimachinery_pkg_api_resource_Quantity(ref),
+		v1.APIGroup{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_APIGroup(ref),
+		v1.APIGroupList{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_APIGroupList(ref),
+		v1.APIResource{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_APIResource(ref),
+		v1.APIResourceList{}.OpenAPIModelName():                          schema_pkg_apis_meta_v1_APIResourceList(ref),
+		v1.APIVersions{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_APIVersions(ref),
+		v1.ApplyOptions{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_ApplyOptions(ref),
+		v1.Condition{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_Condition(ref),
+		v1.CreateOptions{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_CreateOptions(ref),
+		v1.DeleteOptions{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_DeleteOptions(ref),
+		v1.Duration{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_Duration(ref),
+		v1.FieldSelectorRequirement{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_FieldSelectorRequirement(ref),
+		v1.FieldsV1{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_FieldsV1(ref),
+		v1.GetOptions{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_GetOptions(ref),
+		v1.GroupKind{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_GroupKind(ref),
+		v1.GroupResource{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_GroupResource(ref),
+		v1.GroupVersion{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_GroupVersion(ref),
+		v1.GroupVersionForDiscovery{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_GroupVersionForDiscovery(ref),
+		v1.GroupVersionKind{}.OpenAPIModelName():                         schema_pkg_apis_meta_v1_GroupVersionKind(ref),
+		v1.GroupVersionResource{}.OpenAPIModelName():                     schema_pkg_apis_meta_v1_GroupVersionResource(ref),
+		v1.InternalEvent{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_InternalEvent(ref),
+		v1.LabelSelector{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_LabelSelector(ref),
+		v1.LabelSelectorRequirement{}.OpenAPIModelName():                 schema_pkg_apis_meta_v1_LabelSelectorRequirement(ref),
+		v1.List{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_List(ref),
+		v1.ListMeta{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_ListMeta(ref),
+		v1.ListOptions{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_ListOptions(ref),
+		v1.ManagedFieldsEntry{}.OpenAPIModelName():                       schema_pkg_apis_meta_v1_ManagedFieldsEntry(ref),
+		v1.MicroTime{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_MicroTime(ref),
+		v1.ObjectMeta{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_ObjectMeta(ref),
+		v1.OwnerReference{}.OpenAPIModelName():                           schema_pkg_apis_meta_v1_OwnerReference(ref),
+		v1.PartialObjectMetadata{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_PartialObjectMetadata(ref),
+		v1.PartialObjectMetadataList{}.OpenAPIModelName():                schema_pkg_apis_meta_v1_PartialObjectMetadataList(ref),
+		v1.Patch{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_Patch(ref),
+		v1.PatchOptions{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_PatchOptions(ref),
+		v1.Preconditions{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_Preconditions(ref),
+		v1.RootPaths{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_RootPaths(ref),
+		v1.ServerAddressByClientCIDR{}.OpenAPIModelName():                schema_pkg_apis_meta_v1_ServerAddressByClientCIDR(ref),
+		v1.ShardInfo{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_ShardInfo(ref),
+		v1.Status{}.OpenAPIModelName():                                   schema_pkg_apis_meta_v1_Status(ref),
+		v1.StatusCause{}.OpenAPIModelName():                              schema_pkg_apis_meta_v1_StatusCause(ref),
+		v1.StatusDetails{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_StatusDetails(ref),
+		v1.Table{}.OpenAPIModelName():                                    schema_pkg_apis_meta_v1_Table(ref),
+		v1.TableColumnDefinition{}.OpenAPIModelName():                    schema_pkg_apis_meta_v1_TableColumnDefinition(ref),
+		v1.TableOptions{}.OpenAPIModelName():                             schema_pkg_apis_meta_v1_TableOptions(ref),
+		v1.TableRow{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_TableRow(ref),
+		v1.TableRowCondition{}.OpenAPIModelName():                        schema_pkg_apis_meta_v1_TableRowCondition(ref),
+		v1.Time{}.OpenAPIModelName():                                     schema_pkg_apis_meta_v1_Time(ref),
+		v1.Timestamp{}.OpenAPIModelName():                                schema_pkg_apis_meta_v1_Timestamp(ref),
+		v1.TypeMeta{}.OpenAPIModelName():                                 schema_pkg_apis_meta_v1_TypeMeta(ref),
+		v1.UpdateOptions{}.OpenAPIModelName():                            schema_pkg_apis_meta_v1_UpdateOptions(ref),
+		v1.WatchEvent{}.OpenAPIModelName():                               schema_pkg_apis_meta_v1_WatchEvent(ref),
+		runtime.RawExtension{}.OpenAPIModelName():                        schema_k8sio_apimachinery_pkg_runtime_RawExtension(ref),
+		runtime.TypeMeta{}.OpenAPIModelName():                            schema_k8sio_apimachinery_pkg_runtime_TypeMeta(ref),
+		runtime.Unknown{}.OpenAPIModelName():                             schema_k8sio_apimachinery_pkg_runtime_Unknown(ref),
+		version.Info{}.OpenAPIModelName():                                schema_k8sio_apimachinery_pkg_version_Info(ref),
 	}
 }
-
 
 func schema_pkg_apis_ipam_v1alpha1_AllocationSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "AllocationSpec configures sub-allocation behaviour for a prefix.",
+				Description: "AllocationSpec configures sub-allocation behaviour for a pool.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"minPrefixLength": {
@@ -132,369 +123,11 @@ func schema_pkg_apis_ipam_v1alpha1_AllocationSpec(ref common.ReferenceCallback) 
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_IPAddress(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_ipam_v1alpha1_IPAllocation(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
-						},
-					},
-					"spec": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressSpec"),
-						},
-					},
-					"status": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressStatus"),
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressStatus", v1.ObjectMeta{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPAddressClaim(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
-						},
-					},
-					"spec": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaimSpec"),
-						},
-					},
-					"status": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaimStatus"),
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaimSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaimStatus", v1.ObjectMeta{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPAddressClaimList(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
-						},
-					},
-					"items": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaim"),
-									},
-								},
-							},
-						},
-					},
-				},
-				Required: []string{"items"},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddressClaim", v1.ListMeta{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPAddressClaimSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"ipFamily": {
-						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
-						},
-					},
-					"prefixSelector": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PrefixSelector"),
-						},
-					},
-					"prefixRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef"),
-						},
-					},
-					"reclaimPolicy": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
-						},
-					},
-					"ownerRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef"),
-						},
-					},
-				},
-				Required: []string{"ipFamily"},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PrefixSelector"},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPAddressClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"phase": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
-						},
-					},
-					"allocatedIP": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
-						},
-					},
-					"boundAddressRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"),
-						},
-					},
-					"conditions": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"type",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(v1.Condition{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef", v1.Condition{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPAddressList(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
-						},
-					},
-					"items": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddress"),
-									},
-								},
-							},
-						},
-					},
-				},
-				Required: []string{"items"},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAddress", v1.ListMeta{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPAddressSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"address": {
-						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
-						},
-					},
-					"ipFamily": {
-						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
-						},
-					},
-					"prefixRef": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"),
-						},
-					},
-					"claimRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"),
-						},
-					},
-				},
-				Required: []string{"address", "ipFamily", "prefixRef"},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPAddressStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"conditions": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"type",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(v1.Condition{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			v1.Condition{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPPrefix(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "IPPrefix is a CIDR pool from which sub-prefixes or addresses can be allocated.",
+				Description: "IPAllocation records a CIDR carved out of an IPPool by an IPClaim.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -520,70 +153,24 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefix(ref common.ReferenceCallback) common
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixSpec"),
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocationSpec"),
 						},
 					},
 					"status": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixStatus"),
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocationStatus"),
 						},
 					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocationSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocationStatus", v1.ObjectMeta{}.OpenAPIModelName()},
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixClaim(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
-						},
-					},
-					"spec": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaimSpec"),
-						},
-					},
-					"status": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaimStatus"),
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaimSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaimStatus", v1.ObjectMeta{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_ipam_v1alpha1_IPAllocationList(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -616,7 +203,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimList(ref common.ReferenceCallbac
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
 										Default: map[string]interface{}{},
-										Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaim"),
+										Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocation"),
 									},
 								},
 							},
@@ -627,290 +214,11 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimList(ref common.ReferenceCallbac
 			},
 		},
 		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClaim", v1.ListMeta{}.OpenAPIModelName()},
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPAllocation", v1.ListMeta{}.OpenAPIModelName()},
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"ipFamily": {
-						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
-						},
-					},
-					"prefixLength": {
-						SchemaProps: spec.SchemaProps{
-							Description: "PrefixLength is the requested sub-prefix size in bits. Must be a valid mask length for the chosen ipFamily (0-32 for IPv4, 0-128 for IPv6).",
-							Default:     0,
-							Type:        []string{"integer"},
-							Format:      "int32",
-						},
-					},
-					"prefixSelector": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PrefixSelector"),
-						},
-					},
-					"prefixRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef"),
-						},
-					},
-					"childPrefixTemplate": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixTemplate"),
-						},
-					},
-					"reclaimPolicy": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
-						},
-					},
-					"ownerRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef"),
-						},
-					},
-				},
-				Required: []string{"ipFamily", "prefixLength"},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixTemplate", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PrefixSelector"},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"phase": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
-						},
-					},
-					"allocatedCIDR": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
-						},
-					},
-					"boundPrefixRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"),
-						},
-					},
-					"conditions": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-map-keys": []interface{}{
-									"type",
-								},
-								"x-kubernetes-list-type": "map",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(v1.Condition{}.OpenAPIModelName()),
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef", v1.Condition{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixClass(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "IPPrefixClass declares operational properties shared by a class of IPPrefix pools.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
-						},
-					},
-					"spec": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClassSpec"),
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClassSpec", v1.ObjectMeta{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixClassList(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "IPPrefixClassList is a list of IPPrefixClass.",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
-						},
-					},
-					"items": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClass"),
-									},
-								},
-							},
-						},
-					},
-				},
-				Required: []string{"items"},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixClass", v1.ListMeta{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixClassSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"requiresVerification": {
-						SchemaProps: spec.SchemaProps{
-							Type:   []string{"boolean"},
-							Format: "",
-						},
-					},
-					"visibility": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Visibility controls cross-project access semantics for IPPrefix pools that reference this class. \"platform\" pools are platform-only (callers see them only when running with platform scope); \"consumer\" pools are visible to a single project; \"shared\" pools are eligible for cross-project allocation via prefixSelector.projectRef gated by a SubjectAccessReview.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"defaultAllocation": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.AllocationSpec"),
-						},
-					},
-				},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.AllocationSpec"},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixList(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
-				Properties: map[string]spec.Schema{
-					"kind": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"apiVersion": {
-						SchemaProps: spec.SchemaProps{
-							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"metadata": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
-						},
-					},
-					"items": {
-						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefix"),
-									},
-								},
-							},
-						},
-					},
-				},
-				Required: []string{"items"},
-			},
-		},
-		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefix", v1.ListMeta{}.OpenAPIModelName()},
-	}
-}
-
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_ipam_v1alpha1_IPAllocationSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -918,10 +226,9 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefixSpec(ref common.ReferenceCallback) co
 				Properties: map[string]spec.Schema{
 					"cidr": {
 						SchemaProps: spec.SchemaProps{
-							Description: "CIDR is the parent prefix in canonical form, e.g. \"10.0.0.0/8\" (IPv4) or \"2001:db8::/32\" (IPv6). Validation parses with net.ParseCIDR and rejects malformed values.",
-							Default:     "",
-							Type:        []string{"string"},
-							Format:      "",
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
 						},
 					},
 					"ipFamily": {
@@ -931,33 +238,22 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefixSpec(ref common.ReferenceCallback) co
 							Format:  "",
 						},
 					},
-					"classRef": {
+					"poolRef": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
 							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"),
 						},
 					},
-					"allocation": {
-						SchemaProps: spec.SchemaProps{
-							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.AllocationSpec"),
-						},
-					},
-					"parentRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef"),
-						},
-					},
 				},
-				Required: []string{"cidr", "ipFamily", "classRef"},
+				Required: []string{"cidr", "ipFamily", "poolRef"},
 			},
 		},
 		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.AllocationSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef"},
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"},
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
@@ -978,7 +274,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefixStatus(ref common.ReferenceCallback) 
 					"capacity": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PrefixCapacity"),
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PoolCapacity"),
 						},
 					},
 					"conditions": {
@@ -1006,17 +302,30 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefixStatus(ref common.ReferenceCallback) 
 			},
 		},
 		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PrefixCapacity", v1.Condition{}.OpenAPIModelName()},
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PoolCapacity", v1.Condition{}.OpenAPIModelName()},
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_IPPrefixTemplate(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_ipam_v1alpha1_IPClaim(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "IPPrefixTemplate is the metadata + spec used to materialise an IPPrefix child created atomically with an IPPrefixClaim.",
-				Type:        []string{"object"},
+				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"metadata": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
@@ -1026,15 +335,368 @@ func schema_pkg_apis_ipam_v1alpha1_IPPrefixTemplate(ref common.ReferenceCallback
 					"spec": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
-							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixSpec"),
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaimSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaimStatus"),
 						},
 					},
 				},
-				Required: []string{"spec"},
 			},
 		},
 		Dependencies: []string{
-			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPrefixSpec", v1.ObjectMeta{}.OpenAPIModelName()},
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaimSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaimStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClaimList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaim"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPClaim", v1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ipFamily": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"prefixLength": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PrefixLength is the requested sub-prefix size in bits. Must be a valid mask length for the chosen ipFamily (0-32 for IPv4, 0-128 for IPv6).",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"poolSelector": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PoolSelector"),
+						},
+					},
+					"poolRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef"),
+						},
+					},
+					"reclaimPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"ownerRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef"),
+						},
+					},
+				},
+				Required: []string{"ipFamily", "prefixLength"},
+			},
+		},
+		Dependencies: []string{
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.NamespacedRef", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.ObjectRef", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PoolSelector"},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClaimStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"allocatedCIDR": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"boundAllocationRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"),
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef", v1.Condition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPPool(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "IPPool is an allocatable address space. Root pools declare a CIDR directly; child pools carve a sub-prefix from a parent pool.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPoolSpec"),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPoolStatus"),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPoolSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPoolStatus", v1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPPoolList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPool"),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.IPPool", v1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"cidr": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"ipFamily": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"parentPoolRef": {
+						SchemaProps: spec.SchemaProps{
+							Ref: ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"),
+						},
+					},
+					"prefixLength": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"integer"},
+							Format: "int32",
+						},
+					},
+					"allocation": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.AllocationSpec"),
+						},
+					},
+					"visibility": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.AllocationSpec", "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.LocalRef"},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPPoolStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"cidr": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"capacity": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref("go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PoolCapacity"),
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1.PoolCapacity", v1.Condition{}.OpenAPIModelName()},
 	}
 }
 
@@ -1128,11 +790,11 @@ func schema_pkg_apis_ipam_v1alpha1_ObjectRef(ref common.ReferenceCallback) commo
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_PrefixCapacity(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_ipam_v1alpha1_PoolCapacity(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PrefixCapacity reports utilization for an IPPrefix.",
+				Description: "PoolCapacity reports utilization for an IPPool.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"total": {
@@ -1163,11 +825,11 @@ func schema_pkg_apis_ipam_v1alpha1_PrefixCapacity(ref common.ReferenceCallback) 
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_PrefixSelector(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_ipam_v1alpha1_PoolSelector(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PrefixSelector picks a parent IPPrefix by labels, optionally scoped to a specific project for cross-project shared pools.",
+				Description: "PoolSelector picks a parent IPPool by labels, optionally scoped to a specific project for cross-project shared pools.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"matchLabels": {

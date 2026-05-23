@@ -17,7 +17,7 @@ configMapGenerator:
       - generated/pool-exhaustion.js
       - generated/read-latency.js
       - generated/pool-scale.js
-      - generated/ipaddress-claim-concurrent.js
+      - generated/host-prefix-claim-concurrent.js
       - generated/concurrent-claims.js
       - generated/cross-project-claim-throughput.js
       - generated/watch-latency.js

@@ -27,14 +27,14 @@ import (
 var ErrCrossProjectDenied = errors.New("ipam: cross-project pool not accessible")
 
 // AuthorizeCrossProjectPrefix enforces the gates that a cross-project
-// IPPrefix-pool claim must clear before allocation:
+// IPPool claim must clear before allocation:
 //
 //  1. A SAR-capable PoolAccessChecker must be configured. When checker
 //     is nil (e.g. the apiserver was started without an authorizer, or
 //     the authorizer is AlwaysAllow) cross-project claims fail closed —
-//     the visibility=shared marker on the IPPrefixClass is intent-only
-//     and is never sufficient on its own.
-//  2. The source pool's IPPrefixClass must declare visibility=shared.
+//     the visibility=shared marker on the IPPool is intent-only and is
+//     never sufficient on its own.
+//  2. The source IPPool must declare spec.visibility=shared.
 //  3. The caller must pass a "use" SubjectAccessReview against the pool.
 //
 // All lookups happen inside the supplied transaction so they share the
@@ -42,33 +42,20 @@ var ErrCrossProjectDenied = errors.New("ipam: cross-project pool not accessible"
 // denial path it returns ErrCrossProjectDenied; on infrastructure errors
 // (DB read failure, SAR error) it returns the underlying error wrapped.
 // Callers translate the sentinel into a 400 "no pool matches" for
-// selector lookups and a 403 Forbidden for direct prefixRef lookups.
-//
-// Used by both ipprefixclaim and ipaddressclaim AllocatingREST.Create —
-// extracted here to keep the auth policy in one place rather than
-// duplicated across claim packages.
+// selector lookups and a 403 Forbidden for direct poolRef lookups.
 func AuthorizeCrossProjectPrefix(ctx context.Context, tx pgx.Tx, poolKey string, checker PoolAccessChecker) error {
 	if checker == nil {
 		return ErrCrossProjectDenied
 	}
 
-	pool, err := loadPrefixPool(ctx, tx, poolKey)
+	pool, err := loadIPPool(ctx, tx, poolKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrCrossProjectDenied
 		}
 		return fmt.Errorf("load pool for access check: %w", err)
 	}
-
-	classKey := "/ipam.miloapis.com/ipprefixclasses/" + pool.Spec.ClassRef.Name
-	class, err := loadPrefixClass(ctx, tx, classKey)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrCrossProjectDenied
-		}
-		return fmt.Errorf("load class for access check: %w", err)
-	}
-	if class.Spec.Visibility != "shared" {
+	if pool.Spec.Visibility != "shared" {
 		return ErrCrossProjectDenied
 	}
 
@@ -82,11 +69,11 @@ func AuthorizeCrossProjectPrefix(ctx context.Context, tx pgx.Tx, poolKey string,
 	return nil
 }
 
-// loadPrefixPool decodes the pool's IPPrefix object from ipam_objects
+// loadIPPool decodes the IPPool object at poolKey from ipam_objects
 // without acquiring FOR UPDATE — the SELECT runs inside the same
 // transaction the allocator will reuse, so the row will be locked when
 // AllocatePrefix fires its own SELECT FOR UPDATE on the same key.
-func loadPrefixPool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alpha1.IPPrefix, error) {
+func loadIPPool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alpha1.IPPool, error) {
 	var data []byte
 	err := tx.QueryRow(ctx,
 		`SELECT data FROM ipam_objects WHERE key = $1`,
@@ -95,26 +82,9 @@ func loadPrefixPool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alph
 	if err != nil {
 		return nil, fmt.Errorf("load pool object: %w", err)
 	}
-	var pool ipamv1alpha1.IPPrefix
+	var pool ipamv1alpha1.IPPool
 	if err := json.Unmarshal(data, &pool); err != nil {
 		return nil, fmt.Errorf("decode pool: %w", err)
 	}
 	return &pool, nil
-}
-
-// loadPrefixClass decodes an IPPrefixClass object from ipam_objects.
-func loadPrefixClass(ctx context.Context, tx pgx.Tx, classKey string) (*ipamv1alpha1.IPPrefixClass, error) {
-	var data []byte
-	err := tx.QueryRow(ctx,
-		`SELECT data FROM ipam_objects WHERE key = $1`,
-		classKey,
-	).Scan(&data)
-	if err != nil {
-		return nil, fmt.Errorf("load class object: %w", err)
-	}
-	var class ipamv1alpha1.IPPrefixClass
-	if err := json.Unmarshal(data, &class); err != nil {
-		return nil, fmt.Errorf("decode class: %w", err)
-	}
-	return &class, nil
 }

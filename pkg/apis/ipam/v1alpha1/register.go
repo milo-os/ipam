@@ -24,11 +24,9 @@ func Resource(resource string) schema.GroupResource {
 
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
-		&IPPrefixClass{}, &IPPrefixClassList{},
-		&IPPrefix{}, &IPPrefixList{},
-		&IPPrefixClaim{}, &IPPrefixClaimList{},
-		&IPAddress{}, &IPAddressList{},
-		&IPAddressClaim{}, &IPAddressClaimList{},
+		&IPPool{}, &IPPoolList{},
+		&IPAllocation{}, &IPAllocationList{},
+		&IPClaim{}, &IPClaimList{},
 	)
 	metav1.AddToGroupVersion(scheme, SchemeGroupVersion)
 	return nil

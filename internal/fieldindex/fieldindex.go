@@ -15,7 +15,7 @@ type FieldIndex struct {
 	IndexName string
 	// Expression is the full CREATE INDEX body after "ON ipam_objects":
 	//   ((convert_from(data, 'UTF8')::jsonb -> 'spec' ->> 'ipFamily'))
-	//   WHERE kind = 'IPPrefixClaim'
+	//   WHERE kind = 'IPClaim'
 	Expression string
 }
 

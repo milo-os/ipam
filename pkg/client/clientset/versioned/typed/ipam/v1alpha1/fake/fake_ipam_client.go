@@ -12,24 +12,16 @@ type FakeIpamV1alpha1 struct {
 	*testing.Fake
 }
 
-func (c *FakeIpamV1alpha1) IPAddresses(namespace string) v1alpha1.IPAddressInterface {
-	return newFakeIPAddresses(c, namespace)
+func (c *FakeIpamV1alpha1) IPAllocations(namespace string) v1alpha1.IPAllocationInterface {
+	return newFakeIPAllocations(c, namespace)
 }
 
-func (c *FakeIpamV1alpha1) IPAddressClaims(namespace string) v1alpha1.IPAddressClaimInterface {
-	return newFakeIPAddressClaims(c, namespace)
+func (c *FakeIpamV1alpha1) IPClaims(namespace string) v1alpha1.IPClaimInterface {
+	return newFakeIPClaims(c, namespace)
 }
 
-func (c *FakeIpamV1alpha1) IPPrefixes() v1alpha1.IPPrefixInterface {
-	return newFakeIPPrefixes(c)
-}
-
-func (c *FakeIpamV1alpha1) IPPrefixClaims(namespace string) v1alpha1.IPPrefixClaimInterface {
-	return newFakeIPPrefixClaims(c, namespace)
-}
-
-func (c *FakeIpamV1alpha1) IPPrefixClasses() v1alpha1.IPPrefixClassInterface {
-	return newFakeIPPrefixClasses(c)
+func (c *FakeIpamV1alpha1) IPPools() v1alpha1.IPPoolInterface {
+	return newFakeIPPools(c)
 }
 
 // RESTClient returns a RESTClient that is used to communicate

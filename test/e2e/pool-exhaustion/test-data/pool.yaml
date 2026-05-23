@@ -1,0 +1,12 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: exhaust-pool
+spec:
+  cidr: 192.168.0.0/31
+  ipFamily: IPv4
+  visibility: consumer
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit

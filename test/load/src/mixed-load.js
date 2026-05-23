@@ -20,11 +20,11 @@
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
-  createPrefixClaimForProject,
-  deletePrefixClaimForProject,
-  listPrefixesForProject,
-  listPrefixClaimsForProject,
-  getPrefixForProject,
+  createIPClaimForProject,
+  deleteIPClaimForProject,
+  listIPPoolsForProject,
+  listIPClaimsForProject,
+  getIPPoolForProject,
   nsFor,
   projectIDFor,
 } from '../lib/ipam-client.js';
@@ -41,7 +41,7 @@ const claimsCreated      = new Counter('ipam_claims_created');
 const claimsDenied       = new Counter('ipam_claims_denied');
 const claimErrors        = new Counter('ipam_claim_errors');
 
-const prefixListLatency  = new Trend('ipam_prefix_list_ms', true);
+const poolListLatency    = new Trend('ipam_prefix_list_ms', true);
 const claimGetLatency    = new Trend('ipam_claim_get_ms', true);
 const clusterListLatency = new Trend('ipam_cluster_list_ms', true);
 const readSuccessRate    = new Rate('ipam_read_success_rate');
@@ -140,7 +140,7 @@ function recordCreate(res) {
 
 // --- Exported scenario functions ---
 
-// writeScenario: create a /28 prefix claim then delete it. Used by both
+// writeScenario: create a /28 IPClaim then delete it. Used by both
 // write_steady (baseline) and write_burst (spike) scenarios.
 export function writeScenario() {
   const projectIdx = pickProjectIdx();
@@ -149,11 +149,11 @@ export function writeScenario() {
   const poolName   = `perf-prefix-${projectIdx}`;
   const claimName  = `mixed-${__VU}-${__ITER}`;
 
-  const createRes = createPrefixClaimForProject(ns, claimName, poolName, 28, projectID);
+  const createRes = createIPClaimForProject(ns, claimName, poolName, 28, projectID);
   const ok = recordCreate(createRes);
 
   if (ok) {
-    const delRes = deletePrefixClaimForProject(ns, claimName, projectID);
+    const delRes = deleteIPClaimForProject(ns, claimName, projectID);
     claimDeleteLatency.add(delRes.timings.duration);
     if (delRes.status !== 200 && delRes.status !== 202 && delRes.status !== 404) {
       claimErrors.add(1);
@@ -163,9 +163,9 @@ export function writeScenario() {
 
 // readScenario: randomly picks one of three read operations weighted to match
 // real operator traffic patterns. Used by both read_steady and read_spike.
-//   60% — cluster-scoped prefix list (pool utilisation check)
-//   20% — namespace-scoped prefix claim list (operator reconcile)
-//   20% — single prefix GET (get allocated CIDR for a specific pool)
+//   60% — cluster-scoped IPPool list (pool utilisation check)
+//   20% — namespace-scoped IPClaim list (operator reconcile)
+//   20% — single IPPool GET (read pool state for a specific pool)
 export function readScenario() {
   const projectIdx = pickProjectIdx();
   const projectID  = projectIDFor(projectIdx);
@@ -173,14 +173,14 @@ export function readScenario() {
   let res;
 
   if (r < 0.6) {
-    res = listPrefixesForProject(projectID);
+    res = listIPPoolsForProject(projectID);
     clusterListLatency.add(res.timings.duration);
   } else if (r < 0.8) {
     const ns = pickNs();
-    res = listPrefixClaimsForProject(ns, projectID);
-    prefixListLatency.add(res.timings.duration);
+    res = listIPClaimsForProject(ns, projectID);
+    poolListLatency.add(res.timings.duration);
   } else {
-    res = getPrefixForProject(`perf-prefix-${projectIdx}`, projectID);
+    res = getIPPoolForProject(`perf-prefix-${projectIdx}`, projectID);
     claimGetLatency.add(res.timings.duration);
   }
 

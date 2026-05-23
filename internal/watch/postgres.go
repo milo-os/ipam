@@ -553,7 +553,7 @@ func (w *postgresWatch) poll(ctx context.Context) {
 			if rv > uint64(w.lastRV) {
 				w.lastRV = int64(rv)
 			}
-			w.sendBookmarkAt(uint64(w.lastRV))
+			w.sendBookmarkBlocking(uint64(w.lastRV))
 		case <-w.kick:
 			// LISTEN/NOTIFY push: a Postgres notification told us
 			// there's new data. Wait briefly so any additional kicks
@@ -696,14 +696,16 @@ func (w *postgresWatch) sendInitialEventList(ctx context.Context) error {
 	}
 
 	listArgs := []any{w.key, keyPrefix + "%"}
-	listQuery := `SELECT key, resource_version, data
+	var listQueryBuilder strings.Builder
+	listQueryBuilder.WriteString(`SELECT key, resource_version, data
 		 FROM ipam_objects
-		 WHERE (key = $1 OR key LIKE $2)`
+		 WHERE (key = $1 OR key LIKE $2)`)
 	for _, excl := range w.excludedKeyPrefixes {
 		listArgs = append(listArgs, excl+"%")
-		listQuery += fmt.Sprintf(" AND key NOT LIKE $%d", len(listArgs))
+		fmt.Fprintf(&listQueryBuilder, " AND key NOT LIKE $%d", len(listArgs))
 	}
-	listQuery += " ORDER BY resource_version ASC"
+	listQueryBuilder.WriteString(" ORDER BY resource_version ASC")
+	listQuery := listQueryBuilder.String()
 
 	rows, err := tx.QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
@@ -890,11 +892,14 @@ func (w *postgresWatch) pollChanges(ctx context.Context) (int, error) {
 		 WHERE commit_xid < $1
 		   AND (commit_xid > $2 OR (commit_xid = $2 AND id > $3))
 		   AND (key = $4 OR key LIKE $5)`
+	var queryBuilder strings.Builder
+	queryBuilder.WriteString(query)
 	for _, excl := range w.excludedKeyPrefixes {
 		args = append(args, excl+"%")
-		query += fmt.Sprintf(" AND key NOT LIKE $%d", len(args))
+		fmt.Fprintf(&queryBuilder, " AND key NOT LIKE $%d", len(args))
 	}
-	query += fmt.Sprintf(" ORDER BY commit_xid ASC, id ASC LIMIT %d", pollBatchSize)
+	fmt.Fprintf(&queryBuilder, " ORDER BY commit_xid ASC, id ASC LIMIT %d", pollBatchSize)
+	query = queryBuilder.String()
 
 	rows, err := w.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1069,8 +1074,9 @@ func (w *postgresWatch) sendBookmark() {
 }
 
 // sendBookmarkAt emits a bookmark event with the supplied resource version.
-// Used both by the periodic bookmark ticker and by RequestWatchProgress to
-// signal "the storage is at least at this RV".
+// Used by the periodic 30-second bookmark ticker where dropping an occasional
+// bookmark is harmless — if the channel is full the ticker will fire again
+// shortly and deliver the next one.
 func (w *postgresWatch) sendBookmarkAt(rv uint64) {
 	if w.newFunc == nil {
 		return
@@ -1089,6 +1095,41 @@ func (w *postgresWatch) sendBookmarkAt(rv uint64) {
 		}
 	case <-w.done:
 	default:
-		// Channel full — caller will retry
+		// Channel full — the periodic ticker will deliver the next bookmark soon.
+	}
+}
+
+// sendBookmarkBlocking emits a bookmark event with the supplied resource
+// version, blocking until the event is delivered or the watch is stopped.
+//
+// This MUST be used on the RequestWatchProgress path (the progress channel
+// handler) rather than sendBookmarkAt. The cacher's
+// waitUntilWatchCacheFreshAndForceAllEvents blocks for up to 3 seconds
+// waiting for a bookmark at the requested RV; if the bookmark is dropped
+// because the result channel is momentarily full, the cacher never unblocks
+// and the WatchList request (kubectl v1.35+ `--for=condition=Ready`) returns
+// TooLargeResourceVersionError, causing kubectl to retry indefinitely.
+//
+// Blocking here is safe: the ConditionalProgressRequester fires at most every
+// 100 ms, the result channel is 100-deep, and the cacher drains it faster than
+// any realistic write burst, so the actual wait is sub-millisecond in practice.
+func (w *postgresWatch) sendBookmarkBlocking(rv uint64) {
+	if w.newFunc == nil {
+		return
+	}
+	obj := w.newFunc()
+	versioner := storage.APIObjectVersioner{}
+	if err := versioner.UpdateObject(obj, rv); err != nil {
+		klog.ErrorS(err, "Failed to set resource version on bookmark object")
+		return
+	}
+	event := watch.Event{Type: watch.Bookmark, Object: obj}
+	select {
+	case w.result <- event:
+		if int64(rv) > w.lastRV {
+			w.lastRV = int64(rv)
+		}
+	case <-w.done:
+		// Watch stopped — nothing to do.
 	}
 }

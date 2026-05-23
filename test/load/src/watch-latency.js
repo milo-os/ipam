@@ -1,8 +1,8 @@
 // watch-latency.js
 //
-// SLO probe for the IPPrefixClaim watch pipeline (LISTEN ipam_changelog +
-// polling cursor): how long after a CREATE commits does the server start
-// streaming the ADDED event to a watcher?
+// SLO probe for the IPClaim watch pipeline (LISTEN ipam_changelog + polling
+// cursor): how long after a CREATE commits does the server start streaming
+// the ADDED event to a watcher?
 //
 // Implementation note: k6's HTTP client buffers the entire response body —
 // there is no true streaming. So we cannot timestamp individual events as
@@ -15,8 +15,8 @@
 //
 // Scenario:
 //   - Two interleaved single-VU loops via shared-iterations:
-//     - listAndCreate: lists current RV, creates one IPPrefixClaim with
-//       a `created-at-ms` label, deletes it, sleeps, repeats.
+//     - listAndCreate: lists current RV, creates one IPClaim with a
+//       `created-at-ms` label, deletes it, sleeps, repeats.
 //     - watch: in lockstep, opens a watch with resourceVersion=<previous-RV>
 //       and timeoutSeconds=W. Computes lag = TTFB-anchored arrival time of
 //       the first ADDED event minus the createdAt label value.
@@ -40,9 +40,9 @@ import { sleep } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
   API_BASE,
-  deletePrefixClaimForProject,
+  deleteIPClaimForProject,
   nsFor,
-  prefixClaimPath,
+  ipClaimPath,
   projectIDFor,
   withProjectTagged,
 } from '../lib/ipam-client.js';
@@ -86,11 +86,11 @@ export const options = {
   },
 };
 
-// Issue a GET against the IPPrefixClaim list to obtain the current
+// Issue a GET against the IPClaim list to obtain the current
 // resourceVersion. Returned as a string (k8s RVs are opaque).
 function currentResourceVersion() {
-  const params = withProjectTagged(PROJECT, 'list_prefix_claims_rv');
-  const res = http.get(`${API_BASE}${prefixClaimPath(NS)}?limit=1`, params);
+  const params = withProjectTagged(PROJECT, 'list_ipclaims_rv');
+  const res = http.get(`${API_BASE}${ipClaimPath(NS)}?limit=1`, params);
   if (res.status !== 200) {
     return '';
   }
@@ -108,13 +108,13 @@ function currentResourceVersion() {
 // pinpoints when the server started emitting events for our resourceVersion
 // cursor — which is when our committed CREATE became visible to the watch.
 function watchOnce(rv, expectedCreatedAtMs) {
-  const params = withProjectTagged(PROJECT, 'watch_prefix_claims');
+  const params = withProjectTagged(PROJECT, 'watch_ipclaims');
   // Buffer the connection generously so the server can drive timeoutSeconds
   // without us cutting it off early.
   params.timeout = `${WATCH_TIMEOUT_S + 30}s`;
 
   const url =
-    `${API_BASE}${prefixClaimPath(NS)}?watch=true` +
+    `${API_BASE}${ipClaimPath(NS)}?watch=true` +
     `&resourceVersion=${encodeURIComponent(rv)}` +
     `&timeoutSeconds=${WATCH_TIMEOUT_S}` +
     `&allowWatchBookmarks=true`;
@@ -188,17 +188,17 @@ function createClaim(name, createdAtMs) {
   labels[CREATED_AT_LABEL] = String(createdAtMs);
   const body = {
     apiVersion: 'ipam.miloapis.com/v1alpha1',
-    kind: 'IPPrefixClaim',
+    kind: 'IPClaim',
     metadata: { name, namespace: NS, labels },
     spec: {
       ipFamily: 'IPv4',
       prefixLength: 28,
-      prefixRef: { name: POOL_NAME },
+      poolRef: { name: POOL_NAME },
       reclaimPolicy: 'Delete',
     },
   };
-  const params = withProjectTagged(PROJECT, 'watch_prefix_claim_create');
-  return http.post(`${API_BASE}${prefixClaimPath(NS)}`, JSON.stringify(body), params);
+  const params = withProjectTagged(PROJECT, 'watch_ipclaim_create');
+  return http.post(`${API_BASE}${ipClaimPath(NS)}`, JSON.stringify(body), params);
 }
 
 export function probe() {
@@ -225,7 +225,7 @@ export function probe() {
     //    ADDED event as the first byte.
     watchOnce(rv, createdAtMs);
     // 4. Cleanup so the next iteration starts from a known state.
-    deletePrefixClaimForProject(NS, name, PROJECT);
+    deleteIPClaimForProject(NS, name, PROJECT);
     // Small spacing so consecutive probes don't pile up on the changelog.
     sleep(0.25);
   }

@@ -27,18 +27,18 @@ func tenantsFromPoolKey(poolKey string) (project, org string) {
 }
 
 // PostgresPrefixAllocator implements PrefixAllocator atop ipam_objects and
-// ipam_prefix_allocations. It performs the synchronous allocation sequence
+// ipam_cidr_allocations. It performs the synchronous allocation sequence
 // described in the architecture:
 //
 //	BEGIN
 //	  SELECT data FROM ipam_objects WHERE key=$poolKey FOR UPDATE
-//	  SELECT allocated_cidr FROM ipam_prefix_allocations WHERE pool_key=$poolKey
+//	  SELECT allocated_cidr FROM ipam_cidr_allocations WHERE pool_key=$poolKey
 //	  -- in-Go: FindFirstAvailableBlock(parents, existing, prefixLen, strategy)
-//	  INSERT INTO ipam_prefix_allocations (...)
+//	  INSERT INTO ipam_cidr_allocations (...)
 //	COMMIT
 //
 // The pool row's lock is what serialises concurrent claims; the
-// ipam_prefix_allocations rows are not individually locked, so the work is
+// ipam_cidr_allocations rows are not individually locked, so the work is
 // O(existing) per allocation rather than O(pool size).
 type PostgresPrefixAllocator struct{}
 
@@ -49,7 +49,7 @@ func NewPostgresPrefixAllocator() *PostgresPrefixAllocator {
 
 // AllocatePrefix implements PrefixAllocator.AllocatePrefix.
 func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, error) {
-	pool, err := lockAndDecodePool(ctx, tx, poolKey)
+	pool, err := lockAndDecodeIPPool(ctx, tx, poolKey)
 	if err != nil {
 		return "", err
 	}
@@ -64,12 +64,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
-	if strategy == "" {
-		strategy = allocation.FirstFit
-	}
-
-	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, prefixLen, strategy)
+	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
 	if err != nil {
 		if errors.Is(err, allocation.ErrPoolExhausted) {
 			return "", ErrPoolExhausted
@@ -77,7 +72,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", fmt.Errorf("compute next prefix: %w", err)
 	}
 
-	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, false, ownerProject); err != nil {
+	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, ownerProject); err != nil {
 		return "", err
 	}
 
@@ -85,67 +80,18 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	// set, so the post-allocation utilization can be computed from data
 	// already in scope without an extra DB round-trip.
 	updated := append(append([]net.IPNet(nil), existing...), *cidr)
+	if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, updated); err != nil {
+		return "", fmt.Errorf("update pool capacity after allocation: %w", err)
+	}
 	publishPrefixUtilization(poolKey, ipFamily, parents, updated)
 
 	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", claimKey, "ownerProject", ownerProject)
 	return cidr.String(), nil
 }
 
-// AllocateSingleAddress implements PrefixAllocator.AllocateSingleAddress.
-func (a *PostgresPrefixAllocator) AllocateSingleAddress(ctx context.Context, tx pgx.Tx, poolKey string, ipFamily string, claimKey string, ownerProject string) (string, error) {
-	pool, err := lockAndDecodePool(ctx, tx, poolKey)
-	if err != nil {
-		return "", err
-	}
-
-	parents, err := parsePoolCIDR(pool)
-	if err != nil {
-		return "", err
-	}
-
-	existing, err := loadExistingAllocations(ctx, tx, poolKey)
-	if err != nil {
-		return "", err
-	}
-
-	hostBits := 32
-	if ipFamily == "IPv6" {
-		hostBits = 128
-	}
-
-	strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
-	if strategy == "" {
-		strategy = allocation.FirstFit
-	}
-
-	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, hostBits, strategy)
-	if err != nil {
-		if errors.Is(err, allocation.ErrPoolExhausted) {
-			return "", ErrPoolExhausted
-		}
-		return "", fmt.Errorf("compute next address: %w", err)
-	}
-
-	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, false, ownerProject); err != nil {
-		return "", err
-	}
-
-	updated := append(append([]net.IPNet(nil), existing...), *cidr)
-	publishPrefixUtilization(poolKey, ipFamily, parents, updated)
-
-	klog.V(2).InfoS("Allocated single address", "pool", poolKey, "addr", cidr.IP.String(), "claim", claimKey, "ownerProject", ownerProject)
-	return cidr.IP.String(), nil
-}
-
 // InsertObject implements PrefixAllocator.InsertObject.
 func (a *PostgresPrefixAllocator) InsertObject(ctx context.Context, tx pgx.Tx, key, kind, namespace, name string, data []byte) (int64, error) {
 	return insertObject(ctx, tx, key, kind, namespace, name, data)
-}
-
-// InsertChildPrefix implements PrefixAllocator.InsertChildPrefix.
-func (a *PostgresPrefixAllocator) InsertChildPrefix(ctx context.Context, tx pgx.Tx, key, namespace, name string, data []byte) error {
-	_, err := insertObject(ctx, tx, key, "IPPrefix", namespace, name, data)
-	return err
 }
 
 // insertObject is the shared helper used by both PrefixAllocator and
@@ -203,7 +149,7 @@ func labelsFromData(data []byte) []byte {
 // rows from RETURNING; in that case the gauge update is silently skipped.
 func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimKey string) error {
 	rows, err := tx.Query(ctx,
-		`DELETE FROM ipam_prefix_allocations WHERE claim_key = $1
+		`DELETE FROM ipam_cidr_allocations WHERE claim_key = $1
 		 RETURNING pool_key, ip_family`, claimKey,
 	)
 	if err != nil {
@@ -228,7 +174,7 @@ func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimK
 	}
 
 	for _, r := range releases {
-		pool, perr := lockAndDecodePool(ctx, tx, r.poolKey)
+		pool, perr := lockAndDecodeIPPool(ctx, tx, r.poolKey)
 		if perr != nil {
 			// Pool already gone (cascading delete); nothing to publish.
 			if errors.Is(perr, ErrPoolNotFound) {
@@ -244,7 +190,41 @@ func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimK
 		if perr != nil {
 			return fmt.Errorf("reload allocations after release: %w", perr)
 		}
+		if perr := persistPoolCapacity(ctx, tx, pool, r.poolKey, parents, remaining); perr != nil {
+			return fmt.Errorf("update pool capacity after release: %w", perr)
+		}
 		publishPrefixUtilization(r.poolKey, r.ipFamily, parents, remaining)
+	}
+	return nil
+}
+
+// persistPoolCapacity recomputes Total/Allocated/Available for the pool and
+// writes the updated pool object back to ipam_objects (+ MODIFIED changelog)
+// within the current transaction. Must be called inside the transaction that
+// inserted or deleted the allocation row so the capacity stays consistent.
+func persistPoolCapacity(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, poolKey string, parents, allocations []net.IPNet) error {
+	var total, allocated int64
+	for _, p := range parents {
+		total += allocation.CountAddresses(p)
+	}
+	for _, a := range allocations {
+		allocated += allocation.CountAddresses(a)
+	}
+	available := total - allocated
+	if available < 0 {
+		available = 0
+	}
+	pool.Status.Capacity = ipamv1alpha1.PoolCapacity{
+		Total:     total,
+		Allocated: allocated,
+		Available: available,
+	}
+	data, err := json.Marshal(pool)
+	if err != nil {
+		return fmt.Errorf("marshal pool: %w", err)
+	}
+	if _, err := updateObject(ctx, tx, poolKey, data); err != nil {
+		return fmt.Errorf("write pool: %w", err)
 	}
 	return nil
 }
@@ -328,9 +308,11 @@ func deleteObject(ctx context.Context, tx pgx.Tx, key string) (int64, error) {
 // helpers
 // ----------------------------------------------------------------------------
 
-// lockAndDecodePool acquires a row-level lock on the pool row in ipam_objects
-// and decodes its data column as an IPPrefix.
-func lockAndDecodePool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alpha1.IPPrefix, error) {
+// lockAndDecodeIPPool acquires a row-level lock on the pool row in
+// ipam_objects and decodes its data column as an IPPool. Status.AllocatedCIDR
+// is preferred (populated for child pools after provisioning); Spec.CIDR is
+// the fallback used by root pools whose CIDR is operator-supplied.
+func lockAndDecodeIPPool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alpha1.IPPool, error) {
 	defer metrics.ObserveQuery("select_pool_for_update", time.Now())
 	var data []byte
 	err := tx.QueryRow(ctx,
@@ -344,20 +326,20 @@ func lockAndDecodePool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1a
 		return nil, fmt.Errorf("lock pool row: %w", err)
 	}
 
-	var pool ipamv1alpha1.IPPrefix
+	var pool ipamv1alpha1.IPPool
 	if err := json.Unmarshal(data, &pool); err != nil {
 		return nil, fmt.Errorf("decode pool object: %w", err)
 	}
 	return &pool, nil
 }
 
-// parsePoolCIDR returns the parent CIDR (single-element slice). IPPrefix
+// parsePoolCIDR returns the parent CIDR (single-element slice). IPPool
 // pools always have a single CIDR; the slice form matches
 // allocation.FindFirstAvailableBlock's parameter shape.
-func parsePoolCIDR(pool *ipamv1alpha1.IPPrefix) ([]net.IPNet, error) {
+func parsePoolCIDR(pool *ipamv1alpha1.IPPool) ([]net.IPNet, error) {
 	cidrStr := pool.Spec.CIDR
-	if pool.Status.CIDR != "" {
-		cidrStr = pool.Status.CIDR
+	if pool.Status.AllocatedCIDR != "" {
+		cidrStr = pool.Status.AllocatedCIDR
 	}
 	_, ipnet, err := net.ParseCIDR(cidrStr)
 	if err != nil {
@@ -371,7 +353,7 @@ func loadExistingAllocations(ctx context.Context, tx pgx.Tx, poolKey string) ([]
 	defer metrics.ObserveQuery("load_existing_allocations", time.Now())
 	rows, err := tx.Query(ctx,
 		`SELECT host(allocated_cidr) || '/' || masklen(allocated_cidr)
-		   FROM ipam_prefix_allocations
+		   FROM ipam_cidr_allocations
 		  WHERE pool_key = $1`,
 		poolKey,
 	)
@@ -432,22 +414,22 @@ func publishPrefixUtilization(poolKey, ipFamily string, parents, allocated []net
 	// distinguish small/full pools from large/half-full pools at a glance.
 	// Float64 rather than int64: a /48 IPv6 pool has 2^80 addresses, well
 	// past int64.
-	metrics.SetPoolCapacity(poolKey, ipFamily, "ipprefixes", project, org, totalF, usedF)
+	metrics.SetPoolCapacity(poolKey, ipFamily, "ippools", project, org, totalF, usedF)
 	if total.Sign() == 0 {
-		metrics.SetPoolUtilization(poolKey, ipFamily, "ipprefixes", project, org, 0)
+		metrics.SetPoolUtilization(poolKey, ipFamily, "ippools", project, org, 0)
 		return
 	}
-	metrics.SetPoolUtilization(poolKey, ipFamily, "ipprefixes", project, org, usedF/totalF)
+	metrics.SetPoolUtilization(poolKey, ipFamily, "ippools", project, org, usedF/totalF)
 }
 
 // insertPrefixAllocation records a new allocation row.
-func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, poolKey, cidr, claimKey, ipFamily string, isChildPool bool, ownerProject string) error {
+func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, poolKey, cidr, claimKey, ipFamily string, ownerProject string) error {
 	defer metrics.ObserveQuery("insert_allocation", time.Now())
 	_, err := tx.Exec(ctx,
-		`INSERT INTO ipam_prefix_allocations
-		    (pool_key, allocated_cidr, claim_key, ip_family, is_child_pool, reclaim_policy, owner_project)
-		 VALUES ($1, $2, $3, $4, $5, 'Delete', $6)`,
-		poolKey, cidr, claimKey, ipFamily, isChildPool, ownerProject,
+		`INSERT INTO ipam_cidr_allocations
+		    (pool_key, allocated_cidr, claim_key, ip_family, reclaim_policy, owner_project)
+		 VALUES ($1, $2, $3, $4, 'Delete', $5)`,
+		poolKey, cidr, claimKey, ipFamily, ownerProject,
 	)
 	if err != nil {
 		return fmt.Errorf("insert allocation: %w", err)

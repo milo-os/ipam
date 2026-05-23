@@ -312,18 +312,14 @@ spec:
           #   1. `verb` is uppercase (LIST/GET) in apiserver_request_duration
           #      _seconds. The original lowercase `list|get` matched zero
           #      series and the alert was effectively disabled.
-          #   2. `ippools` is not a real resource on this apiserver; the pool
-          #      parents are `ipprefixes`, which is already in the list.
           # End-to-end firing was confirmed by patching the live VMRule to
-          # threshold > 0.001 while running task test/load:reads — three
-          # alert instances (ipprefixes/LIST p95 ≈ 124ms, ipprefixes/GET ≈ 20ms,
-          # ipprefixclaims/LIST ≈ 20ms) transitioned from inactive→firing.
+          # threshold > 0.001 while running task test/load:reads.
           expr: |
             histogram_quantile(0.95,
               sum by (le, verb, resource) (
                 rate(apiserver_request_duration_seconds_bucket{
                   verb=~"LIST|GET",
-                  resource=~"ipprefixes|ipprefixclaims|ipaddresses|ipaddressclaims|asnpools|asnclaims"
+                  resource=~"ippools|ipclaims|ipallocations|asnpools|asnclaims"
                 }[5m])
               )
             ) > 0.5

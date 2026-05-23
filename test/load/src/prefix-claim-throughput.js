@@ -1,11 +1,11 @@
 // prefix-claim-throughput.js
 //
-// Measures the hot path of the IPAM service: IPPrefixClaim creation throughput
-// and latency under sustained load, with a multi-tenant traffic mix.
+// Measures the hot path of the IPAM service: IPClaim creation throughput and
+// latency under sustained load, with a multi-tenant traffic mix.
 //
 // 90% of iterations: same-project claim — VU picks a random project N, sends
-//                    a claim against perf-prefix-N with the project N tenant
-//                    headers (no projectRef in spec).
+//                    an IPClaim against perf-prefix-N with the project N
+//                    tenant headers (no projectRef in spec).
 // 10% of iterations: cross-project claim — VU picks a random project N != 0
 //                    and claims from project 0's shared pool (perf-shared-prefix)
 //                    using its own project identity in headers and projectRef
@@ -26,9 +26,9 @@
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
-  createPrefixClaimForProject,
-  deletePrefixClaimForProject,
-  createCrossProjectPrefixClaim,
+  createIPClaimForProject,
+  deleteIPClaimForProject,
+  createCrossProjectIPClaim,
   nsFor,
   projectIDFor,
 } from '../lib/ipam-client.js';
@@ -105,7 +105,7 @@ export default function () {
     // Pick any project except project 0 (which owns the shared pool).
     const callerIdx = 1 + Math.floor(Math.random() * Math.max(1, PROJECT_COUNT - 1));
     callerProject = projectIDFor(callerIdx);
-    createRes = createCrossProjectPrefixClaim(
+    createRes = createCrossProjectIPClaim(
       ns,
       claimName,
       SHARED_PREFIX,
@@ -118,13 +118,13 @@ export default function () {
     const projectIdx = Math.floor(Math.random() * PROJECT_COUNT);
     callerProject = projectIDFor(projectIdx);
     const poolName = `perf-prefix-${projectIdx}`;
-    createRes = createPrefixClaimForProject(ns, claimName, poolName, 28, callerProject);
+    createRes = createIPClaimForProject(ns, claimName, poolName, 28, callerProject);
   }
 
   const ok = recordCreate(createRes, mode);
 
   if (ok) {
-    const delRes = deletePrefixClaimForProject(ns, claimName, callerProject);
+    const delRes = deleteIPClaimForProject(ns, claimName, callerProject);
     claimDeleteLatency.add(delRes.timings.duration);
     if (delRes.status !== 200 && delRes.status !== 202 && delRes.status !== 404) {
       claimErrors.add(1);

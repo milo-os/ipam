@@ -10,7 +10,7 @@ spec:
   script:
     configMap:
       name: ipam-k6-test-scripts
-      file: ipaddress-claim-concurrent.js
+      file: host-prefix-claim-concurrent.js
   runner:
     image: grafana/k6:latest
     serviceAccountName: ipam-k6-runner

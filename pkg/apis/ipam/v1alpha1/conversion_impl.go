@@ -42,20 +42,20 @@ func toV1NamespacedRef(in *ipam.NamespacedRef) *NamespacedRef {
 	}
 }
 
-func toIpamPrefixSelector(in *PrefixSelector) *ipam.PrefixSelector {
+func toIpamPoolSelector(in *PoolSelector) *ipam.PoolSelector {
 	if in == nil {
 		return nil
 	}
-	return &ipam.PrefixSelector{
+	return &ipam.PoolSelector{
 		LabelSelector: in.LabelSelector.DeepCopy(),
 		ProjectRef:    toIpamLocalRef(in.ProjectRef),
 	}
 }
-func toV1PrefixSelector(in *ipam.PrefixSelector) *PrefixSelector {
+func toV1PoolSelector(in *ipam.PoolSelector) *PoolSelector {
 	if in == nil {
 		return nil
 	}
-	return &PrefixSelector{
+	return &PoolSelector{
 		LabelSelector: in.LabelSelector.DeepCopy(),
 		ProjectRef:    toV1LocalRef(in.ProjectRef),
 	}
@@ -108,104 +108,69 @@ func toIpamConditions(in []metav1.Condition) []metav1.Condition {
 	return out
 }
 
-func toIpamIPPrefixSpec(in *IPPrefixSpec) ipam.IPPrefixSpec {
-	return ipam.IPPrefixSpec{
-		CIDR:       in.CIDR,
-		IPFamily:   ipam.IPFamily(in.IPFamily),
-		ClassRef:   ipam.LocalRef{Name: in.ClassRef.Name},
-		Allocation: toIpamAllocation(in.Allocation),
-		ParentRef:  toIpamObjectRef(in.ParentRef),
-	}
-}
-func toV1IPPrefixSpec(in *ipam.IPPrefixSpec) IPPrefixSpec {
-	return IPPrefixSpec{
-		CIDR:       in.CIDR,
-		IPFamily:   IPFamily(in.IPFamily),
-		ClassRef:   LocalRef{Name: in.ClassRef.Name},
-		Allocation: toV1Allocation(in.Allocation),
-		ParentRef:  toV1ObjectRef(in.ParentRef),
-	}
-}
-
-func toIpamIPPrefixStatus(in *IPPrefixStatus) ipam.IPPrefixStatus {
-	return ipam.IPPrefixStatus{
-		Phase:      ipam.PrefixPhase(in.Phase),
-		CIDR:       in.CIDR,
-		Capacity:   ipam.PrefixCapacity(in.Capacity),
-		Conditions: toIpamConditions(in.Conditions),
-	}
-}
-func toV1IPPrefixStatus(in *ipam.IPPrefixStatus) IPPrefixStatus {
-	return IPPrefixStatus{
-		Phase:      PrefixPhase(in.Phase),
-		CIDR:       in.CIDR,
-		Capacity:   PrefixCapacity(in.Capacity),
-		Conditions: toIpamConditions(in.Conditions),
-	}
-}
-
-func toIpamPrefixTemplate(in *IPPrefixTemplate) *ipam.IPPrefixTemplate {
-	if in == nil {
-		return nil
-	}
-	return &ipam.IPPrefixTemplate{
-		Metadata: *in.Metadata.DeepCopy(),
-		Spec:     toIpamIPPrefixSpec(&in.Spec),
-	}
-}
-func toV1PrefixTemplate(in *ipam.IPPrefixTemplate) *IPPrefixTemplate {
-	if in == nil {
-		return nil
-	}
-	return &IPPrefixTemplate{
-		Metadata: *in.Metadata.DeepCopy(),
-		Spec:     toV1IPPrefixSpec(&in.Spec),
-	}
-}
-
 // ----------------------------------------------------------------------------
-// IPPrefixClass
+// IPPool
 // ----------------------------------------------------------------------------
 
-func convert_v1alpha1_IPPrefixClass_To_ipam(in *IPPrefixClass, out *ipam.IPPrefixClass) error {
+func convert_v1alpha1_IPPool_To_ipam(in *IPPool, out *ipam.IPPool) error {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = ipam.IPPrefixClassSpec{
-		Visibility:        in.Spec.Visibility,
-		DefaultAllocation: toIpamAllocation(in.Spec.DefaultAllocation),
+	out.Spec = ipam.IPPoolSpec{
+		CIDR:          in.Spec.CIDR,
+		IPFamily:      ipam.IPFamily(in.Spec.IPFamily),
+		ParentPoolRef: toIpamLocalRef(in.Spec.ParentPoolRef),
+		PrefixLength:  in.Spec.PrefixLength,
+		Allocation:    toIpamAllocation(in.Spec.Allocation),
+		Visibility:    in.Spec.Visibility,
+	}
+	out.Status = ipam.IPPoolStatus{
+		Phase:         ipam.PoolPhase(in.Status.Phase),
+		AllocatedCIDR: in.Status.AllocatedCIDR,
+		Capacity:      ipam.PoolCapacity(in.Status.Capacity),
+		Conditions:    toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }
-func convert_ipam_IPPrefixClass_To_v1alpha1(in *ipam.IPPrefixClass, out *IPPrefixClass) error {
+func convert_ipam_IPPool_To_v1alpha1(in *ipam.IPPool, out *IPPool) error {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = IPPrefixClassSpec{
-		Visibility:        in.Spec.Visibility,
-		DefaultAllocation: toV1Allocation(in.Spec.DefaultAllocation),
+	out.Spec = IPPoolSpec{
+		CIDR:          in.Spec.CIDR,
+		IPFamily:      IPFamily(in.Spec.IPFamily),
+		ParentPoolRef: toV1LocalRef(in.Spec.ParentPoolRef),
+		PrefixLength:  in.Spec.PrefixLength,
+		Allocation:    toV1Allocation(in.Spec.Allocation),
+		Visibility:    in.Spec.Visibility,
+	}
+	out.Status = IPPoolStatus{
+		Phase:         PoolPhase(in.Status.Phase),
+		AllocatedCIDR: in.Status.AllocatedCIDR,
+		Capacity:      PoolCapacity(in.Status.Capacity),
+		Conditions:    toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }
 
-func convert_v1alpha1_IPPrefixClassList_To_ipam(in *IPPrefixClassList, out *ipam.IPPrefixClassList) error {
+func convert_v1alpha1_IPPoolList_To_ipam(in *IPPoolList, out *ipam.IPPoolList) error {
 	out.TypeMeta = in.TypeMeta
 	out.ListMeta = in.ListMeta
 	if in.Items != nil {
-		out.Items = make([]ipam.IPPrefixClass, len(in.Items))
+		out.Items = make([]ipam.IPPool, len(in.Items))
 		for i := range in.Items {
-			if err := convert_v1alpha1_IPPrefixClass_To_ipam(&in.Items[i], &out.Items[i]); err != nil {
+			if err := convert_v1alpha1_IPPool_To_ipam(&in.Items[i], &out.Items[i]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-func convert_ipam_IPPrefixClassList_To_v1alpha1(in *ipam.IPPrefixClassList, out *IPPrefixClassList) error {
+func convert_ipam_IPPoolList_To_v1alpha1(in *ipam.IPPoolList, out *IPPoolList) error {
 	out.TypeMeta = in.TypeMeta
 	out.ListMeta = in.ListMeta
 	if in.Items != nil {
-		out.Items = make([]IPPrefixClass, len(in.Items))
+		out.Items = make([]IPPool, len(in.Items))
 		for i := range in.Items {
-			if err := convert_ipam_IPPrefixClass_To_v1alpha1(&in.Items[i], &out.Items[i]); err != nil {
+			if err := convert_ipam_IPPool_To_v1alpha1(&in.Items[i], &out.Items[i]); err != nil {
 				return err
 			}
 		}
@@ -214,116 +179,58 @@ func convert_ipam_IPPrefixClassList_To_v1alpha1(in *ipam.IPPrefixClassList, out 
 }
 
 // ----------------------------------------------------------------------------
-// IPPrefix
+// IPAllocation
 // ----------------------------------------------------------------------------
 
-func convert_v1alpha1_IPPrefix_To_ipam(in *IPPrefix, out *ipam.IPPrefix) error {
+func convert_v1alpha1_IPAllocation_To_ipam(in *IPAllocation, out *ipam.IPAllocation) error {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = toIpamIPPrefixSpec(&in.Spec)
-	out.Status = toIpamIPPrefixStatus(&in.Status)
+	out.Spec = ipam.IPAllocationSpec{
+		IPFamily: ipam.IPFamily(in.Spec.IPFamily),
+		PoolRef:  ipam.LocalRef{Name: in.Spec.PoolRef.Name},
+	}
+	out.Status = ipam.IPAllocationStatus{
+		Phase:         ipam.AllocationPhase(in.Status.Phase),
+		AllocatedCIDR: in.Status.AllocatedCIDR,
+		Conditions:    toIpamConditions(in.Status.Conditions),
+	}
 	return nil
 }
-func convert_ipam_IPPrefix_To_v1alpha1(in *ipam.IPPrefix, out *IPPrefix) error {
+func convert_ipam_IPAllocation_To_v1alpha1(in *ipam.IPAllocation, out *IPAllocation) error {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = toV1IPPrefixSpec(&in.Spec)
-	out.Status = toV1IPPrefixStatus(&in.Status)
+	out.Spec = IPAllocationSpec{
+		IPFamily: IPFamily(in.Spec.IPFamily),
+		PoolRef:  LocalRef{Name: in.Spec.PoolRef.Name},
+	}
+	out.Status = IPAllocationStatus{
+		Phase:         AllocationPhase(in.Status.Phase),
+		AllocatedCIDR: in.Status.AllocatedCIDR,
+		Conditions:    toIpamConditions(in.Status.Conditions),
+	}
 	return nil
 }
 
-func convert_v1alpha1_IPPrefixList_To_ipam(in *IPPrefixList, out *ipam.IPPrefixList) error {
+func convert_v1alpha1_IPAllocationList_To_ipam(in *IPAllocationList, out *ipam.IPAllocationList) error {
 	out.TypeMeta = in.TypeMeta
 	out.ListMeta = in.ListMeta
 	if in.Items != nil {
-		out.Items = make([]ipam.IPPrefix, len(in.Items))
+		out.Items = make([]ipam.IPAllocation, len(in.Items))
 		for i := range in.Items {
-			if err := convert_v1alpha1_IPPrefix_To_ipam(&in.Items[i], &out.Items[i]); err != nil {
+			if err := convert_v1alpha1_IPAllocation_To_ipam(&in.Items[i], &out.Items[i]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-func convert_ipam_IPPrefixList_To_v1alpha1(in *ipam.IPPrefixList, out *IPPrefixList) error {
+func convert_ipam_IPAllocationList_To_v1alpha1(in *ipam.IPAllocationList, out *IPAllocationList) error {
 	out.TypeMeta = in.TypeMeta
 	out.ListMeta = in.ListMeta
 	if in.Items != nil {
-		out.Items = make([]IPPrefix, len(in.Items))
+		out.Items = make([]IPAllocation, len(in.Items))
 		for i := range in.Items {
-			if err := convert_ipam_IPPrefix_To_v1alpha1(&in.Items[i], &out.Items[i]); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// ----------------------------------------------------------------------------
-// IPPrefixClaim
-// ----------------------------------------------------------------------------
-
-func convert_v1alpha1_IPPrefixClaim_To_ipam(in *IPPrefixClaim, out *ipam.IPPrefixClaim) error {
-	out.TypeMeta = in.TypeMeta
-	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = ipam.IPPrefixClaimSpec{
-		IPFamily:            ipam.IPFamily(in.Spec.IPFamily),
-		PrefixLength:        in.Spec.PrefixLength,
-		PrefixSelector:      toIpamPrefixSelector(in.Spec.PrefixSelector),
-		PrefixRef:           toIpamNamespacedRef(in.Spec.PrefixRef),
-		ChildPrefixTemplate: toIpamPrefixTemplate(in.Spec.ChildPrefixTemplate),
-		ReclaimPolicy:       ipam.ReclaimPolicy(in.Spec.ReclaimPolicy),
-		OwnerRef:            toIpamObjectRef(in.Spec.OwnerRef),
-	}
-	out.Status = ipam.IPPrefixClaimStatus{
-		Phase:          ipam.ClaimPhase(in.Status.Phase),
-		AllocatedCIDR:  in.Status.AllocatedCIDR,
-		BoundPrefixRef: toIpamLocalRef(in.Status.BoundPrefixRef),
-		Conditions:     toIpamConditions(in.Status.Conditions),
-	}
-	return nil
-}
-func convert_ipam_IPPrefixClaim_To_v1alpha1(in *ipam.IPPrefixClaim, out *IPPrefixClaim) error {
-	out.TypeMeta = in.TypeMeta
-	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = IPPrefixClaimSpec{
-		IPFamily:            IPFamily(in.Spec.IPFamily),
-		PrefixLength:        in.Spec.PrefixLength,
-		PrefixSelector:      toV1PrefixSelector(in.Spec.PrefixSelector),
-		PrefixRef:           toV1NamespacedRef(in.Spec.PrefixRef),
-		ChildPrefixTemplate: toV1PrefixTemplate(in.Spec.ChildPrefixTemplate),
-		ReclaimPolicy:       ReclaimPolicy(in.Spec.ReclaimPolicy),
-		OwnerRef:            toV1ObjectRef(in.Spec.OwnerRef),
-	}
-	out.Status = IPPrefixClaimStatus{
-		Phase:          ClaimPhase(in.Status.Phase),
-		AllocatedCIDR:  in.Status.AllocatedCIDR,
-		BoundPrefixRef: toV1LocalRef(in.Status.BoundPrefixRef),
-		Conditions:     toIpamConditions(in.Status.Conditions),
-	}
-	return nil
-}
-
-func convert_v1alpha1_IPPrefixClaimList_To_ipam(in *IPPrefixClaimList, out *ipam.IPPrefixClaimList) error {
-	out.TypeMeta = in.TypeMeta
-	out.ListMeta = in.ListMeta
-	if in.Items != nil {
-		out.Items = make([]ipam.IPPrefixClaim, len(in.Items))
-		for i := range in.Items {
-			if err := convert_v1alpha1_IPPrefixClaim_To_ipam(&in.Items[i], &out.Items[i]); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-func convert_ipam_IPPrefixClaimList_To_v1alpha1(in *ipam.IPPrefixClaimList, out *IPPrefixClaimList) error {
-	out.TypeMeta = in.TypeMeta
-	out.ListMeta = in.ListMeta
-	if in.Items != nil {
-		out.Items = make([]IPPrefixClaim, len(in.Items))
-		for i := range in.Items {
-			if err := convert_ipam_IPPrefixClaim_To_v1alpha1(&in.Items[i], &out.Items[i]); err != nil {
+			if err := convert_ipam_IPAllocation_To_v1alpha1(&in.Items[i], &out.Items[i]); err != nil {
 				return err
 			}
 		}
@@ -332,127 +239,71 @@ func convert_ipam_IPPrefixClaimList_To_v1alpha1(in *ipam.IPPrefixClaimList, out 
 }
 
 // ----------------------------------------------------------------------------
-// IPAddress
+// IPClaim
 // ----------------------------------------------------------------------------
 
-func convert_v1alpha1_IPAddress_To_ipam(in *IPAddress, out *ipam.IPAddress) error {
+func convert_v1alpha1_IPClaim_To_ipam(in *IPClaim, out *ipam.IPClaim) error {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = ipam.IPAddressSpec{
-		Address:   in.Spec.Address,
-		IPFamily:  ipam.IPFamily(in.Spec.IPFamily),
-		PrefixRef: ipam.LocalRef{Name: in.Spec.PrefixRef.Name},
-		ClaimRef:  toIpamLocalRef(in.Spec.ClaimRef),
+	out.Spec = ipam.IPClaimSpec{
+		IPFamily:      ipam.IPFamily(in.Spec.IPFamily),
+		PrefixLength:  in.Spec.PrefixLength,
+		PoolSelector:  toIpamPoolSelector(in.Spec.PoolSelector),
+		PoolRef:       toIpamNamespacedRef(in.Spec.PoolRef),
+		ReclaimPolicy: ipam.ReclaimPolicy(in.Spec.ReclaimPolicy),
+		OwnerRef:      toIpamObjectRef(in.Spec.OwnerRef),
 	}
-	out.Status = ipam.IPAddressStatus{Conditions: toIpamConditions(in.Status.Conditions)}
+	out.Status = ipam.IPClaimStatus{
+		Phase:              ipam.ClaimPhase(in.Status.Phase),
+		AllocatedCIDR:      in.Status.AllocatedCIDR,
+		BoundAllocationRef: toIpamLocalRef(in.Status.BoundAllocationRef),
+		Conditions:         toIpamConditions(in.Status.Conditions),
+	}
 	return nil
 }
-func convert_ipam_IPAddress_To_v1alpha1(in *ipam.IPAddress, out *IPAddress) error {
+func convert_ipam_IPClaim_To_v1alpha1(in *ipam.IPClaim, out *IPClaim) error {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = IPAddressSpec{
-		Address:   in.Spec.Address,
-		IPFamily:  IPFamily(in.Spec.IPFamily),
-		PrefixRef: LocalRef{Name: in.Spec.PrefixRef.Name},
-		ClaimRef:  toV1LocalRef(in.Spec.ClaimRef),
+	out.Spec = IPClaimSpec{
+		IPFamily:      IPFamily(in.Spec.IPFamily),
+		PrefixLength:  in.Spec.PrefixLength,
+		PoolSelector:  toV1PoolSelector(in.Spec.PoolSelector),
+		PoolRef:       toV1NamespacedRef(in.Spec.PoolRef),
+		ReclaimPolicy: ReclaimPolicy(in.Spec.ReclaimPolicy),
+		OwnerRef:      toV1ObjectRef(in.Spec.OwnerRef),
 	}
-	out.Status = IPAddressStatus{Conditions: toIpamConditions(in.Status.Conditions)}
+	out.Status = IPClaimStatus{
+		Phase:              ClaimPhase(in.Status.Phase),
+		AllocatedCIDR:      in.Status.AllocatedCIDR,
+		BoundAllocationRef: toV1LocalRef(in.Status.BoundAllocationRef),
+		Conditions:         toIpamConditions(in.Status.Conditions),
+	}
 	return nil
 }
 
-func convert_v1alpha1_IPAddressList_To_ipam(in *IPAddressList, out *ipam.IPAddressList) error {
+func convert_v1alpha1_IPClaimList_To_ipam(in *IPClaimList, out *ipam.IPClaimList) error {
 	out.TypeMeta = in.TypeMeta
 	out.ListMeta = in.ListMeta
 	if in.Items != nil {
-		out.Items = make([]ipam.IPAddress, len(in.Items))
+		out.Items = make([]ipam.IPClaim, len(in.Items))
 		for i := range in.Items {
-			if err := convert_v1alpha1_IPAddress_To_ipam(&in.Items[i], &out.Items[i]); err != nil {
+			if err := convert_v1alpha1_IPClaim_To_ipam(&in.Items[i], &out.Items[i]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-func convert_ipam_IPAddressList_To_v1alpha1(in *ipam.IPAddressList, out *IPAddressList) error {
+func convert_ipam_IPClaimList_To_v1alpha1(in *ipam.IPClaimList, out *IPClaimList) error {
 	out.TypeMeta = in.TypeMeta
 	out.ListMeta = in.ListMeta
 	if in.Items != nil {
-		out.Items = make([]IPAddress, len(in.Items))
+		out.Items = make([]IPClaim, len(in.Items))
 		for i := range in.Items {
-			if err := convert_ipam_IPAddress_To_v1alpha1(&in.Items[i], &out.Items[i]); err != nil {
+			if err := convert_ipam_IPClaim_To_v1alpha1(&in.Items[i], &out.Items[i]); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-
-// ----------------------------------------------------------------------------
-// IPAddressClaim
-// ----------------------------------------------------------------------------
-
-func convert_v1alpha1_IPAddressClaim_To_ipam(in *IPAddressClaim, out *ipam.IPAddressClaim) error {
-	out.TypeMeta = in.TypeMeta
-	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = ipam.IPAddressClaimSpec{
-		IPFamily:       ipam.IPFamily(in.Spec.IPFamily),
-		PrefixSelector: toIpamPrefixSelector(in.Spec.PrefixSelector),
-		PrefixRef:      toIpamNamespacedRef(in.Spec.PrefixRef),
-		ReclaimPolicy:  ipam.ReclaimPolicy(in.Spec.ReclaimPolicy),
-		OwnerRef:       toIpamObjectRef(in.Spec.OwnerRef),
-	}
-	out.Status = ipam.IPAddressClaimStatus{
-		Phase:           ipam.ClaimPhase(in.Status.Phase),
-		AllocatedIP:     in.Status.AllocatedIP,
-		BoundAddressRef: toIpamLocalRef(in.Status.BoundAddressRef),
-		Conditions:      toIpamConditions(in.Status.Conditions),
-	}
-	return nil
-}
-func convert_ipam_IPAddressClaim_To_v1alpha1(in *ipam.IPAddressClaim, out *IPAddressClaim) error {
-	out.TypeMeta = in.TypeMeta
-	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
-	out.Spec = IPAddressClaimSpec{
-		IPFamily:       IPFamily(in.Spec.IPFamily),
-		PrefixSelector: toV1PrefixSelector(in.Spec.PrefixSelector),
-		PrefixRef:      toV1NamespacedRef(in.Spec.PrefixRef),
-		ReclaimPolicy:  ReclaimPolicy(in.Spec.ReclaimPolicy),
-		OwnerRef:       toV1ObjectRef(in.Spec.OwnerRef),
-	}
-	out.Status = IPAddressClaimStatus{
-		Phase:           ClaimPhase(in.Status.Phase),
-		AllocatedIP:     in.Status.AllocatedIP,
-		BoundAddressRef: toV1LocalRef(in.Status.BoundAddressRef),
-		Conditions:      toIpamConditions(in.Status.Conditions),
-	}
-	return nil
-}
-
-func convert_v1alpha1_IPAddressClaimList_To_ipam(in *IPAddressClaimList, out *ipam.IPAddressClaimList) error {
-	out.TypeMeta = in.TypeMeta
-	out.ListMeta = in.ListMeta
-	if in.Items != nil {
-		out.Items = make([]ipam.IPAddressClaim, len(in.Items))
-		for i := range in.Items {
-			if err := convert_v1alpha1_IPAddressClaim_To_ipam(&in.Items[i], &out.Items[i]); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-func convert_ipam_IPAddressClaimList_To_v1alpha1(in *ipam.IPAddressClaimList, out *IPAddressClaimList) error {
-	out.TypeMeta = in.TypeMeta
-	out.ListMeta = in.ListMeta
-	if in.Items != nil {
-		out.Items = make([]IPAddressClaim, len(in.Items))
-		for i := range in.Items {
-			if err := convert_ipam_IPAddressClaim_To_v1alpha1(&in.Items[i], &out.Items[i]); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-

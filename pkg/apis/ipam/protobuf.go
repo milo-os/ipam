@@ -5,38 +5,23 @@ package ipam
 
 import "encoding/json"
 
-// --- IPPrefixClass ---
+// --- IPPool ---
 
-func (in *IPPrefixClass) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *IPPrefixClass) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *IPPrefixClassList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *IPPrefixClassList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
+func (in *IPPool) Marshal() ([]byte, error)        { return json.Marshal(in) }
+func (in *IPPool) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
+func (in *IPPoolList) Marshal() ([]byte, error)    { return json.Marshal(in) }
+func (in *IPPoolList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
 
-// --- IPPrefix ---
+// --- IPAllocation ---
 
-func (in *IPPrefix) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *IPPrefix) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *IPPrefixList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *IPPrefixList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
+func (in *IPAllocation) Marshal() ([]byte, error)        { return json.Marshal(in) }
+func (in *IPAllocation) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
+func (in *IPAllocationList) Marshal() ([]byte, error)    { return json.Marshal(in) }
+func (in *IPAllocationList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
 
-// --- IPPrefixClaim ---
+// --- IPClaim ---
 
-func (in *IPPrefixClaim) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *IPPrefixClaim) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *IPPrefixClaimList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *IPPrefixClaimList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
-
-// --- IPAddress ---
-
-func (in *IPAddress) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *IPAddress) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *IPAddressList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *IPAddressList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
-
-// --- IPAddressClaim ---
-
-func (in *IPAddressClaim) Marshal() ([]byte, error)        { return json.Marshal(in) }
-func (in *IPAddressClaim) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
-func (in *IPAddressClaimList) Marshal() ([]byte, error)    { return json.Marshal(in) }
-func (in *IPAddressClaimList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }
-
+func (in *IPClaim) Marshal() ([]byte, error)        { return json.Marshal(in) }
+func (in *IPClaim) Unmarshal(data []byte) error     { return json.Unmarshal(data, in) }
+func (in *IPClaimList) Marshal() ([]byte, error)    { return json.Marshal(in) }
+func (in *IPClaimList) Unmarshal(data []byte) error { return json.Unmarshal(data, in) }

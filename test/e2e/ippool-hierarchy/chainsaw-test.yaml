@@ -1,0 +1,200 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ippool-hierarchy
+spec:
+  description: |
+    Hierarchical IPPool delegation: environment -> region -> leaf.
+    - Child IPPool with spec.parentPoolRef carves a sub-block from its parent
+    - Two child regional pools must be non-overlapping
+    - Leaf IPClaim against the child IPPool resolves inside the child range
+    - DELETE of a regional IPPool while a leaf claim still holds an
+      allocation is rejected with HTTP 409.
+
+    NOTE: This suite verifies DELETION-PROTECTION semantics, NOT cascade
+    delete. A parent IPPool with active leaf claims is rejected on DELETE
+    with HTTP 409 so operators must release child claims first. This
+    avoids orphaning child allocations.
+
+  steps:
+    - name: create-environment-pool
+      description: Top-of-tree environment IPPool (10.128.0.0/9, allow /12-/16)
+      try:
+        - create:
+            file: test-data/env-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool hier-env \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: hier-env not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+
+    - name: create-region-1-pool
+      description: |
+        Child IPPool hier-region-1 with parentPoolRef=hier-env, prefixLength=12.
+        The server allocates a /12 from hier-env and writes it to status.allocatedCIDR.
+      try:
+        - create:
+            file: test-data/region-1-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool hier-region-1 \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: hier-region-1 not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+              cidr=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$cidr" ]; then
+                echo "FAIL: hier-region-1 status.allocatedCIDR empty"
+                exit 1
+              fi
+              python3 -c "
+              import ipaddress, sys
+              child = ipaddress.ip_network('$cidr')
+              parent = ipaddress.ip_network('10.128.0.0/9')
+              if child.prefixlen != 12:
+                  print(f'FAIL: expected /12, got {child}', file=sys.stderr); sys.exit(1)
+              if not child.subnet_of(parent):
+                  print(f'FAIL: {child} not subnet of {parent}', file=sys.stderr); sys.exit(1)
+              print(f'OK hier-region-1 cidr={child}')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK hier-region-1 cidr=')): true
+
+    - name: create-region-2-pool-non-overlap
+      description: Second child pool must allocate a non-overlapping /12
+      try:
+        - create:
+            file: test-data/region-2-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool hier-region-2 \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: hier-region-2 not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+              c1=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.allocatedCIDR}')
+              c2=$(kubectl get ippool hier-region-2 -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$c1" ] || [ -z "$c2" ]; then
+                echo "FAIL: missing region CIDR (c1=$c1 c2=$c2)"
+                exit 1
+              fi
+              if [ "$c1" = "$c2" ]; then
+                echo "FAIL: regional CIDRs overlap ($c1 == $c2)"
+                exit 1
+              fi
+              python3 -c "
+              import ipaddress, sys
+              a = ipaddress.ip_network('$c1')
+              b = ipaddress.ip_network('$c2')
+              if a.overlaps(b):
+                  print(f'FAIL: {a} overlaps {b}', file=sys.stderr); sys.exit(1)
+              print(f'OK regions {a} and {b} non-overlapping')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK regions ')): true
+
+    - name: claim-leaf-against-child-pool
+      description: /24 IPClaim against hier-region-1; CIDR must be within region 1
+      try:
+        - create:
+            file: test-data/leaf-claim.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" hier-leaf-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: hier-leaf-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              leaf_cidr=$(kubectl get ipclaim -n "$NAMESPACE" hier-leaf-claim -o jsonpath='{.status.allocatedCIDR}')
+              region_cidr=$(kubectl get ippool hier-region-1 -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$leaf_cidr" ] || [ -z "$region_cidr" ]; then
+                echo "FAIL: missing CIDR (leaf=$leaf_cidr region=$region_cidr)"
+                exit 1
+              fi
+              python3 -c "
+              import ipaddress, sys
+              leaf = ipaddress.ip_network('$leaf_cidr', strict=False)
+              region = ipaddress.ip_network('$region_cidr', strict=False)
+              if not leaf.subnet_of(region):
+                  print(f'FAIL: leaf {leaf} is NOT a subnet of region {region}', file=sys.stderr)
+                  sys.exit(1)
+              print(f'OK leaf {leaf} subset of region {region}')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK leaf ')): true
+
+    - name: deletion-protected-while-leaf-bound
+      description: |
+        Deleting the regional IPPool while the leaf claim still holds an
+        allocation against it must fail with HTTP 409 ("active allocation").
+      try:
+        - script:
+            content: |
+              out=$(kubectl delete ippool hier-region-1 2>&1) && status=0 || status=$?
+              echo "$out"
+              if [ "$status" -eq 0 ]; then
+                echo "expected delete to fail, but it succeeded" >&2
+                exit 1
+              fi
+              echo "$out" | grep -qiE 'active allocation|409|Conflict'
+            check:
+              ($error == null): true
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" hier-leaf-claim --ignore-not-found=true
+              kubectl delete ippool hier-region-1 --ignore-not-found=true
+              kubectl delete ippool hier-region-2 --ignore-not-found=true
+              kubectl delete ippool hier-env --ignore-not-found=true
+              echo "ippool-hierarchy cleanup done"
+            check:
+              ($error == null): true

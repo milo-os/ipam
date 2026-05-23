@@ -1,0 +1,10 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: test-valid-pool
+spec:
+  cidr: 10.200.0.0/20
+  ipFamily: IPv4
+status:
+  phase: Ready
+  allocatedCIDR: 10.200.0.0/20

@@ -1,0 +1,13 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: host-claim-v4-1
+  namespace: ($namespace)
+  labels:
+    host-test: "true"
+spec:
+  ipFamily: IPv4
+  prefixLength: 32
+  poolRef:
+    name: host-pool-v4
+  reclaimPolicy: Delete
