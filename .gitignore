@@ -22,4 +22,5 @@
 # Local dev secrets
 *.pem
 *.key
-.env
+config.bat
+node_modules
