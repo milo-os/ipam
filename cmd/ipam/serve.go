@@ -227,14 +227,15 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	// healthchecks.
 	o.RecommendedOptions.Etcd = nil
 
-	// Delegating aggregated apiservers defer API Priority and Fairness to the
-	// main kube-apiserver. Disabling APF here avoids the FlowSchema and
-	// PriorityLevelConfiguration informers that would otherwise block readyz.
-	genericConfig.FlowControl = nil
-
 	if err := o.RecommendedOptions.ApplyTo(genericConfig); err != nil {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
 	}
+
+	// Delegating aggregated apiservers defer API Priority and Fairness to the
+	// main kube-apiserver. ApplyTo may re-initialize FlowControl, so nil it
+	// out here (after ApplyTo) to prevent the FlowSchema and
+	// PriorityLevelConfiguration informers from blocking readyz.
+	genericConfig.FlowControl = nil
 
 	codec := ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...)
 
