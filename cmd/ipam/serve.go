@@ -170,6 +170,17 @@ func NewIPAMServerOptions() *IPAMServerOptions {
 	opts.RecommendedOptions.Admission.RecommendedPluginOrder = []string{}
 	opts.RecommendedOptions.Admission.DefaultOffPlugins = nil
 
+	// API Priority and Fairness is enforced by the main kube-apiserver; a
+	// delegating aggregated apiserver does not run its own APF. Disabling it
+	// here (before ApplyTo) prevents FeatureOptions.ApplyTo from calling
+	// utilflowcontrol.New(), which would register FlowSchema and
+	// PriorityLevelConfiguration informers on the shared informer factory.
+	// Those informers are counted by the informer-sync readyz check and never
+	// reliably sync without flowcontrol.apiserver.k8s.io access, blocking
+	// readyz indefinitely. Nil-ing genericConfig.FlowControl after ApplyTo is
+	// insufficient because the informers are already registered by then.
+	opts.RecommendedOptions.Features.EnablePriorityAndFairness = false
+
 	return opts
 }
 
@@ -230,12 +241,6 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	if err := o.RecommendedOptions.ApplyTo(genericConfig); err != nil {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
 	}
-
-	// Delegating aggregated apiservers defer API Priority and Fairness to the
-	// main kube-apiserver. ApplyTo may re-initialize FlowControl, so nil it
-	// out here (after ApplyTo) to prevent the FlowSchema and
-	// PriorityLevelConfiguration informers from blocking readyz.
-	genericConfig.FlowControl = nil
 
 	codec := ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...)
 
