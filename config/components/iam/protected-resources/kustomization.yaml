@@ -1,0 +1,11 @@
+# This kustomization program is used to create all of the Milo IAM protected
+# resources to configure the resources that are protected by the IAM system.
+#
+# Each resource served by the IPAM aggregated apiserver that needs to be
+# protected by the IAM system has a corresponding protected resource
+# configuration file in this directory.
+
+resources:
+  - ippool.yaml
+  - ipallocation.yaml
+  - ipclaim.yaml
