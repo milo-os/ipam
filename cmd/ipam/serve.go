@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apiserver/pkg/admission"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/healthz"
@@ -25,6 +24,8 @@ import (
 	openapicommon "k8s.io/kube-openapi/pkg/common"
 	openapiutil "k8s.io/kube-openapi/pkg/util"
 	"k8s.io/kube-openapi/pkg/validation/spec"
+
+	quotaadmission "go.miloapis.com/milo/pkg/quota/admission"
 
 	ipamapiserver "go.miloapis.com/ipam/internal/apiserver"
 	"go.miloapis.com/ipam/internal/access"
@@ -162,13 +163,16 @@ func NewIPAMServerOptions() *IPAMServerOptions {
 
 	// IPAM is a delegating aggregated apiserver — admission webhooks, policies,
 	// and namespace lifecycle are all enforced by the main kube-apiserver before
-	// requests are forwarded here. Replace the default plugin registry with an
-	// empty one to avoid informers for Namespace, WebhookConfiguration,
-	// ValidatingAdmissionPolicy, etc. that silently block readyz without a
-	// wired-up CoreAPI client.
-	opts.RecommendedOptions.Admission.Plugins = admission.NewPlugins()
-	opts.RecommendedOptions.Admission.RecommendedPluginOrder = []string{}
-	opts.RecommendedOptions.Admission.DefaultOffPlugins = nil
+	// requests are forwarded here. We do NOT re-enable those plugins (their
+	// informers for Namespace, WebhookConfiguration, ValidatingAdmissionPolicy,
+	// etc. silently block readyz without a wired-up CoreAPI client). The one
+	// admission concern IPAM owns is quota enforcement: registerQuotaAdmission
+	// installs ONLY milo's ResourceQuotaEnforcement plugin (plus an IPAM-local
+	// platform-consumer guard) and nothing else.
+	registerQuotaAdmission(opts)
+	// Supply the loopback *rest.Config (reused from --kubeconfig) to the quota
+	// plugin via an IPAM-local admission initializer.
+	wireAdmissionInitializers(opts)
 
 	return opts
 }
@@ -227,9 +231,23 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	// healthchecks.
 	o.RecommendedOptions.Etcd = nil
 
+	// Mirror the tenant scope (forwarded via iam.miloapis.com/parent-* extras)
+	// onto the request context using the keys milo's quota plugin reads. This
+	// must run after authentication and before admission; installing it as the
+	// innermost wrapper of the API handler guarantees that ordering. See
+	// installConsumerContextFilter.
+	installConsumerContextFilter(genericConfig)
+
 	if err := o.RecommendedOptions.ApplyTo(genericConfig); err != nil {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
 	}
+
+	// Gate readiness on the quota plugin's caches syncing so IPAM does not
+	// serve (and silently bypass quota) before the ClaimCreationPolicy /
+	// resource-type informers are warm. APF's FlowSchema /
+	// PriorityLevelConfiguration informers sync via the same CoreAPI client
+	// (see #38), so FlowControl is left enabled.
+	genericConfig.AddReadyzChecks(quotaadmission.ReadinessCheck())
 
 	codec := ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...)
 
