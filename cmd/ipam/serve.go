@@ -150,6 +150,13 @@ type IPAMServerOptions struct {
 	// PostgresDSN is the PostgreSQL connection string. Required — postgres is
 	// the only supported storage backend.
 	PostgresDSN string
+
+	// EnableQuota gates Milo quota enforcement. Default true (production
+	// enforces). Environments without a Milo quota backend (kind/dev, e2e)
+	// must set --enable-quota=false: the quota plugin's ClaimCreationPolicy /
+	// resource-type informers cannot sync against a cluster that lacks the
+	// quota.miloapis.com CRDs, which would otherwise block readyz forever.
+	EnableQuota bool
 }
 
 func NewIPAMServerOptions() *IPAMServerOptions {
@@ -158,21 +165,20 @@ func NewIPAMServerOptions() *IPAMServerOptions {
 			"/registry/ipam.miloapis.com",
 			ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...),
 		),
-		Logs: logsapi.NewLoggingConfiguration(),
+		Logs:        logsapi.NewLoggingConfiguration(),
+		EnableQuota: true,
 	}
 
 	// IPAM is a delegating aggregated apiserver — admission webhooks, policies,
 	// and namespace lifecycle are all enforced by the main kube-apiserver before
-	// requests are forwarded here. We do NOT re-enable those plugins (their
-	// informers for Namespace, WebhookConfiguration, ValidatingAdmissionPolicy,
-	// etc. silently block readyz without a wired-up CoreAPI client). The one
-	// admission concern IPAM owns is quota enforcement: registerQuotaAdmission
-	// installs ONLY milo's ResourceQuotaEnforcement plugin (plus an IPAM-local
-	// platform-consumer guard) and nothing else.
-	registerQuotaAdmission(opts)
-	// Supply the loopback *rest.Config (reused from --kubeconfig) to the quota
-	// plugin via an IPAM-local admission initializer.
-	wireAdmissionInitializers(opts)
+	// requests are forwarded here, so the recommended plugins (Namespace,
+	// WebhookConfiguration, ValidatingAdmissionPolicy, …) are disabled by
+	// default — their informers silently block readyz without a wired-up CoreAPI
+	// client. The one admission concern IPAM owns is quota enforcement, which
+	// Config() layers on top (replacing this empty set with the quota plugins)
+	// only when --enable-quota is set, since the quota plugin needs flags parsed
+	// first and a reachable Milo quota backend.
+	disableAllAdmission(opts)
 
 	return opts
 }
@@ -183,6 +189,11 @@ func (o *IPAMServerOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.StringVar(&o.PostgresDSN, "postgres-dsn", o.PostgresDSN,
 		"PostgreSQL connection string (required)")
+
+	fs.BoolVar(&o.EnableQuota, "enable-quota", o.EnableQuota,
+		"Enforce Milo quota on resource creation (default true). Requires a reachable "+
+			"Milo quota backend via --kubeconfig; set false in environments without one "+
+			"(e.g. kind/dev, e2e) to avoid readyz blocking on quota informers.")
 }
 
 func (o *IPAMServerOptions) Complete() error { return nil }
@@ -231,23 +242,31 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	// healthchecks.
 	o.RecommendedOptions.Etcd = nil
 
-	// Mirror the tenant scope (forwarded via iam.miloapis.com/parent-* extras)
-	// onto the request context using the keys milo's quota plugin reads. This
-	// must run after authentication and before admission; installing it as the
-	// innermost wrapper of the API handler guarantees that ordering. See
-	// installConsumerContextFilter.
-	installConsumerContextFilter(genericConfig)
+	// Quota enforcement is wired here (not in NewIPAMServerOptions) because it
+	// depends on parsed flags (--enable-quota) and a reachable Milo quota
+	// backend. When enabled, replace the empty admission set with the quota
+	// plugins, supply the loopback config, and mirror the tenant scope onto the
+	// request context (via keys milo's quota plugin reads) — the filter must run
+	// after authentication and before admission, which installing it as the
+	// innermost API-handler wrapper guarantees.
+	if o.EnableQuota {
+		registerQuotaAdmission(o)
+		wireAdmissionInitializers(o)
+		installConsumerContextFilter(genericConfig)
+	}
 
 	if err := o.RecommendedOptions.ApplyTo(genericConfig); err != nil {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
 	}
 
-	// Gate readiness on the quota plugin's caches syncing so IPAM does not
-	// serve (and silently bypass quota) before the ClaimCreationPolicy /
-	// resource-type informers are warm. APF's FlowSchema /
-	// PriorityLevelConfiguration informers sync via the same CoreAPI client
-	// (see #38), so FlowControl is left enabled.
-	genericConfig.AddReadyzChecks(quotaadmission.ReadinessCheck())
+	if o.EnableQuota {
+		// Gate readiness on the quota plugin's caches syncing so IPAM does not
+		// serve (and silently bypass quota) before the ClaimCreationPolicy /
+		// resource-type informers are warm. APF's FlowSchema /
+		// PriorityLevelConfiguration informers sync via the same CoreAPI client
+		// (see #38), so FlowControl is left enabled.
+		genericConfig.AddReadyzChecks(quotaadmission.ReadinessCheck())
+	}
 
 	codec := ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...)
 

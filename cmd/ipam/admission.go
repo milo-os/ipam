@@ -46,6 +46,18 @@ func (i loopbackConfigInitializer) Initialize(plugin admission.Interface) {
 	}
 }
 
+// disableAllAdmission installs an empty admission plugin set — the baseline for
+// a delegating aggregated apiserver. The recommended plugins (NamespaceLifecycle,
+// webhooks, ValidatingAdmissionPolicy, …) run informers that block readyz
+// without a wired CoreAPI client, and IPAM defers those concerns to the main
+// kube-apiserver. registerQuotaAdmission overrides this with the quota plugin
+// when --enable-quota is set.
+func disableAllAdmission(o *IPAMServerOptions) {
+	o.RecommendedOptions.Admission.Plugins = admission.NewPlugins()
+	o.RecommendedOptions.Admission.RecommendedPluginOrder = []string{}
+	o.RecommendedOptions.Admission.DefaultOffPlugins = nil
+}
+
 // registerQuotaAdmission replaces the (deliberately empty) admission plugin set
 // with ONLY milo's ResourceQuotaEnforcement plugin. The other recommended
 // plugins (NamespaceLifecycle, ValidatingAdmissionPolicy, webhooks, …) remain
