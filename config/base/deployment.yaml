@@ -108,8 +108,18 @@ spec:
             - --tls-cert-file=$(TLS_CERT_FILE)
             - --tls-private-key-file=$(TLS_PRIVATE_KEY_FILE)
             - --postgres-dsn=$(POSTGRES_DSN)
+            # Delegated authn/authz target. Empty by default (in-cluster
+            # fallback, fine for kind/dev). In an aggregated Milo control
+            # plane these MUST point at a kubeconfig for milo-apiserver so
+            # TokenReview/SubjectAccessReview resolve against Milo's IAM —
+            # the local host apiserver does not know Milo identities or RBAC.
+            # The deployment overlay supplies the kubeconfig path + client
+            # cert (see datum-cloud/infra apps/ipam-system).
+            - --kubeconfig=$(KUBECONFIG)
+            - --authentication-kubeconfig=$(AUTHENTICATION_KUBECONFIG)
             - --authentication-skip-lookup=$(AUTHENTICATION_SKIP_LOOKUP)
             - --authentication-tolerate-lookup-failure=$(AUTHENTICATION_TOLERATE_LOOKUP_FAILURE)
+            - --authorization-kubeconfig=$(AUTHORIZATION_KUBECONFIG)
             - --authorization-always-allow-paths=$(AUTHORIZATION_ALWAYS_ALLOW_PATHS)
             - --requestheader-client-ca-file=/etc/kubernetes/pki/requestheader/ca.crt
             - --requestheader-username-headers=$(REQUESTHEADER_USERNAME_HEADERS)
@@ -131,6 +141,15 @@ spec:
                   name: postgres-credentials
                   key: dsn
                   optional: true
+            # Delegated authn/authz kubeconfig paths. Empty = in-cluster
+            # fallback (kind/dev). Overlays running under Milo set these to
+            # a kubeconfig pointing at milo-apiserver.
+            - name: KUBECONFIG
+              value: ""
+            - name: AUTHENTICATION_KUBECONFIG
+              value: ""
+            - name: AUTHORIZATION_KUBECONFIG
+              value: ""
             - name: AUTHENTICATION_SKIP_LOOKUP
               value: "false"
             - name: AUTHENTICATION_TOLERATE_LOOKUP_FAILURE
