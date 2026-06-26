@@ -105,10 +105,17 @@ func newInnerStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGette
 type AllocatingREST struct {
 	*IPClaimStorage
 	allocator   allocator.PrefixAllocator
-	db          *pgxpool.Pool
+	db          txBeginner
 	strategy    ipClaimStrategy
 	poolChecker access.PoolAccessChecker
 	codec       runtime.Codec
+}
+
+// txBeginner is the minimal slice of *pgxpool.Pool the allocation handlers
+// depend on. Narrowing the field to this interface lets unit tests inject a
+// fake transaction without a live Postgres.
+type txBeginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // NewAllocatingStorage builds the IPClaim REST storage with synchronous
@@ -143,6 +150,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	if !ok {
 		return nil, fmt.Errorf("expected *ipam.IPClaim, got %T", obj)
 	}
+
+	// A server-side dry-run must compute the would-be allocation but persist
+	// nothing and consume no capacity (see Create body for how the transaction
+	// is rolled back).
+	dryRun := isDryRun(options.DryRun)
 
 	id := tenant.FromContext(ctx)
 	project := id.Project()
@@ -276,6 +288,24 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	allocationName := allocationNameFor(claim.Namespace, claim.Name)
 	allocationKey := allocationObjectKey(claim.Namespace, allocationName)
 
+	// Populate the claim status with the computed allocation up-front so both
+	// the dry-run and the persisting paths return identical bound status.
+	claim.Status.Phase = ipam.ClaimBound
+	claim.Status.AllocatedCIDR = cidr
+	claim.Status.BoundAllocationRef = &ipam.LocalRef{Name: allocationName}
+
+	// Server dry-run: the allocator has computed the real next CIDR inside the
+	// transaction (SELECT … FOR UPDATE + FindFirstAvailableBlock), but we must
+	// not persist anything or consume capacity. Roll the transaction back —
+	// undoing the allocation row reserved by AllocatePrefix — and return the
+	// claim with its would-be status. No IPAllocation row, no claim row, no
+	// changelog event, no committed capacity change.
+	if dryRun {
+		_ = tx.Rollback(ctx)
+		result = "success"
+		return claim, nil
+	}
+
 	alloc := &ipam.IPAllocation{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      allocationName,
@@ -302,13 +332,10 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, fmt.Errorf("persist IPAllocation: %w", err)
 	}
 
-	// Populate the claim status with the allocated CIDR + reference back to
-	// the IPAllocation row that records it. Watchers see a single ADDED
-	// event with the terminal bound state.
-	claim.Status.Phase = ipam.ClaimBound
-	claim.Status.AllocatedCIDR = cidr
-	claim.Status.BoundAllocationRef = &ipam.LocalRef{Name: allocationName}
-
+	// Claim status was populated above (before the dry-run branch); the
+	// persisted record carries the allocated CIDR + reference back to the
+	// IPAllocation row. Watchers see a single ADDED event with the terminal
+	// bound state.
 	claimData, err := runtime.Encode(r.codec, claim)
 	if err != nil {
 		_ = tx.Rollback(ctx)
@@ -335,6 +362,18 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 
 	result = "success"
 	return claim, nil
+}
+
+// isDryRun reports whether a create/delete options' DryRun slice requests a
+// server-side dry-run. The apiserver only ever sets [metav1.DryRunAll], but we
+// match defensively on the constant.
+func isDryRun(dryRun []string) bool {
+	for _, v := range dryRun {
+		if v == metav1.DryRunAll {
+			return true
+		}
+	}
+	return false
 }
 
 // allocationFailureReason maps an allocator error onto the canonical reason
@@ -371,6 +410,12 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 		if err := deleteValidation(ctx, claim.DeepCopyObject()); err != nil {
 			return nil, false, err
 		}
+	}
+
+	// Server dry-run: report what would be deleted without releasing the
+	// allocation or removing any rows.
+	if options != nil && isDryRun(options.DryRun) {
+		return claim, true, nil
 	}
 
 	claimKey := claimObjectKey(claim.Namespace, claim.Name)
