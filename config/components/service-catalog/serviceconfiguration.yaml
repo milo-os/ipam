@@ -15,6 +15,13 @@ spec:
         outstanding allocation request or reservation against an IPAM pool.
       kind: Gauge
       unit: "1"
+    - name: ipam.miloapis.com/ippools
+      displayName: IP Pools
+      description: >-
+        Number of IPPool objects a project holds. Each IPPool is a block of
+        address space carved from a parent pool — a subnet allocation.
+      kind: Gauge
+      unit: "1"
   quota:
     limits:
       - name: ipclaims-per-project
@@ -25,9 +32,22 @@ spec:
         unit: "1/{project}"
         defaultLimit: 100
         maxLimit: 10000
+      - name: ippools-per-project
+        metric: ipam.miloapis.com/ippools
+        consumerType:
+          apiGroup: resourcemanager.miloapis.com
+          kind: Project
+        unit: "1/{project}"
+        defaultLimit: 25
+        maxLimit: 1000
     metricRules:
       - selector:
           apiGroup: ipam.miloapis.com
           kind: IPClaim
         metricCosts:
           ipam.miloapis.com/ipclaims: 1
+      - selector:
+          apiGroup: ipam.miloapis.com
+          kind: IPPool
+        metricCosts:
+          ipam.miloapis.com/ippools: 1
