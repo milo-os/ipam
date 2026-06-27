@@ -1,0 +1,21 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: ipam.miloapis.com-provider
+  annotations:
+    kubernetes.io/display-name: IPAM Provider
+    kubernetes.io/description: "Manage address pools and grant cross-project use of shared pools"
+spec:
+  launchStage: Beta
+  # Providers manage pools and read everything (claims/allocations) so they can
+  # see what is consuming each pool, but they do not own consumer claims.
+  inheritedRoles:
+    - name: ipam.miloapis.com-viewer
+  includedPermissions:
+    - ipam.miloapis.com/ippools.create
+    - ipam.miloapis.com/ippools.update
+    - ipam.miloapis.com/ippools.patch
+    - ipam.miloapis.com/ippools.delete
+    # "use" authorises consumers of a shared pool; providers grant it on the
+    # pools they want to admit cross-project allocation from.
+    - ipam.miloapis.com/ippools.use

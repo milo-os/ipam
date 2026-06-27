@@ -1,0 +1,26 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: ipam.miloapis.com-ippool
+spec:
+  serviceRef:
+    name: "ipam.miloapis.com"
+  kind: IPPool
+  plural: ippools
+  singular: ippool
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+    - updateStatus
+    # "use" is the verb checked by the IPAM PoolAccessChecker (see
+    # internal/access/sar.go) when a consumer claims from a shared pool.
+    # Granting it on a pool implicitly authorises cross-project allocation.
+    - use
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

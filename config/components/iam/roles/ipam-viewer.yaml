@@ -1,0 +1,19 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: ipam.miloapis.com-viewer
+  annotations:
+    kubernetes.io/display-name: IPAM Viewer
+    kubernetes.io/description: "View access to all IPAM resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - ipam.miloapis.com/ippools.list
+    - ipam.miloapis.com/ippools.get
+    - ipam.miloapis.com/ippools.watch
+    - ipam.miloapis.com/ipallocations.list
+    - ipam.miloapis.com/ipallocations.get
+    - ipam.miloapis.com/ipallocations.watch
+    - ipam.miloapis.com/ipclaims.list
+    - ipam.miloapis.com/ipclaims.get
+    - ipam.miloapis.com/ipclaims.watch

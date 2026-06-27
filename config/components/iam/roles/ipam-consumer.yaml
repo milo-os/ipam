@@ -1,0 +1,18 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: ipam.miloapis.com-consumer
+  annotations:
+    kubernetes.io/display-name: IPAM Consumer
+    kubernetes.io/description: "File and manage IP claims; read-only on pools and allocations"
+spec:
+  launchStage: Beta
+  # Consumers inherit read access to every IPAM resource (including pools so
+  # they can discover available address space) and add claim CRUD on top.
+  inheritedRoles:
+    - name: ipam.miloapis.com-viewer
+  includedPermissions:
+    - ipam.miloapis.com/ipclaims.create
+    - ipam.miloapis.com/ipclaims.update
+    - ipam.miloapis.com/ipclaims.patch
+    - ipam.miloapis.com/ipclaims.delete
