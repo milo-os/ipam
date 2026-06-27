@@ -3,10 +3,10 @@ package access
 import "testing"
 
 // TestResourceAndNameFromPoolKey pins the expected (resource, name) output for
-// every key shape the IPAM apiserver actually produces. The previous parser
-// expected `project/<id>/<kind-singular>/<name>` — a shape that never appears
-// in storage — so every SAR ran against `ipprefixes` regardless of the actual
-// pool kind. This test guards against that regression.
+// every key shape the IPAM apiserver actually produces. Pools are served as the
+// "ippools" resource and stored under ".../ippools/<name>" keys, so the "use"
+// SAR must target "ippools" — not the nonexistent "ipprefixes" the parser
+// previously emitted. This test guards against that regression.
 func TestResourceAndNameFromPoolKey(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -15,27 +15,27 @@ func TestResourceAndNameFromPoolKey(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "platform-scoped IPPrefix",
-			key:      "/ipam.miloapis.com/ipprefixes/my-pool",
-			resource: "ipprefixes",
+			name:     "platform-scoped IPPool",
+			key:      "/ipam.miloapis.com/ippools/my-pool",
+			resource: "ippools",
 			expected: "my-pool",
 		},
 		{
-			name:     "project-scoped IPPrefix",
-			key:      "project/team-alpha/ipam.miloapis.com/ipprefixes/edge-prefix",
-			resource: "ipprefixes",
-			expected: "edge-prefix",
+			name:     "project-scoped IPPool",
+			key:      "project/team-alpha/ipam.miloapis.com/ippools/edge-pool",
+			resource: "ippools",
+			expected: "edge-pool",
 		},
 		{
-			name:     "unknown kind falls back to last segment as name and ipprefixes as resource",
+			name:     "unknown kind falls back to last segment as name and ippools as resource",
 			key:      "/ipam.miloapis.com/somethingelse/foo",
-			resource: "ipprefixes",
+			resource: "ippools",
 			expected: "foo",
 		},
 		{
 			name:     "bare name (defensive fallback)",
 			key:      "lone-name",
-			resource: "ipprefixes",
+			resource: "ippools",
 			expected: "lone-name",
 		},
 	}

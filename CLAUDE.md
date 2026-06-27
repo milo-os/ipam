@@ -19,7 +19,7 @@ A standalone, Kubernetes-native IP Address Management service implemented as an 
 
 1. **API group:** `ipam.miloapis.com/v1alpha1`
 2. **Module path:** `go.miloapis.com/ipam`
-3. **Zero Milo/Quota imports.** No dependencies on `datum-cloud/milo` or `datum-cloud/quota`.
+3. **Restricted Milo imports; zero Quota imports.** IPAM may import ONLY the extracted, importable milo packages required for quota enforcement: `go.miloapis.com/milo/pkg/quota/...`, `go.miloapis.com/milo/pkg/apis/quota/v1alpha1`, and `go.miloapis.com/milo/pkg/request`. Any `go.miloapis.com/milo/internal/...` import and ALL of `datum-cloud/quota` (and the old `datum-cloud/milo` path) are forbidden. Consumer refs stay opaque (constraint #4) and `internal/allocation/` stays milo-free (constraint #5).
 4. **Consumer refs are opaque:** `{apiGroup, kind, name}` strings, not Go type imports.
 5. **`internal/allocation/` has zero non-stdlib imports.** Must compile with only the Go standard library (`net`, `math/big`, `sort`).
 
@@ -176,7 +176,18 @@ go test ./pkg/... ./internal/... -count=1
 go vet ./...
 golangci-lint run ./...
 ./hack/verify-codegen.sh
-grep -r "datum-cloud/milo\|datum-cloud/quota" . && echo "FAIL: unwanted imports" || echo "OK"
+# Forbidden imports: datum-cloud/{milo,quota} (old paths) and any
+# go.miloapis.com/milo path OTHER than the three allowed quota/request packages.
+# Allowed: go.miloapis.com/milo/pkg/quota/..., .../pkg/apis/quota/v1alpha1,
+# .../pkg/request. Forbidden: any go.miloapis.com/milo/internal/... and all of
+# datum-cloud/quota. The grep below finds every milo/quota import line, strips
+# the allowed ones, and fails if anything remains.
+grep -rhoE '"(go\.miloapis\.com/milo|datum-cloud/(milo|quota))[^"]*"' --include='*.go' . \
+  | sort -u \
+  | grep -vE '"go\.miloapis\.com/milo/pkg/quota/' \
+  | grep -vE '"go\.miloapis\.com/milo/pkg/apis/quota/v1alpha1"' \
+  | grep -vE '"go\.miloapis\.com/milo/pkg/request"' \
+  | grep . && echo "FAIL: forbidden milo/quota imports" || echo "OK"
 kustomize build config/overlays/dev/
 ```
 
@@ -198,7 +209,7 @@ The Taskfile includes the test-infra remote Taskfile (`datum-cloud/test-infra v0
 
 - `go build ./cmd/ipam/` succeeds
 - `go test ./internal/allocation/...` passes (pure Go, no external deps)
-- `go vet ./...` clean; zero `datum-cloud/milo` or `datum-cloud/quota` imports
+- `go vet ./...` clean; no forbidden milo/quota imports (only `go.miloapis.com/milo/pkg/quota/...`, `.../pkg/apis/quota/v1alpha1`, `.../pkg/request` are allowed — see constraint #3 grep)
 - Binary starts with `--postgres-dsn=...` and serves discovery for `ipam.miloapis.com/v1alpha1`
 - IPPrefixClaim CREATE returns allocated CIDR in status synchronously
 - Concurrent IPPrefixClaim CREATEs produce non-overlapping CIDRs under load
