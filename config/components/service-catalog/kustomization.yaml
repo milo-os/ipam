@@ -1,17 +1,3 @@
-# This kustomization program registers IPAM with Milo's service-catalog so the
-# service becomes a first-class, project-enableable capability and its quota
-# story (the IPClaim ceiling enforced by the WS2 admission plugin) is declared
-# in one provider-facing document.
-#
-# These objects (services.miloapis.com/v1alpha1 Service +
-# ServiceConfiguration) live on the Milo control plane, NOT inside the IPAM
-# aggregated apiserver's own cluster. They are therefore packaged as a
-# standalone component (mirroring config/components/iam/) that the platform
-# applies against the control plane, rather than being wired into the
-# apiserver dev/test overlays.
-#
-# This is created as a component so it can be composed with other
-# kustomizations (e.g. the IAM registration component).
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 

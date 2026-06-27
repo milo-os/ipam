@@ -1,14 +1,8 @@
-# The Service is IPAM's first-class identity record in Milo's service-catalog.
-# It is what makes IPAM discoverable and enableable per project; downstream
-# governance (quota, IAM, marketplace) joins on spec.serviceName.
 apiVersion: services.miloapis.com/v1alpha1
 kind: Service
 metadata:
   name: ipam-miloapis-com
 spec:
-  # Canonical reverse-DNS identifier. Immutable once Published. This is the
-  # cross-system join key used by the ServiceConfiguration's name-prefix
-  # enforcement and by every downstream reference.
   serviceName: ipam.miloapis.com
   displayName: IP Address Management
   description: >-
@@ -19,3 +13,5 @@ spec:
   owner:
     producerProjectRef:
       name: platform-producer-project
+  enablementPolicy:
+    mode: GatedByProvider
