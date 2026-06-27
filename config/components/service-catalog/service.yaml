@@ -6,9 +6,9 @@ spec:
   serviceName: ipam.miloapis.com
   displayName: IP Address Management
   description: >-
-    Kubernetes-native IP Address Management. Allocate and manage IP prefixes,
-    individual IP addresses, and AS numbers across the platform with atomic,
-    synchronous allocation from project-scoped pools.
+    IP Address Management. Allocate and manage IP prefixes and individual IP
+    addresses across the platform with atomic, synchronous allocation from
+    project-scoped pools.
   phase: Published
   owner:
     producerProjectRef:
