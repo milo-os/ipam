@@ -1,0 +1,71 @@
+# The ServiceConfiguration is the single provider-facing document describing
+# what IPAM contributes to Milo. Here it carries IPAM's quota declaration: the
+# QuotaFanOut controller in service-catalog turns spec.quota into the quota
+# CRDs (ResourceRegistration + ClaimCreationPolicy) that the WS2 admission
+# plugin enforces against at IPClaim CREATE time.
+#
+# IMPORTANT — grant-on-enablement gap: the QuotaFanOut controller currently
+# reads spec.quota.limits[].consumerType / .metric and spec.quota.metricRules
+# to materialize ResourceRegistration + ClaimCreationPolicy, but it does NOT
+# read spec.quota.limits[].defaultLimit and therefore creates NO ResourceGrant.
+# Until that gap is closed in service-catalog, projects get the policy (claims
+# are created and checked) but no allowance, so enforcement has nothing to
+# compare against. defaultLimit below is authored in anticipation of that fix
+# and documents the intended per-project ceiling. See the PR body follow-up.
+apiVersion: services.miloapis.com/v1alpha1
+kind: ServiceConfiguration
+metadata:
+  name: ipam-miloapis-com
+spec:
+  serviceRef:
+    name: ipam-miloapis-com
+  # Published so the QuotaFanOut controller actually materializes the quota
+  # CRDs; Draft configurations are skipped by the controller.
+  phase: Published
+  version: v1alpha1
+
+  # Metrics are required: every quota limit (.metric) and every metricRule
+  # cost key must name a metric defined here, and the name must be prefixed by
+  # the Service's spec.serviceName (ipam.miloapis.com/). This metric counts
+  # IPClaim objects (an "Entity" count, not a billable rate).
+  metrics:
+    - name: ipam.miloapis.com/ipclaims
+      displayName: IP Claims
+      description: >-
+        Number of IPClaim objects a project holds. Each IPClaim represents one
+        outstanding allocation request/reservation against an IPAM pool.
+      kind: Gauge
+      unit: "1"
+
+  quota:
+    # limits[] fans out into ResourceRegistration (the quota-able resource
+    # declaration). consumerType is the resource that RECEIVES the grant and
+    # creates claims; IPClaims are project-scoped, so the consumer is the
+    # project (matching the WS2 admission plugin, which derives the quota
+    # consumer from milorequest.ProjectID, falling back to OrganizationID).
+    limits:
+      - name: ipclaims-per-project
+        metric: ipam.miloapis.com/ipclaims
+        consumerType:
+          apiGroup: resourcemanager.miloapis.com
+          kind: Project
+        unit: "1/{project}"
+        # Default ceiling granted to a project on service enablement. 100
+        # IPClaims comfortably covers typical project networking (subnet and
+        # address reservations across multiple environments) while keeping a
+        # finite, abuse-resistant bound. Providers can raise it per project via
+        # a ResourceGrant override up to maxLimit.
+        defaultLimit: 100
+        # Hard cap on any per-project override. 10000 leaves ample headroom for
+        # large tenants without permitting unbounded pool exhaustion.
+        maxLimit: 10000
+
+    # metricRules[] fans out into ClaimCreationPolicy: which Kind's creation
+    # triggers a ResourceClaim, and the metric cost charged per creation.
+    # Creating one IPClaim consumes one unit of the ipclaims metric.
+    metricRules:
+      - selector:
+          apiGroup: ipam.miloapis.com
+          kind: IPClaim
+        metricCosts:
+          ipam.miloapis.com/ipclaims: 1
