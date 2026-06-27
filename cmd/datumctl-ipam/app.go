@@ -51,17 +51,27 @@ func newApp(io IOStreams, opts *globalOptions) *app {
 
 func (a *app) defaultClientFactory() (clientset.Interface, string, error) {
 	env := readDatumEnv()
+	// Effective scope: explicit --org/--project flags override the context
+	// datumctl injects. The scope is carried by the control-plane URL path, so
+	// keep env and opts in sync for both the transport and verbose diagnostics.
+	if a.opts.org == "" {
+		a.opts.org = env.org
+	}
+	if a.opts.project == "" {
+		a.opts.project = env.project
+	}
+	env.org = a.opts.org
+	env.project = a.opts.project
 	mode := chooseMode(a.opts.kubeconfig, env)
 	cfg, ns, err := restConfigFor(mode, a.opts.kubeconfig, env)
 	if err != nil {
 		return nil, "", err
 	}
-	// Flag/env override precedence for the namespace (project): explicit
-	// --namespace wins, then --project, then the transport's default.
+	// Namespace applies only to namespaced resources (claims/allocations); the
+	// project/org scope lives in the URL, not the namespace. Only an explicit
+	// --namespace overrides the transport default ("default").
 	if a.opts.namespace != "" {
 		ns = a.opts.namespace
-	} else if a.opts.project != "" {
-		ns = a.opts.project
 	}
 	// --verbose: surface the resolved scope, transport, and API host on stderr,
 	// and wrap the transport so every API call (method + path) is logged. stdout

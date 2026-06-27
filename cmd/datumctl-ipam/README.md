@@ -43,7 +43,7 @@ The plugin reaches the IPAM API in one of two ways:
    |---|---|
    | `DATUM_API_HOST` | IPAM API host |
    | `DATUM_CREDENTIALS_HELPER` | Path to the helper; the plugin runs `<helper> auth get-token` |
-   | `DATUM_ORG` / `DATUM_PROJECT` | Active org/project (project becomes the namespace) |
+   | `DATUM_ORG` / `DATUM_PROJECT` | Active org/project; selects the control-plane URL path (`…/projects/<id>/control-plane`). Empty = platform root. |
 
    The plugin never holds a long-lived credential.
 

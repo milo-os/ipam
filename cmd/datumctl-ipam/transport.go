@@ -119,15 +119,43 @@ func datumRestConfig(env datumEnv) (*rest.Config, string, error) {
 			withFix("re-run `datumctl login` and try again.").withCause(err)
 	}
 	cfg := &rest.Config{
-		Host:        env.apiHost,
+		Host:        controlPlaneHost(env),
 		BearerToken: token,
 	}
 	cfg.UserAgent = userAgent()
-	ns := env.project
-	if ns == "" {
-		ns = "default"
+	// The active project/org scope is encoded in the control-plane URL path (see
+	// controlPlaneHost), so within that control plane namespaced resources live
+	// in "default" — the same namespace datumctl itself targets. An explicit
+	// --namespace (applied by the caller) overrides this.
+	return cfg, "default", nil
+}
+
+// controlPlaneHost builds the fully-qualified IPAM API base URL for the active
+// Datum scope. datumctl injects DATUM_API_HOST as a bare hostname (e.g.
+// "api.datum.net") and conveys scope via DATUM_PROJECT/DATUM_ORG; a project's
+// (or org's) Milo control plane is addressed by a path prefix off that host —
+// the same construction datumctl and the compute plugin use. With neither set,
+// the bare platform root is used, for cluster-scoped, operator-level calls.
+func controlPlaneHost(env datumEnv) string {
+	base := strings.TrimRight(ensureScheme(env.apiHost), "/")
+	switch {
+	case env.project != "":
+		return fmt.Sprintf("%s/apis/resourcemanager.miloapis.com/v1alpha1/projects/%s/control-plane", base, env.project)
+	case env.org != "":
+		return fmt.Sprintf("%s/apis/resourcemanager.miloapis.com/v1alpha1/organizations/%s/control-plane", base, env.org)
+	default:
+		return base
 	}
-	return cfg, ns, nil
+}
+
+// ensureScheme prepends https:// when host has no scheme. datumctl provides
+// DATUM_API_HOST without one; client-go needs an absolute URL or it routes the
+// request to an HTML-serving endpoint, surfacing as "serializer for text/html".
+func ensureScheme(host string) string {
+	if host == "" || strings.Contains(host, "://") {
+		return host
+	}
+	return "https://" + host
 }
 
 // fetchToken invokes `<helper> auth get-token` and returns the trimmed token. The
