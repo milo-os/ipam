@@ -13,7 +13,5 @@ spec:
           env:
             - name: LOG_LEVEL
               value: "4"
-            # No Milo quota backend in the kind/dev cluster; disable quota so the
-            # quota plugin's informers don't block readyz on missing CRDs.
             - name: ENABLE_QUOTA
               value: "false"

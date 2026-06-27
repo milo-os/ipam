@@ -16,9 +16,6 @@ spec:
       containers:
         - name: apiserver
           imagePullPolicy: Never
-          # No Milo quota backend in the kind/test-infra cluster — the
-          # quota.miloapis.com CRDs don't exist, so the quota plugin's informers
-          # would never sync and readyz would hang. Disable quota here.
           env:
             - name: ENABLE_QUOTA
               value: "false"
