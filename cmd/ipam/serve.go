@@ -231,12 +231,6 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
 	}
 
-	// Delegating aggregated apiservers defer API Priority and Fairness to the
-	// main kube-apiserver. ApplyTo may re-initialize FlowControl, so nil it
-	// out here (after ApplyTo) to prevent the FlowSchema and
-	// PriorityLevelConfiguration informers from blocking readyz.
-	genericConfig.FlowControl = nil
-
 	codec := ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...)
 
 	pgGetter, err := pgstore.NewRESTOptionsGetter(o.PostgresDSN)
