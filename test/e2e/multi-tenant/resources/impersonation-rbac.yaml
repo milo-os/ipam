@@ -22,7 +22,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: e2e-tenant-impersonator
+  name: mt-tenant-impersonator
 rules:
   # Impersonate the tenant user identity.
   - apiGroups: [""]
@@ -51,11 +51,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: e2e-tenant-impersonator-binding
+  name: mt-tenant-impersonator-binding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: e2e-tenant-impersonator
+  name: mt-tenant-impersonator
 subjects:
   - kind: Group
     apiGroup: rbac.authorization.k8s.io
@@ -68,7 +68,7 @@ subjects:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: e2e-tenant-ipam-user
+  name: mt-tenant-ipam-user
 rules:
   - apiGroups: ["ipam.miloapis.com"]
     resources: ["ippools", "ippools/status", "ipclaims", "ipclaims/status"]
@@ -77,11 +77,11 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: e2e-tenant-ipam-user-binding
+  name: mt-tenant-ipam-user-binding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: e2e-tenant-ipam-user
+  name: mt-tenant-ipam-user
 subjects:
   - kind: User
     apiGroup: rbac.authorization.k8s.io

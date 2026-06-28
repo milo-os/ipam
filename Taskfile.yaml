@@ -153,23 +153,15 @@ tasks:
   # act-as + act-as-user-extra (iam.miloapis.com/parent-*) so native chainsaw
   # ops drive the IPAM apiserver as a specific tenant — no curl/proxy bash.
   # E2E_KUBE_CONTEXT overrides the source context (default: current context).
-  e2e:gen-impersonation-kubeconfig:
-    desc: Generate test/e2e/.tenant-impersonation.kubeconfig from the target cluster
-    cmd: >
-      sh test/e2e/lib/gen-impersonation-kubeconfig.sh
-      test/e2e/.tenant-impersonation.kubeconfig
-      "{{.E2E_KUBE_CONTEXT}}"
-
   e2e:
     desc: Run all chainsaw e2e suites
-    deps:
-      - e2e:gen-impersonation-kubeconfig
+    # The multi-tenant/tenant-isolation suites generate their impersonation
+    # kubeconfig in-suite (first step), so a plain `chainsaw test` behaves the
+    # same here and in CI's direct invocation — no separate generation step.
     cmd: chainsaw test test/e2e/
 
   e2e:suite:
     desc: 'Run a single suite. Var: SUITE=prefix-validation|prefix-allocation|prefix-selector|prefix-hierarchy|prefix-exhaustion|prefix-overlap|asn-allocation|multi-tenant|tenant-isolation'
-    deps:
-      - e2e:gen-impersonation-kubeconfig
     cmd: chainsaw test test/e2e/{{.SUITE}}
 
   # ----- k6 load tests (delegated to test/load/Taskfile.yaml) -----
