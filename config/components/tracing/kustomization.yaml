@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+namespace: ipam-system
+
+# Opt-in distributed-tracing wiring for the IPAM apiserver. Compose this
+# component from an overlay to enable OpenTelemetry tracing: it ships the
+# TracingConfiguration ConfigMap and points the apiserver at it. Omit the
+# component to run with tracing off (the base leaves it disabled).
+resources:
+  - tracing-config.yaml
+
+patches:
+  # Point the apiserver at the tracing config via the base's env var.
+  - path: deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+  # Mount the tracing ConfigMap. Appended to the volume/mount lists (rather than
+  # a strategic merge that prepends) so overlays patching volumes by index — the
+  # test-infra TLS volume — keep targeting the right entry.
+  - target:
+      kind: Deployment
+      name: ipam-apiserver
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: tracing-config
+          mountPath: /etc/ipam/tracing
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: tracing-config
+          configMap:
+            name: ipam-tracing-config

@@ -11,11 +11,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"k8s.io/klog/v2"
 
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/tenant"
+	"go.miloapis.com/ipam/internal/tracing"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
@@ -65,13 +68,30 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
+	// Trace the block search here, around the call, because the allocation
+	// library is kept dependency-free and must not import OpenTelemetry. The
+	// search does no database work, so its context is discarded and the DB calls
+	// below stay on the parent span.
+	strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
+	_, fbSpan := tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
+	fbSpan.SetAttributes(
+		attribute.String(tracing.AttrStrategy, string(strategy)),
+		attribute.Int(tracing.AttrExistingCount, len(existing)),
+	)
+	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, prefixLen, strategy)
 	if err != nil {
 		if errors.Is(err, allocation.ErrPoolExhausted) {
+			fbSpan.SetAttributes(attribute.Bool(tracing.AttrExhausted, true))
+			fbSpan.SetStatus(codes.Error, "pool exhausted")
+			fbSpan.End()
 			return "", ErrPoolExhausted
 		}
+		fbSpan.SetStatus(codes.Error, err.Error())
+		fbSpan.End()
 		return "", fmt.Errorf("compute next prefix: %w", err)
 	}
+	fbSpan.SetAttributes(attribute.String(tracing.AttrResultCIDR, cidr.String()))
+	fbSpan.End()
 
 	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, ownerProject); err != nil {
 		return "", err

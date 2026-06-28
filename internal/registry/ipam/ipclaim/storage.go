@@ -17,6 +17,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
@@ -34,6 +36,7 @@ import (
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
 	"go.miloapis.com/ipam/internal/tenant"
+	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -161,6 +164,38 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	org := id.Org()
 
 	ipFamily := string(claim.Spec.IPFamily)
+
+	// Root span for the whole allocation; every downstream span (tenant resolve,
+	// authorization, block search, DB calls) nests under it. ctx is rebound so
+	// those calls attach. failSpan marks the span failed at the points that
+	// already classify failures for metrics.
+	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanClaimAllocate)
+	defer span.End()
+	failSpan := func(reason string) {
+		span.SetAttributes(attribute.String(tracing.AttrErrorReason, reason))
+		span.SetStatus(codes.Error, reason)
+	}
+
+	// Record the resolved tenant scope and whether the request carried its
+	// parent identity extras — the signal that tells a real project identity
+	// apart from one that arrived stripped of them.
+	_, resolveSpan := tracing.Tracer().Start(ctx, tracing.SpanTenantResolve)
+	resolveSpan.SetAttributes(
+		attribute.String(tracing.AttrScope, tracing.Scope(id.IsPlatform())),
+		attribute.String(tracing.AttrProject, project),
+		attribute.Bool(tracing.AttrHasParentExtras, id.APIGroup != "" || id.Kind != "" || id.Name != ""),
+	)
+	resolveSpan.End()
+
+	span.SetAttributes(
+		attribute.String(tracing.AttrTenantScope, tracing.Scope(id.IsPlatform())),
+		attribute.String(tracing.AttrTenantProject, project),
+		attribute.String(tracing.AttrTenantOrg, org),
+		attribute.Int(tracing.AttrClaimPrefix, claim.Spec.PrefixLength),
+		attribute.String(tracing.AttrClaimIPFamily, ipFamily),
+		attribute.Bool(tracing.AttrDryRun, dryRun),
+	)
+
 	metrics.AllocationAttempts.WithLabelValues("ipclaim", ipFamily, project, org).Inc()
 	allocStart := time.Now()
 	result := "error"
@@ -208,6 +243,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		failSpan(tracing.ReasonTxError)
 		return nil, fmt.Errorf("begin allocation transaction: %w", err)
 	}
 
@@ -248,15 +284,18 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			_ = tx.Rollback(ctx)
 			if errors.Is(rerr, allocator.ErrPoolNotFound) {
 				metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+				failSpan(tracing.ReasonPoolNotFound)
 				return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
 			}
 			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			failSpan(tracing.ReasonTxError)
 			return nil, fmt.Errorf("resolve IPPool: %w", rerr)
 		}
 		poolKey = resolved
 		poolName = poolKey[strings.LastIndex(poolKey, "/")+1:]
 	}
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
+	span.SetAttributes(attribute.String(tracing.AttrPoolName, poolName))
 
 	if isCrossProject {
 		if err := r.authorizeCrossProject(ctx, tx, poolKey); err != nil {
@@ -270,9 +309,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 				// named the pool by hand.
 				if claim.Spec.PoolSelector != nil {
 					metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+					failSpan(tracing.ReasonCrossProjectDenied)
 					return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
 				}
 				metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+				failSpan(tracing.ReasonCrossProjectDenied)
 				return nil, apierrors.NewForbidden(
 					v1alpha1.Resource("ippools"),
 					poolKey,
@@ -280,6 +321,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 				)
 			}
 			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			failSpan(tracing.ReasonTxError)
 			return nil, err
 		}
 	}
@@ -291,6 +333,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org)
 		if reason == "pool_exhausted" {
 			result = "exhausted"
+			failSpan(tracing.ReasonExhausted)
+		} else if reason == "pool_not_found" {
+			failSpan(tracing.ReasonPoolNotFound)
+		} else {
+			failSpan(tracing.ReasonTxError)
 		}
 		return nil, mapAllocationError(err)
 	}
@@ -431,7 +478,17 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 		return claim, true, nil
 	}
 
+	// Release span — mirrors the allocation span for the teardown path so a
+	// release is traceable end-to-end. ctx is rebound so the DB spans attach.
 	id := tenant.FromContext(ctx)
+	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanClaimRelease)
+	defer span.End()
+	span.SetAttributes(
+		attribute.String(tracing.AttrTenantScope, tracing.Scope(id.IsPlatform())),
+		attribute.String(tracing.AttrTenantProject, id.Project()),
+		attribute.String(tracing.AttrClaimIPFamily, string(claim.Spec.IPFamily)),
+	)
+
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 
 	// TX1 — publish phase=Releasing.
@@ -475,6 +532,8 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 	}
 	if lastErr != nil {
 		klog.ErrorS(lastErr, "claim stuck in Releasing after retries — manual intervention may be required", "claim", name, "attempts", deleteMaxAttempts)
+		span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
+		span.SetStatus(codes.Error, "release failed after retries")
 		return nil, false, fmt.Errorf("release allocation after %d attempts: %w", deleteMaxAttempts, lastErr)
 	}
 
