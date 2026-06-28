@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 
+	"go.datum.net/datumctl/plugin"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/transport"
@@ -56,6 +55,12 @@ const (
 // datumEnv captures the environment contract datumctl uses to dispatch to a
 // plugin. The plugin never holds a long-lived credential: it asks the helper for
 // a fresh token immediately before building a client.
+//
+// The fields are sourced from the datumctl plugin SDK (go.datum.net/datumctl/
+// plugin), which reads the same DATUM_* environment variables. We keep this as a
+// local struct (rather than passing plugin.PluginContext around) so the
+// control-plane URL construction and --org/--project overrides stay testable
+// without the SDK and without exporting the SDK type through the codebase.
 type datumEnv struct {
 	org        string
 	project    string
@@ -63,12 +68,17 @@ type datumEnv struct {
 	credHelper string
 }
 
+// readDatumEnv reads the datumctl-injected context via the plugin SDK. The SDK
+// resolves the same DATUM_* variables the plugin used to read by hand; routing
+// through it keeps the plugin aligned with the host's contract (including future
+// additions like the session-scoped token).
 func readDatumEnv() datumEnv {
+	ctx := plugin.Context()
 	return datumEnv{
-		org:        os.Getenv("DATUM_ORG"),
-		project:    os.Getenv("DATUM_PROJECT"),
-		apiHost:    os.Getenv("DATUM_API_HOST"),
-		credHelper: os.Getenv("DATUM_CREDENTIALS_HELPER"),
+		org:        ctx.Org,
+		project:    ctx.Project,
+		apiHost:    ctx.APIHost,
+		credHelper: ctx.CredentialsHelper,
 	}
 }
 
@@ -113,7 +123,9 @@ func datumRestConfig(env datumEnv) (*rest.Config, string, error) {
 			"Datum transport selected but DATUM_API_HOST/DATUM_CREDENTIALS_HELPER are not set").
 			withFix("run via `datumctl ipam ...`, or use --kubeconfig / KUBECONFIG to target a cluster directly.")
 	}
-	token, err := fetchToken(env.credHelper)
+	// The SDK execs DATUM_CREDENTIALS_HELPER (the datumctl binary) to mint a fresh,
+	// short-lived token, honoring the active session. The plugin never persists it.
+	token, err := plugin.Token()
 	if err != nil {
 		return nil, "", newCLIError(exitUnavailable, fmt.Sprintf("failed to obtain an access token: %v", err)).
 			withFix("re-run `datumctl login` and try again.").withCause(err)
@@ -156,23 +168,6 @@ func ensureScheme(host string) string {
 		return host
 	}
 	return "https://" + host
-}
-
-// fetchToken invokes `<helper> auth get-token` and returns the trimmed token. The
-// helper handles refresh transparently; the plugin only ever sees a short-lived
-// bearer token.
-func fetchToken(helper string) (string, error) {
-	cmd := exec.Command(helper, "auth", "get-token")
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	token := strings.TrimSpace(string(out))
-	if token == "" {
-		return "", fmt.Errorf("credentials helper %q returned an empty token", helper)
-	}
-	return token, nil
 }
 
 // kubeconfigRestConfig loads a standard kubeconfig, honoring --kubeconfig and

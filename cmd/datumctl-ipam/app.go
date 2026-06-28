@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"io"
 
 	clientset "go.miloapis.com/ipam/pkg/client/clientset/versioned"
 )
@@ -32,6 +34,11 @@ type app struct {
 	// It is a field so tests can inject a fake clientset without a real cluster.
 	clientFactory func() (clientset.Interface, string, error)
 
+	// entitlementCheck verifies the active project is entitled to IPAM. It is a
+	// field so tests can stub it (the real one talks to the control plane). It
+	// receives the effective datum scope and the prompt I/O streams.
+	entitlementCheck func(env datumEnv, in io.Reader, out io.Writer) error
+
 	// Memoized result of clientFactory so a command that fetches the client more
 	// than once does not rebuild config, re-fetch a token, or re-log diagnostics.
 	clientResolved bool
@@ -42,14 +49,39 @@ type app struct {
 	color colorState
 }
 
-// newApp wires the default, real transport-backed client factory.
-func newApp(io IOStreams, opts *globalOptions) *app {
-	a := &app{io: io, opts: opts}
+// newApp wires the default, real transport-backed client factory and the real
+// service-entitlement preflight.
+func newApp(streams IOStreams, opts *globalOptions) *app {
+	a := &app{io: streams, opts: opts}
 	a.clientFactory = a.defaultClientFactory
+	a.entitlementCheck = func(env datumEnv, in io.Reader, out io.Writer) error {
+		return EnsureIPAMEntitlement(context.Background(), env, in, out)
+	}
 	return a
 }
 
-func (a *app) defaultClientFactory() (clientset.Interface, string, error) {
+// ensureEntitlement runs the IPAM service-entitlement preflight for the active
+// project. It is a no-op outside the datum path (kubeconfig/in-cluster dev and
+// e2e clusters are reached directly and are not project-entitled) and a no-op at
+// platform scope (no project). Prompts go to in/out, which the root wires to the
+// command's stdin and stderr so the structured stdout contract stays clean.
+func (a *app) ensureEntitlement(in io.Reader, out io.Writer) error {
+	env, mode := a.resolveDatum()
+	if mode != modeDatum {
+		return nil
+	}
+	if a.entitlementCheck == nil {
+		return nil
+	}
+	return a.entitlementCheck(env, in, out)
+}
+
+// resolveDatum reads the datumctl-injected context and reconciles it with the
+// explicit --org/--project overrides, returning the effective scope and the
+// chosen transport mode. It is shared by the client factory and the entitlement
+// preflight so both agree on the active project and whether we're on the datum
+// path (vs kubeconfig/in-cluster, which is not project-entitled).
+func (a *app) resolveDatum() (datumEnv, transportMode) {
 	env := readDatumEnv()
 	// Effective scope: explicit --org/--project flags override the context
 	// datumctl injects. The scope is carried by the control-plane URL path, so
@@ -62,7 +94,11 @@ func (a *app) defaultClientFactory() (clientset.Interface, string, error) {
 	}
 	env.org = a.opts.org
 	env.project = a.opts.project
-	mode := chooseMode(a.opts.kubeconfig, env)
+	return env, chooseMode(a.opts.kubeconfig, env)
+}
+
+func (a *app) defaultClientFactory() (clientset.Interface, string, error) {
+	env, mode := a.resolveDatum()
 	cfg, ns, err := restConfigFor(mode, a.opts.kubeconfig, env)
 	if err != nil {
 		return nil, "", err

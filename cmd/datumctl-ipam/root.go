@@ -54,7 +54,15 @@ distinct per failure class (notably 7 = IPAM_POOL_EXHAUSTED).`,
 				return usageErrorf("invalid --color %q: must be auto, always, or never", opts.color)
 			}
 			a.resolveColor()
-			return nil
+			// Service-entitlement preflight: every command that actually talks to
+			// the IPAM API must run against a project entitled to IPAM. We gate
+			// here (like the compute plugin) but skip the read-only/no-API
+			// commands so `version`, `completion`, and `help` work without a live
+			// API call. Prompts go to the command's stderr; input from its stdin.
+			if skipEntitlementCheck(cmd) {
+				return nil
+			}
+			return a.ensureEntitlement(cmd.InOrStdin(), cmd.ErrOrStderr())
 		},
 	}
 
@@ -76,6 +84,23 @@ distinct per failure class (notably 7 = IPAM_POOL_EXHAUSTED).`,
 	root.AddCommand(newVersionCommand(io))
 
 	return root
+}
+
+// skipEntitlementCheck reports whether the matched command should bypass the
+// service-entitlement preflight. These commands either don't touch the IPAM API
+// (version, completion, help) or are help/diagnostic surfaces that must work
+// without a live API call or a configured project.
+func skipEntitlementCheck(cmd *cobra.Command) bool {
+	switch cmd.Name() {
+	case "version", "completion", "help", "__complete", "__completeNoDesc":
+		return true
+	}
+	// `--help` on any command: cobra normally short-circuits before
+	// PersistentPreRunE, but guard explicitly so help is never gated.
+	if help, err := cmd.Flags().GetBool("help"); err == nil && help {
+		return true
+	}
+	return false
 }
 
 func newVersionCommand(io IOStreams) *cobra.Command {
