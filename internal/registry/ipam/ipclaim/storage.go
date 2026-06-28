@@ -331,12 +331,13 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
 		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org)
-		if reason == "pool_exhausted" {
+		switch reason {
+		case "pool_exhausted":
 			result = "exhausted"
 			failSpan(tracing.ReasonExhausted)
-		} else if reason == "pool_not_found" {
+		case "pool_not_found":
 			failSpan(tracing.ReasonPoolNotFound)
-		} else {
+		default:
 			failSpan(tracing.ReasonTxError)
 		}
 		return nil, mapAllocationError(err)

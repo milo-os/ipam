@@ -170,13 +170,6 @@ jobs:
       - name: Spin up kind cluster (test-infra)
         run: task --yes test-infra:cluster-up
 
-      # Deploy the observability stack (Tempo) so the test/e2e/tracing suite has
-      # a real collector to assert traces against. Done right after cluster-up so
-      # Tempo reconciles while the IPAM image builds/deploys; the test-infra
-      # overlay points IPAM's tracing config at tempo.telemetry-system.
-      - name: Install observability stack (Tempo)
-        run: task --yes test-infra:install-observability
-
       - name: Build IPAM container image
         run: task --yes dev:build
 
@@ -211,6 +204,12 @@ jobs:
             -l app=ipam-apiserver -n ipam-system --timeout=180s
           kubectl wait --for=condition=Available \
             apiservice/v1alpha1.ipam.miloapis.com --timeout=180s
+
+      # Install the observability stack (Tempo) AFTER IPAM + postgres are up, so
+      # the heavy stack doesn't starve IPAM's postgres on the single-node runner.
+      # The test/e2e/tracing suite asserts spans land in tempo.telemetry-system.
+      - name: Install observability stack (Tempo)
+        run: task --yes test-infra:install-observability
 
       - name: Run Chainsaw e2e suites
         run: chainsaw test test/e2e/
