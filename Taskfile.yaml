@@ -6,6 +6,13 @@ vars:
   IPAM_IMAGE_TAG: "dev"
   TEST_INFRA_CLUSTER_NAME: "test-infra"
   TEST_INFRA_REPO_REF: 'v0.6.0'
+  # Local Milo control-plane checkout, used by the milo-integration:* targets to
+  # build/load/deploy Milo into the SAME test-infra kind cluster. Override with
+  # `MILO_REPO=/path/to/milo task milo-integration:up`.
+  MILO_REPO: '{{.MILO_REPO | default "../../datum-cloud/milo"}}'
+  # Static dev token from Milo's auth-tokens secret (admin / system:masters).
+  # Matches the token baked into config/overlays/milo-integration/milo-kubeconfig-secret.yaml.
+  MILO_TOKEN: 'test-admin-token'
 
 includes:
   test-infra:
@@ -145,6 +152,65 @@ tasks:
     desc: Install the test-infra observability stack
     cmds:
       - task: test-infra:install-observability
+
+  # ----- Milo integration environment -----
+  #
+  # Stands up IPAM wired to a REAL in-cluster Milo control plane so the full
+  # IPAM<->Milo path can be exercised locally (delegated authn/authz + quota
+  # enforcement + entitlement->grant->claim) — the path the standalone e2e
+  # (--enable-quota=false, no Milo) cannot cover. See docs/milo-integration.md.
+
+  milo-integration:deploy-milo:
+    desc: Build, load and deploy the Milo control plane into the test-infra cluster
+    silent: true
+    cmds:
+      - |
+        set -e
+        echo ">> Deploying Milo from {{.MILO_REPO}} into the test-infra cluster"
+        # The remote test-infra Taskfile resolves the kubeconfig relative to the
+        # milo repo; mirror ours into it so `task dev:deploy` finds the cluster.
+        mkdir -p "{{.MILO_REPO}}/.test-infra"
+        cp .test-infra/kubeconfig "{{.MILO_REPO}}/.test-infra/kubeconfig"
+        cd "{{.MILO_REPO}}" && TASK_X_REMOTE_TASKFILES=1 task dev:build dev:load dev:deploy
+
+  milo-integration:deploy-ipam:
+    desc: Deploy IPAM via the milo-integration overlay (quota ON, delegating to Milo)
+    silent: true
+    cmds:
+      - |
+        set -e
+        # Fresh-create the deployment: switching FROM another overlay's volume
+        # shape (e.g. test-infra tracing) can't be strategic-merged in place.
+        task test-infra:kubectl -- delete deployment ipam-apiserver -n ipam-system --ignore-not-found
+        task test-infra:kubectl -- apply -k config/overlays/milo-integration
+        task test-infra:kubectl -- wait --for=condition=ready pod -l app=ipam-apiserver -n ipam-system --timeout=240s || echo "apiserver pods not ready yet"
+        task test-infra:kubectl -- wait --for=condition=Available apiservice/v1alpha1.ipam.miloapis.com --timeout=180s || echo "APIService not Available yet"
+
+  milo-integration:provision-quota:
+    desc: Register the IPAM quotable type + claim/grant policies in Milo
+    silent: true
+    cmds:
+      - |
+        set -e
+        echo ">> Provisioning IPAM quota in Milo (.milo/kubeconfig)"
+        KUBECONFIG="{{.MILO_REPO}}/.milo/kubeconfig" kubectl apply -k config/overlays/milo-integration/quota
+        # RBAC in Milo for the impersonated tenant user the e2e/demo driver uses.
+        KUBECONFIG="{{.MILO_REPO}}/.milo/kubeconfig" kubectl apply -f config/overlays/milo-integration/rbac-tenant-user.yaml
+
+  milo-integration:up:
+    desc: Bring up the whole Milo integration env (Milo + IPAM overlay + quota provisioning)
+    silent: true
+    cmds:
+      - task: test-infra:cluster-up
+      - task: milo-integration:deploy-milo
+      - task: dev:build
+      - task: dev:load
+      - task: milo-integration:deploy-ipam
+      - task: milo-integration:provision-quota
+      - |
+        echo ""
+        echo "Milo integration environment is up."
+        echo "Drive a full claim with: docs/milo-integration.md (impersonation kubeconfig)"
 
   # ----- E2E -----
 

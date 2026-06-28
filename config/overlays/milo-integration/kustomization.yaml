@@ -1,0 +1,65 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# milo-integration overlay.
+#
+# Stands up the IPAM apiserver wired to a real, in-cluster Milo control plane so
+# the FULL IPAM<->milo path can be exercised locally: delegated authn/authz
+# (TokenReview / SubjectAccessReview against milo's IAM) AND quota enforcement
+# (milo's ResourceQuotaEnforcement admission plugin + the quota grant
+# controllers). This is the path the standalone e2e (--enable-quota=false, no
+# milo) cannot cover.
+#
+# Differences from the test-infra overlay:
+#   * --enable-quota=true (test-infra is false)
+#   * all three delegation kubeconfig flags point at the milo-apiserver Service
+#     via a mounted Secret (test-infra uses the in-cluster fallback)
+#   * NetworkPolicy egress opened to milo-system:6443
+#   * NO tracing component (keeps the CPU/feature surface minimal; tracing is a
+#     test-infra concern, orthogonal to the milo path)
+#
+# Reuses test-infra's TLS Certificate (cert-manager, auto-approved) and the
+# postgres component. Prereq: milo must already be deployed in milo-system
+# (see the milo-integration:up Taskfile target / docs/milo-integration.md).
+
+namespace: ipam-system
+
+resources:
+  - ../../base
+  - secret.yaml
+  - tls-certificate.yaml
+  - milo-kubeconfig-secret.yaml
+
+components:
+  - ../../components/namespace
+  - ../../components/api-registration
+  - ../../components/postgres
+
+images:
+  - name: ghcr.io/milo-os/ipam
+    newName: ipam-apiserver
+    newTag: dev
+
+patches:
+  - path: patches/apiservice-patch.yaml
+  - path: patches/deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+  - path: patches/volumes-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+  # Open egress from the apiserver to the milo-apiserver (milo-system:6443) so
+  # delegated authn/authz, the quota loopback/per-project clients, and the
+  # quota + APF informers that gate readyz can reach milo. Base is default-deny.
+  - path: patches/milo-egress-networkpolicy-patch.yaml
+    target:
+      kind: NetworkPolicy
+      name: ipam-apiserver
+
+labels:
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      environment: milo-integration

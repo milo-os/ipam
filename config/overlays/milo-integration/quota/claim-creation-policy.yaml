@@ -1,0 +1,44 @@
+# Auto-creates a ResourceClaim whenever an IPClaim is created, so the IPAM
+# apiserver's quota admission plugin has a claim to create-and-wait-for-grant.
+#
+# The IPAM quota admission plugin (milo's ResourceQuotaEnforcement, run inside
+# the IPAM apiserver) looks up the ClaimCreationPolicy whose trigger GVK matches
+# the resource being created (IPClaim), renders this template, creates the
+# ResourceClaim in the project control-plane, and blocks the IPClaim CREATE
+# until that ResourceClaim is Granted (or denies on insufficient quota). The
+# consumerRef is auto-filled by the plugin from the project request context.
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ClaimCreationPolicy
+metadata:
+  name: project-ipclaim-claim-policy
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: milo-integration
+spec:
+  disabled: false
+  trigger:
+    resource:
+      apiVersion: ipam.miloapis.com/v1alpha1
+      kind: IPClaim
+    # No constraints - trigger for every IPClaim.
+  target:
+    resourceClaimTemplate:
+      metadata:
+        # Use requestInfo.name (the admission attrs name), NOT
+        # trigger.metadata.name: the IPClaim object the IPAM aggregated apiserver
+        # hands the quota plugin is converted from an internal Go type and does
+        # not expose a usable `metadata` key to the CEL template engine, so
+        # `trigger.metadata.name` fails to render ("no such key: metadata").
+        # requestInfo.name resolves to the same IPClaim name and is always set.
+        name: "ipclaim-{{requestInfo.name}}"
+        namespace: "{{requestInfo.namespace}}"
+        labels:
+          app.kubernetes.io/name: ipam
+          app.kubernetes.io/component: milo-integration
+        annotations:
+          kubernetes.io/description: "Automatic quota claim for IPClaim creation"
+      spec:
+        # consumerRef auto-filled by the admission plugin from project context.
+        requests:
+          - resourceType: ipam.miloapis.com/ipclaims
+            amount: 1
