@@ -1,0 +1,18 @@
+{
+  "apiVersion": "ipam.miloapis.com/v1alpha1",
+  "kind": "IPPool",
+  "metadata": {
+    "name": "mt-host-shared-pool",
+    "labels": { "mt-suite": "true" }
+  },
+  "spec": {
+    "cidr": "172.21.0.0/29",
+    "ipFamily": "IPv4",
+    "visibility": "shared",
+    "allocation": {
+      "minPrefixLength": 32,
+      "maxPrefixLength": 32,
+      "strategy": "FirstFit"
+    }
+  }
+}

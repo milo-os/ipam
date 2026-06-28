@@ -153,7 +153,7 @@ tasks:
     cmd: chainsaw test test/e2e/
 
   e2e:suite:
-    desc: 'Run a single suite. Var: SUITE=prefix-validation|prefix-allocation|prefix-selector|prefix-hierarchy|prefix-exhaustion|prefix-overlap|asn-allocation|multi-tenant'
+    desc: 'Run a single suite. Var: SUITE=prefix-validation|prefix-allocation|prefix-selector|prefix-hierarchy|prefix-exhaustion|prefix-overlap|asn-allocation|multi-tenant|tenant-isolation'
     cmd: chainsaw test test/e2e/{{.SUITE}}
 
   # ----- k6 load tests (delegated to test/load/Taskfile.yaml) -----
