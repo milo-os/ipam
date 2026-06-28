@@ -1,0 +1,16 @@
+# Allow the IPAM apiserver to reach the e2e OTLP collector. The base
+# NetworkPolicy is default-deny on egress, so without this rule the apiserver's
+# OTLP exporter cannot dial the collector on :4317 and spans never leave the
+# pod. Appended via JSON6902 so the existing egress rules (DNS, postgres, kube-
+# apiserver) are preserved rather than replaced. Test-only — shipped with the
+# tracing-e2e component and never reaches dev or the deployed-env base.
+- op: add
+  path: /spec/egress/-
+  value:
+    to:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/component: trace-collector-e2e
+    ports:
+      - port: 4317
+        protocol: TCP

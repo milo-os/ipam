@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Minimal in-cluster OpenTelemetry Collector for END-TO-END trace assertions.
+#
+# This is a TEST-ONLY component. It stands up a single-replica collector with an
+# OTLP gRPC receiver on :4317 and a `debug` exporter (verbosity: detailed) so
+# every received span is printed to the collector's stdout. The tracing e2e
+# chainsaw suite (test/e2e/tracing) drives a claim through the IPAM apiserver
+# and then greps `kubectl logs <collector pod>` for `ipam.claim.allocate`,
+# proving the full export pipeline (apiserver OTLP exporter -> collector) works.
+#
+# Pair this with the `tracing` component and point the apiserver's
+# TracingConfiguration endpoint at this collector's Service (see the test-infra
+# overlay). Do NOT include this in dev or the deployed-env base.
+namespace: ipam-system
+
+resources:
+  - collector.yaml
+
+patches:
+  # Open egress from the apiserver to the collector on :4317. The base
+  # NetworkPolicy is default-deny on egress, so spans can't be exported without
+  # this. JSON6902 append keeps the base egress rules intact.
+  - path: networkpolicy-patch.yaml
+    target:
+      kind: NetworkPolicy
+      name: ipam-apiserver

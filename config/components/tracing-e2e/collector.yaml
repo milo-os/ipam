@@ -1,0 +1,104 @@
+# Minimal OpenTelemetry Collector for e2e trace assertions. OTLP gRPC in,
+# debug exporter out (spans -> stdout). Test-only; see kustomization.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ipam-trace-collector-config
+  namespace: ipam-system
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: trace-collector-e2e
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+    exporters:
+      # Prints every received span (incl. name + attributes) to stdout so the
+      # chainsaw suite can grep the collector pod logs for ipam.claim.allocate.
+      debug:
+        verbosity: detailed
+    service:
+      telemetry:
+        logs:
+          level: info
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [debug]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-trace-collector
+  namespace: ipam-system
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: trace-collector-e2e
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ipam
+      app.kubernetes.io/component: trace-collector-e2e
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ipam
+        app.kubernetes.io/component: trace-collector-e2e
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector:0.116.1
+          args:
+            - --config=/etc/otel/config.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: ipam-trace-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ipam-trace-collector
+  namespace: ipam-system
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: trace-collector-e2e
+spec:
+  selector:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: trace-collector-e2e
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP

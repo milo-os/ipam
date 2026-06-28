@@ -13,6 +13,13 @@ components:
   - ../../components/namespace
   - ../../components/api-registration
   - ../../components/postgres
+  # Distributed tracing, enabled only in test-infra so the e2e suite can assert
+  # the export pipeline. `tracing` wires --tracing-config-file into the
+  # apiserver; `tracing-e2e` stands up the OTLP collector the spans land in.
+  # The tracing-config-patch below repoints the endpoint at that collector and
+  # bumps sampling to 100%. Dev and the deployed-env base deliberately omit both.
+  - ../../components/tracing
+  - ../../components/tracing-e2e
 
 images:
   - name: ghcr.io/milo-os/ipam
@@ -29,6 +36,7 @@ patches:
     target:
       kind: Deployment
       name: ipam-apiserver
+  - path: patches/tracing-config-patch.yaml
 
 labels:
   - includeSelectors: false

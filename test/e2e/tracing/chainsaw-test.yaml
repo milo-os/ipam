@@ -1,0 +1,119 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tracing
+spec:
+  description: |
+    End-to-end trace export assertion. Drives a single platform-scope IPClaim
+    allocation through the IPAM apiserver and proves the OpenTelemetry export
+    pipeline works: the apiserver's OTLP exporter ships the ipam.claim.allocate
+    span (and its children) to the in-cluster e2e collector, whose `debug`
+    exporter prints received spans to stdout. The suite then greps the collector
+    pod logs for the span name.
+
+    Requires the test-infra overlay, which enables the `tracing` component
+    (--tracing-config-file, 100% sampling, endpoint -> e2e collector) and the
+    `tracing-e2e` component (the collector itself in ipam-system).
+
+  steps:
+    - name: setup-pool
+      description: Create a platform-scope root IPPool and wait for Ready.
+      try:
+        - create:
+            file: test-data/pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool trace-parent \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: trace-parent not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+              echo "OK trace-parent Ready"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK trace-parent Ready')): true
+
+    - name: allocate-claim
+      description: Create an IPClaim and assert it binds (allocatedCIDR set).
+      try:
+        - create:
+            file: test-data/claim.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" trace-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              cidr=$(kubectl get ipclaim -n "$NAMESPACE" trace-claim \
+                -o jsonpath='{.status.allocatedCIDR}' 2>/dev/null || echo "")
+              if [ "$phase" != "Bound" ] || [ -z "$cidr" ]; then
+                echo "FAIL: trace-claim not Bound with a CIDR (phase=$phase cidr=$cidr)"
+                exit 1
+              fi
+              echo "OK trace-claim Bound cidr=$cidr"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK trace-claim Bound')): true
+
+    - name: assert-span-exported
+      description: |
+        Poll the e2e collector pod's logs for the ipam.claim.allocate span name.
+        OTLP export is async (batched/scheduled), so retry with a timeout. The
+        debug exporter prints each span's name and attributes, so on success we
+        also surface whether the ipam.tenant.scope attribute is visible.
+      try:
+        - script:
+            timeout: 90s
+            content: |
+              set -e
+              pod=$(kubectl get pod -n ipam-system \
+                -l app.kubernetes.io/component=trace-collector-e2e \
+                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+              if [ -z "$pod" ]; then
+                echo "FAIL: e2e trace collector pod not found in ipam-system"
+                exit 1
+              fi
+              echo "collector pod: $pod"
+              for i in $(seq 1 60); do
+                logs=$(kubectl logs -n ipam-system "$pod" --tail=-1 2>/dev/null || echo "")
+                if echo "$logs" | grep -q 'ipam.claim.allocate'; then
+                  echo "OK collector received span ipam.claim.allocate"
+                  if echo "$logs" | grep -q 'ipam.tenant.scope'; then
+                    echo "OK span carries ipam.tenant.scope attribute"
+                  fi
+                  exit 0
+                fi
+                sleep 1
+              done
+              echo "FAIL: ipam.claim.allocate not seen in collector logs after 60s"
+              echo "----- recent collector logs -----"
+              kubectl logs -n ipam-system "$pod" --tail=50 2>/dev/null || true
+              exit 1
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK collector received span ipam.claim.allocate')): true
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" trace-claim --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool trace-parent --ignore-not-found >/dev/null 2>&1 || true
+              echo "tracing cleanup done"
+            check:
+              ($error == null): true
