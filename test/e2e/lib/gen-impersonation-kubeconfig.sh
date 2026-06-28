@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # gen-impersonation-kubeconfig.sh — generate a kubeconfig whose contexts carry
-# Kubernetes impersonation (act-as + act-as-groups + act-as-user-extra) so the
+# Kubernetes impersonation (as + as-groups + as-user-extra) so the
 # native-chainsaw multi-tenant / tenant-isolation suites can drive the IPAM
 # aggregated apiserver as a specific project tenant WITHOUT any curl/proxy bash.
 #
@@ -9,7 +9,7 @@
 #     iam.miloapis.com/parent-name / parent-type / parent-api-group
 #   (see internal/tenant.FromContext). Milo's front gate normally forwards
 #   these as X-Remote-Extra-* requestheader extras. Kubernetes impersonation
-#   carries the SAME extras: a kubeconfig AuthInfo's act-as-user-extra becomes
+#   carries the SAME extras: a kubeconfig AuthInfo's as-user-extra becomes
 #   Impersonate-Extra-* request headers, which the kube-apiserver front-proxy
 #   re-emits to the aggregated apiserver as X-Remote-Extra-* — i.e. it lands in
 #   UserInfo.Extra exactly like the front gate. The allocator only reads
@@ -21,8 +21,8 @@
 # all named deterministically so chainsaw `clusters:` can reference them
 # regardless of which underlying cluster/context the e2e run targets:
 #   * tenant-platform      — the unimpersonated base context (platform scope)
-#   * tenant-project-alpha — act-as e2e-tenant-tester, parent-name=project-alpha
-#   * tenant-project-beta  — act-as e2e-tenant-tester, parent-name=project-beta,
+#   * tenant-project-alpha — as e2e-tenant-tester, parent-name=project-alpha
+#   * tenant-project-beta  — as e2e-tenant-tester, parent-name=project-beta,
 #                            plus group system:project:project-beta so the
 #                            cross-project `use` ClusterRoleBinding matches.
 #
@@ -54,11 +54,11 @@ fi
 # Flatten the source context into a self-contained base kubeconfig (embeds CA +
 # client creds), then assemble the OUTPUT file by hand. We cannot round-trip the
 # final file through `kubectl config view`: recent kubectl (v1.36) silently
-# drops the act-as / act-as-groups / act-as-user-extra impersonation fields when
+# drops the as / as-groups / as-user-extra impersonation fields when
 # re-serialising a kubeconfig, so the impersonation would be lost. Instead we
 # read the concrete cluster + base-credential material via jsonpath (which
 # kubectl renders faithfully) and write the impersonation users/contexts as
-# literal YAML — client-go reads act-as* on load even though kubectl-view omits
+# literal YAML — client-go reads as* on load even though kubectl-view omits
 # them on output.
 base="$(mktemp)"
 kubectl --context "$SRC_CTX" config view --minify --flatten >"$base"
@@ -79,8 +79,8 @@ B_CERT="$(KUBECONFIG="$base" kubectl config view --raw -o jsonpath="{.users[?(@.
 B_KEY="$(KUBECONFIG="$base" kubectl config view --raw -o jsonpath="{.users[?(@.name=='${BASE_USER}')].user.client-key-data}")"
 B_TOKEN="$(KUBECONFIG="$base" kubectl config view --raw -o jsonpath="{.users[?(@.name=='${BASE_USER}')].user.token}")"
 
-# Emit the YAML for one impersonation user. Writes the act-as* fields directly
-# (kubectl config set cannot express the act-as-user-extra map-of-list type).
+# Emit the YAML for one impersonation user. Writes the as* fields directly
+# (kubectl config set cannot express the as-user-extra map-of-list type).
 emit_user() {
   _proj="$1"   # project id, e.g. project-alpha
   _group="$2"  # single extra group or empty
@@ -95,12 +95,12 @@ emit_user() {
   if [ -n "$B_TOKEN" ]; then
     printf '%s\n' "    token: ${B_TOKEN}"
   fi
-  printf '%s\n' "    act-as: ${TENANT_USER}"
+  printf '%s\n' "    as: ${TENANT_USER}"
   if [ -n "$_group" ]; then
-    printf '%s\n' "    act-as-groups:"
+    printf '%s\n' "    as-groups:"
     printf '%s\n' "      - ${_group}"
   fi
-  printf '%s\n' "    act-as-user-extra:"
+  printf '%s\n' "    as-user-extra:"
   printf '%s\n' "      iam.miloapis.com/parent-api-group:"
   printf '%s\n' "        - ${PARENT_API_GROUP}"
   printf '%s\n' "      iam.miloapis.com/parent-type:"

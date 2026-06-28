@@ -3,6 +3,11 @@ kind: Test
 metadata:
   name: tenant-isolation
 spec:
+  # Resources are tenant-scoped (created under impersonation contexts) and live
+  # in IPAM's postgres, not kube etcd; chainsaw's automatic cleanup runs on the
+  # default/platform cluster and cannot see them. Skip auto-cleanup and rely on
+  # the explicit per-step finally deletes (under the owning impersonation context).
+  skipDelete: true
   description: |
     Negative tenant-isolation suite for issue #44, driven by NATIVE chainsaw
     operations under Kubernetes impersonation (no kubectl-proxy/curl). A pool
