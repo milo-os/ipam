@@ -15,9 +15,10 @@ spec:
     (--tracing-config-file, 100% sampling, endpoint -> Tempo on :4317) and opens
     egress from the apiserver to telemetry-system on :4317.
 
-    Tempo must already be running. In CI the e2e job MUST run
-    `task test-infra:install-observability` before `chainsaw test test/e2e/`,
-    otherwise telemetry-system/Tempo is absent and this suite will fail.
+    Tempo must already be running before the IPAM apiserver starts, so the
+    apiserver's OTLP exporter connects to a live collector. In CI the e2e job
+    deploys Tempo (telemetry-system) ahead of the IPAM service; without a
+    running Tempo this suite will fail.
 
   steps:
     - name: setup-pool
