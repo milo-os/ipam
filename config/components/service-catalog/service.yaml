@@ -12,6 +12,6 @@ spec:
   phase: Published
   owner:
     producerProjectRef:
-      name: platform-producer-project
+      name: datum-cloud
   enablementPolicy:
     mode: GatedByProvider
