@@ -21,6 +21,7 @@ import (
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
+	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -134,9 +135,12 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		}
 	}
 
+	// Parent and child pools both live in the caller's project (ParentPoolRef
+	// carries no cross-project pointer); platform callers address the root.
+	id := tenant.FromContext(ctx)
 	parentName := pool.Spec.ParentPoolRef.Name
-	parentKey := poolStorageKey(parentName)
-	childKey := poolStorageKey(pool.Name)
+	parentKey := poolStorageKey(id.Name, parentName)
+	childKey := poolStorageKey(id.Name, pool.Name)
 
 	// Resolve the parent pool's IPFamily before entering the transaction so
 	// the explicit value can be passed to AllocatePrefix. IPFamily is
@@ -221,7 +225,7 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 		}
 	}
 
-	poolKey := poolStorageKey(name)
+	poolKey := poolStorageKey(tenant.FromContext(ctx).Name, name)
 	var count int
 	if err := r.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM ipam_cidr_allocations WHERE pool_key = $1`,
@@ -263,11 +267,14 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	return pool, true, nil
 }
 
-// poolStorageKey is the canonical ipam_objects key for a cluster-scoped
-// IPPool. Matches the key shape used by allocator.AllocatePrefix and the
-// FOR UPDATE lock on the pool row.
-func poolStorageKey(name string) string {
-	return fmt.Sprintf("/ipam.miloapis.com/ippools/%s", name)
+// poolStorageKey is the canonical ipam_objects key for an IPPool owned by the
+// given project ("" for platform scope). Matches the key shape used by
+// allocator.AllocatePrefix and the FOR UPDATE lock on the pool row. Although
+// IPPool is cluster-scoped at the API layer, a pool created through a project
+// control-plane is persisted under that project's tenant prefix, so the key
+// must carry the same prefix.
+func poolStorageKey(project, name string) string {
+	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
 }
 
 // mapAllocationError translates allocator sentinel errors into the matching
