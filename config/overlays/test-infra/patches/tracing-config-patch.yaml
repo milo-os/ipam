@@ -1,7 +1,7 @@
-# Point the apiserver's TracingConfiguration at the in-cluster e2e collector and
-# sample at 100% so a single claim is deterministically recorded and exported.
-# Strategic-merge replaces the `tracing.yaml` key wholesale (ConfigMap data has
-# no merge key), which is exactly what we want here.
+# Point tracing at the Tempo instance the test cluster already runs, and sample
+# at 100% so a single claim is recorded deterministically for the e2e assertion.
+# The endpoint uses Tempo's chart-generated Service name, which is what resolves
+# in DNS.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,5 +11,5 @@ data:
   tracing.yaml: |
     apiVersion: apiserver.config.k8s.io/v1beta1
     kind: TracingConfiguration
-    endpoint: ipam-trace-collector.ipam-system.svc.cluster.local:4317
+    endpoint: telemetry-system-tempo.telemetry-system.svc.cluster.local:4317
     samplingRatePerMillion: 1000000

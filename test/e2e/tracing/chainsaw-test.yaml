@@ -7,13 +7,17 @@ spec:
     End-to-end trace export assertion. Drives a single platform-scope IPClaim
     allocation through the IPAM apiserver and proves the OpenTelemetry export
     pipeline works: the apiserver's OTLP exporter ships the ipam.claim.allocate
-    span (and its children) to the in-cluster e2e collector, whose `debug`
-    exporter prints received spans to stdout. The suite then greps the collector
-    pod logs for the span name.
+    span (and its children) to the cluster's existing collector, Grafana Tempo
+    (telemetry-system namespace). The suite then queries Tempo's TraceQL search
+    API and asserts a trace carrying the ipam.claim.allocate span exists.
 
     Requires the test-infra overlay, which enables the `tracing` component
-    (--tracing-config-file, 100% sampling, endpoint -> e2e collector) and the
-    `tracing-e2e` component (the collector itself in ipam-system).
+    (--tracing-config-file, 100% sampling, endpoint -> Tempo on :4317) and opens
+    egress from the apiserver to telemetry-system on :4317.
+
+    Tempo must already be running. In CI the e2e job MUST run
+    `task test-infra:install-observability` before `chainsaw test test/e2e/`,
+    otherwise telemetry-system/Tempo is absent and this suite will fail.
 
   steps:
     - name: setup-pool
@@ -69,43 +73,45 @@ spec:
               ($error == null): true
               (contains($stdout, 'OK trace-claim Bound')): true
 
-    - name: assert-span-exported
+    - name: assert-span-in-tempo
       description: |
-        Poll the e2e collector pod's logs for the ipam.claim.allocate span name.
-        OTLP export is async (batched/scheduled), so retry with a timeout. The
-        debug exporter prints each span's name and attributes, so on success we
-        also surface whether the ipam.tenant.scope attribute is visible.
+        Query Tempo's TraceQL search API for a trace carrying the
+        ipam.claim.allocate span and assert the returned `traces` array is
+        non-empty. The query runs from inside the cluster (an ephemeral
+        curl pod) so it can reach the in-cluster Tempo Service.
+
+        OTLP export is async (batched/scheduled) and Tempo ingestion lags
+        (spans must flush from the WAL into a searchable block), so we poll
+        generously — up to ~90s — before failing.
       try:
         - script:
-            timeout: 90s
+            timeout: 120s
             content: |
               set -e
-              pod=$(kubectl get pod -n ipam-system \
-                -l app.kubernetes.io/component=trace-collector-e2e \
-                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-              if [ -z "$pod" ]; then
-                echo "FAIL: e2e trace collector pod not found in ipam-system"
-                exit 1
-              fi
-              echo "collector pod: $pod"
-              for i in $(seq 1 60); do
-                logs=$(kubectl logs -n ipam-system "$pod" --tail=-1 2>/dev/null || echo "")
-                if echo "$logs" | grep -q 'ipam.claim.allocate'; then
-                  echo "OK collector received span ipam.claim.allocate"
-                  if echo "$logs" | grep -q 'ipam.tenant.scope'; then
-                    echo "OK span carries ipam.tenant.scope attribute"
-                  fi
+              # {name="ipam.claim.allocate"} urlencoded.
+              QUERY='%7Bname%3D%22ipam.claim.allocate%22%7D'
+              URL="http://telemetry-system-tempo.telemetry-system.svc.cluster.local:3100/api/search?q=${QUERY}&limit=20"
+              for i in $(seq 1 30); do
+                body=$(kubectl run tempo-search-${RANDOM} \
+                  --rm -i --restart=Never --quiet \
+                  --image=curlimages/curl:8.10.1 \
+                  -n telemetry-system -- \
+                  curl -s "$URL" 2>/dev/null || echo "")
+                # Strip any kubectl run noise; keep the JSON line(s).
+                echo "attempt $i: $body"
+                # Tempo returns {"traces":[...]} on a hit, {"traces":[]} or
+                # {} when nothing is indexed yet. A hit contains a traceID.
+                if echo "$body" | grep -q '"traceID"'; then
+                  echo "OK Tempo returned a trace for ipam.claim.allocate"
                   exit 0
                 fi
-                sleep 1
+                sleep 3
               done
-              echo "FAIL: ipam.claim.allocate not seen in collector logs after 60s"
-              echo "----- recent collector logs -----"
-              kubectl logs -n ipam-system "$pod" --tail=50 2>/dev/null || true
+              echo "FAIL: no ipam.claim.allocate trace in Tempo after ~90s"
               exit 1
             check:
               ($error == null): true
-              (contains($stdout, 'OK collector received span ipam.claim.allocate')): true
+              (contains($stdout, 'OK Tempo returned a trace for ipam.claim.allocate')): true
       finally:
         - script:
             env:
