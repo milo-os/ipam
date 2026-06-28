@@ -109,6 +109,24 @@ spec:
                 sleep 3
               done
               echo "FAIL: no ipam.claim.allocate trace in Tempo after ~90s"
+              # --- diagnostics: where did the span go? ---
+              echo "=== DIAG: any traces at all in Tempo ({}) ==="
+              kubectl run tempo-diag-any-${RANDOM} --rm -i --restart=Never --quiet \
+                --image=curlimages/curl:8.10.1 -n telemetry-system -- \
+                curl -s "http://telemetry-system-tempo.telemetry-system.svc.cluster.local:3100/api/search?q=%7B%7D&limit=20" 2>/dev/null || true
+              echo
+              echo "=== DIAG: Tempo /status/config search/ingester knobs ==="
+              kubectl run tempo-diag-ready-${RANDOM} --rm -i --restart=Never --quiet \
+                --image=curlimages/curl:8.10.1 -n telemetry-system -- \
+                curl -s "http://telemetry-system-tempo.telemetry-system.svc.cluster.local:3100/ready" 2>/dev/null || true
+              echo
+              echo "=== DIAG: IPAM apiserver --tracing-config-file arg ==="
+              kubectl -n ipam-system get deploy ipam-apiserver \
+                -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || true
+              echo
+              echo "=== DIAG: IPAM apiserver tracing/otlp/export log lines ==="
+              kubectl -n ipam-system logs -l app=ipam-apiserver --all-containers --tail=2000 2>/dev/null \
+                | grep -iE "otlp|otel|export|tracer|tracing|span|telemetry|tempo" | tail -40 || true
               exit 1
             check:
               ($error == null): true
