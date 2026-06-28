@@ -1,0 +1,14 @@
+# mt-alpha-claim must be Bound with a /24 inside 10.100.0.0/20.
+# 10.100.0.0/20 spans 10.100.0.0 .. 10.100.15.255, so the third octet is 0..15
+# and (for a /24) the fourth octet is 0. This is the #44 same-project happy path:
+# the claim is read back under the SAME project-alpha impersonation scope it was
+# created in, so the tenant-prefixed pool + allocation are consistent.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: mt-alpha-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (regex_match('^10\.100\.([0-9]|1[0-5])\.0/24$', allocatedCIDR)): true
+  (boundAllocationRef != null): true

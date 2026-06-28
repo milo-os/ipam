@@ -4,283 +4,204 @@ metadata:
   name: tenant-isolation
 spec:
   description: |
-    Negative tenant-isolation suite for issue #44. A pool created under one
-    project's tenant scope must be invisible to, and un-allocatable from, any
-    other scope. Because project-scoped objects are persisted under
-    `project/<projectID>/ipam.miloapis.com/...` while platform objects live at
-    `/ipam.miloapis.com/...`, a correctly-scoped server returns 404 for the
-    "wrong scope" reads below.
+    Negative tenant-isolation suite for issue #44, driven by NATIVE chainsaw
+    operations under Kubernetes impersonation (no kubectl-proxy/curl). A pool
+    created under one project's tenant scope must be invisible to, and
+    un-allocatable from, any other scope.
 
-    DEGRADE DETECTOR: if the requestheader path silently dropped the parent-*
-    headers, every request would collapse to platform scope. The project-alpha
-    pool would then be stored at the platform root and the PLATFORM-scoped GET
-    (no headers) would return 200 instead of 404. That assertion therefore
-    fails loudly exactly when tenancy degrades — it is the load-bearing check
-    of this suite, not a nicety.
+    TENANCY VIA IMPERSONATION (equivalent to the front gate): each project
+    context carries iam.miloapis.com/parent-* via kubeconfig act-as-user-extra,
+    which the kube-apiserver re-emits as requestheader X-Remote-Extra-* to the
+    IPAM apiserver — landing in UserInfo.Extra exactly like the front gate
+    (internal/tenant.FromContext). See test/e2e/lib/
+    gen-impersonation-kubeconfig.sh; contexts are selected per op via `cluster:`.
+
+    Because project-scoped objects persist under
+    project/<projectID>/ipam.miloapis.com/... while platform objects live at
+    /ipam.miloapis.com/..., a correctly-scoped server returns NotFound for the
+    "wrong scope" reads below — which chainsaw `error:` asserts (it passes only
+    when the named resource is absent / unmatched in that scope).
+
+    DEGRADE DETECTOR: the PLATFORM-scope check (no parent-* impersonation) is
+    load-bearing. If impersonation silently failed to carry the extras, every
+    request would collapse to platform scope: the project-alpha pool would be
+    stored at the platform root and the platform-scope read would SUCCEED, so
+    the `error:` (expect-absent) would fail loudly. That is the canary that
+    catches "tenancy degraded to platform" — not a nicety.
 
     Asserts, for a pool created under project-alpha:
-      (a) a GET under project-beta returns 404 (not visible cross-project)
-      (b) a plain platform-scoped GET returns 404 (not visible at platform root)
-      (c) an IPClaim against it from project-beta is rejected 4xx
-          (pool not found in project-beta's scope)
+      (a) the pool is invisible under project-beta (error: not found)
+      (b) the pool is invisible at platform scope (error: not found)  [canary]
+      (c) an IPClaim against it from project-beta is rejected
     Plus the reverse direction (pool under project-beta invisible to
-    project-alpha and platform).
+    project-alpha and platform, and un-allocatable by project-alpha).
+
+  clusters:
+    project-alpha:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+    project-beta:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-beta
+    platform:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-platform
 
   timeouts:
     cleanup: 90s
     apply: 30s
     assert: 60s
+    error: 30s
 
   steps:
+    - name: seed-rbac
+      description: |
+        Impersonation + tenant-user RBAC: lets the e2e admin impersonate the
+        tenant user/extras and lets that user perform ipam CRUD. No cross-project
+        `use` grants here — isolation must hold without them.
+      try:
+        - create:
+            file: resources/impersonation-rbac.yaml
+
     - name: seed-isolated-pools
       description: |
-        Create iso-pool-alpha under project-alpha headers and iso-pool-beta
-        under project-beta headers. Wait for each to reach Ready, reading under
-        its OWNING project's headers.
+        Create iso-pool-alpha under project-alpha and iso-pool-beta under
+        project-beta; assert each Ready under its OWNING project's scope.
       try:
-        - script:
-            timeout: 90s
-            content: |
-              set -e
-              TK_LIB=""
-              for p in ../lib/tenant-kubectl.sh lib/tenant-kubectl.sh test/e2e/lib/tenant-kubectl.sh; do
-                if [ -f "$p" ]; then TK_LIB="$p"; break; fi
-              done
-              if [ -z "$TK_LIB" ]; then echo "FAIL: tenant-kubectl.sh helper not found (cwd=$(pwd))"; exit 1; fi
-              . "$TK_LIB"
-              tk_start
-
-              for spec in "project-alpha:resources/iso-pool-alpha.json:iso-pool-alpha" \
-                          "project-beta:resources/iso-pool-beta.json:iso-pool-beta"; do
-                proj=$(echo "$spec" | cut -d: -f1)
-                file=$(echo "$spec" | cut -d: -f2)
-                name=$(echo "$spec" | cut -d: -f3)
-                body=$(cat "$file")
-                out=$(tk_create "$proj" ippools "" "$body")
-                if [ "$TK_CODE" != "201" ] && [ "$TK_CODE" != "409" ]; then
-                  echo "FAIL: create $name under $proj returned $TK_CODE"
-                  echo "$out"
-                  exit 1
-                fi
-              done
-
-              for spec in "project-alpha:iso-pool-alpha" "project-beta:iso-pool-beta"; do
-                proj=$(echo "$spec" | cut -d: -f1)
-                name=$(echo "$spec" | cut -d: -f2)
-                phase=""
-                for i in $(seq 1 30); do
-                  pb=$(tk_get "$proj" ippools "" "$name")
-                  phase=$(tk_jsonpath "$pb" status.phase)
-                  if [ "$phase" = "Ready" ]; then break; fi
-                  sleep 1
-                done
-                if [ "$phase" != "Ready" ]; then
-                  echo "FAIL: $name (owner=$proj) not Ready after 30s (phase=$phase)"
-                  exit 1
-                fi
-              done
-              echo "OK both isolated pools Ready under their owners"
-            check:
-              ($error == null): true
-              (contains($stdout, 'OK both isolated pools Ready')): true
+        - create:
+            cluster: project-alpha
+            file: resources/iso-pool-alpha.yaml
+        - create:
+            cluster: project-beta
+            file: resources/iso-pool-beta.yaml
+        - assert:
+            cluster: project-alpha
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-alpha
+              status:
+                phase: Ready
+        - assert:
+            cluster: project-beta
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-beta
+              status:
+                phase: Ready
 
     - name: alpha-pool-invisible-cross-project-and-platform
       description: |
-        iso-pool-alpha (created under project-alpha) must NOT be returned by
-        a GET under project-beta (a) nor by a plain platform-scoped GET (b).
-        (b) is the degrade detector: a 200 here means headers were dropped and
-        the pool leaked to the platform root.
+        (a) iso-pool-alpha must be invisible under project-beta and (b) at
+        platform scope. (b) is the degrade detector — a hit there means the
+        parent-* extras were dropped and the pool leaked to the platform root.
       try:
-        - script:
-            timeout: 45s
-            content: |
-              set -e
-              TK_LIB=""
-              for p in ../lib/tenant-kubectl.sh lib/tenant-kubectl.sh test/e2e/lib/tenant-kubectl.sh; do
-                if [ -f "$p" ]; then TK_LIB="$p"; break; fi
-              done
-              if [ -z "$TK_LIB" ]; then echo "FAIL: tenant-kubectl.sh helper not found (cwd=$(pwd))"; exit 1; fi
-              . "$TK_LIB"
-              tk_start
-
-              # Sanity: owner CAN see it.
-              owner=$(tk_get project-alpha ippools "" iso-pool-alpha)
-              if [ "$TK_CODE" != "200" ]; then
-                echo "FAIL: owner project-alpha cannot read iso-pool-alpha (code=$TK_CODE) — seed broken"
-                echo "$owner"
-                exit 1
-              fi
-
-              # (a) cross-project read under project-beta MUST be 404.
-              cross=$(tk_get project-beta ippools "" iso-pool-alpha)
-              if [ "$TK_CODE" != "404" ]; then
-                echo "FAIL(a): iso-pool-alpha visible to project-beta (code=$TK_CODE, expected 404) — cross-project isolation broken"
-                echo "$cross"
-                exit 1
-              fi
-              echo "OK(a) iso-pool-alpha not visible to project-beta (404)"
-
-              # (b) platform-scoped read (NO parent-* headers) MUST be 404.
-              # If this returns 200, tenancy degraded to platform scope.
-              plat=$(tk_get "" ippools "" iso-pool-alpha)
-              if [ "$TK_CODE" != "404" ]; then
-                echo "FAIL(b): iso-pool-alpha visible at PLATFORM scope (code=$TK_CODE, expected 404) — requestheader tenancy degraded to platform; project pool leaked to root"
-                echo "$plat"
-                exit 1
-              fi
-              echo "OK(b) iso-pool-alpha not visible at platform scope (404)"
-            check:
-              ($error == null): true
-              (contains($stdout, 'OK(a)')): true
-              (contains($stdout, 'OK(b)')): true
+        # Sanity: the owner CAN see it (assert succeeds under project-alpha).
+        - assert:
+            cluster: project-alpha
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-alpha
+              status:
+                phase: Ready
+        # (a) cross-project read under project-beta MUST NOT find it.
+        - error:
+            cluster: project-beta
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-alpha
+        # (b) platform-scope read (no parent-* impersonation) MUST NOT find it.
+        - error:
+            cluster: platform
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-alpha
 
     - name: alpha-pool-unallocatable-from-beta
       description: |
-        (c) An IPClaim against iso-pool-alpha issued from project-beta (no
-        projectRef, i.e. beta looking for the pool in its own scope) must be
-        rejected with a 4xx — the pool does not exist in project-beta's scope.
-        A 201 here would mean beta allocated from a pool it must not see.
+        (c) An IPClaim against iso-pool-alpha from project-beta (no projectRef,
+        i.e. beta looking in its own scope) must be rejected — the pool does not
+        exist in beta's scope.
       try:
-        - script:
-            timeout: 60s
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              set -e
-              TK_LIB=""
-              for p in ../lib/tenant-kubectl.sh lib/tenant-kubectl.sh test/e2e/lib/tenant-kubectl.sh; do
-                if [ -f "$p" ]; then TK_LIB="$p"; break; fi
-              done
-              if [ -z "$TK_LIB" ]; then echo "FAIL: tenant-kubectl.sh helper not found (cwd=$(pwd))"; exit 1; fi
-              . "$TK_LIB"
-              tk_start
-
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClaim","metadata":{"name":"iso-beta-steal-alpha","namespace":"'"$NAMESPACE"'","labels":{"iso-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"poolRef":{"name":"iso-pool-alpha"},"reclaimPolicy":"Delete"}}'
-
-              out=$(tk_create project-beta ipclaims "$NAMESPACE" "$body")
-              case "$TK_CODE" in
-                4??)
-                  echo "OK(c) project-beta claim against iso-pool-alpha rejected (code=$TK_CODE)"
-                  ;;
-                *)
-                  echo "FAIL(c): project-beta allocated from iso-pool-alpha (code=$TK_CODE, expected 4xx) — cross-project allocation isolation broken"
-                  echo "$out"
-                  # Best-effort cleanup of an erroneously-created claim.
-                  tk_delete project-beta ipclaims "$NAMESPACE" iso-beta-steal-alpha >/dev/null 2>&1 || true
-                  exit 1
-                  ;;
-              esac
-            check:
-              ($error == null): true
-              (contains($stdout, 'OK(c)')): true
+        - create:
+            cluster: project-beta
+            file: resources/beta-steal-alpha-claim.yaml
+            expect:
+              - check:
+                  ($error != null): true
       finally:
-        - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              TK_LIB=""
-              for p in ../lib/tenant-kubectl.sh lib/tenant-kubectl.sh test/e2e/lib/tenant-kubectl.sh; do
-                if [ -f "$p" ]; then TK_LIB="$p"; break; fi
-              done
-              if [ -z "$TK_LIB" ]; then echo "FAIL: tenant-kubectl.sh helper not found (cwd=$(pwd))"; exit 1; fi
-              . "$TK_LIB"
-              tk_start
-              tk_delete project-beta ipclaims "$NAMESPACE" iso-beta-steal-alpha >/dev/null 2>&1 || true
-              echo "alpha-pool-steal cleanup done"
-            check:
-              ($error == null): true
+        - delete:
+            cluster: project-beta
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              namespace: ($namespace)
+              name: iso-beta-steal-alpha
 
     - name: beta-pool-invisible-reverse-direction
       description: |
-        Reverse direction: iso-pool-beta (created under project-beta) must NOT
-        be visible to project-alpha or at platform scope, and project-alpha
-        must not be able to claim from it.
+        Reverse: iso-pool-beta must be invisible to project-alpha and at platform
+        scope, and project-alpha must not be able to claim from it.
       try:
-        - script:
-            timeout: 60s
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              set -e
-              TK_LIB=""
-              for p in ../lib/tenant-kubectl.sh lib/tenant-kubectl.sh test/e2e/lib/tenant-kubectl.sh; do
-                if [ -f "$p" ]; then TK_LIB="$p"; break; fi
-              done
-              if [ -z "$TK_LIB" ]; then echo "FAIL: tenant-kubectl.sh helper not found (cwd=$(pwd))"; exit 1; fi
-              . "$TK_LIB"
-              tk_start
-
-              owner=$(tk_get project-beta ippools "" iso-pool-beta)
-              if [ "$TK_CODE" != "200" ]; then
-                echo "FAIL: owner project-beta cannot read iso-pool-beta (code=$TK_CODE) — seed broken"
-                exit 1
-              fi
-
-              cross=$(tk_get project-alpha ippools "" iso-pool-beta)
-              if [ "$TK_CODE" != "404" ]; then
-                echo "FAIL(a'): iso-pool-beta visible to project-alpha (code=$TK_CODE, expected 404)"
-                echo "$cross"
-                exit 1
-              fi
-
-              plat=$(tk_get "" ippools "" iso-pool-beta)
-              if [ "$TK_CODE" != "404" ]; then
-                echo "FAIL(b'): iso-pool-beta visible at PLATFORM scope (code=$TK_CODE, expected 404) — tenancy degraded"
-                echo "$plat"
-                exit 1
-              fi
-
-              body='{"apiVersion":"ipam.miloapis.com/v1alpha1","kind":"IPClaim","metadata":{"name":"iso-alpha-steal-beta","namespace":"'"$NAMESPACE"'","labels":{"iso-suite":"true"}},"spec":{"ipFamily":"IPv4","prefixLength":24,"poolRef":{"name":"iso-pool-beta"},"reclaimPolicy":"Delete"}}'
-              out=$(tk_create project-alpha ipclaims "$NAMESPACE" "$body")
-              case "$TK_CODE" in
-                4??) : ;;
-                *)
-                  echo "FAIL(c'): project-alpha allocated from iso-pool-beta (code=$TK_CODE, expected 4xx)"
-                  echo "$out"
-                  tk_delete project-alpha ipclaims "$NAMESPACE" iso-alpha-steal-beta >/dev/null 2>&1 || true
-                  exit 1
-                  ;;
-              esac
-              echo "OK reverse-direction isolation enforced (alpha cannot see/claim iso-pool-beta; platform cannot see it)"
-            check:
-              ($error == null): true
-              (contains($stdout, 'OK reverse-direction isolation enforced')): true
+        - assert:
+            cluster: project-beta
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-beta
+              status:
+                phase: Ready
+        - error:
+            cluster: project-alpha
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-beta
+        - error:
+            cluster: platform
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-beta
+        - create:
+            cluster: project-alpha
+            file: resources/alpha-steal-beta-claim.yaml
+            expect:
+              - check:
+                  ($error != null): true
       finally:
-        - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              TK_LIB=""
-              for p in ../lib/tenant-kubectl.sh lib/tenant-kubectl.sh test/e2e/lib/tenant-kubectl.sh; do
-                if [ -f "$p" ]; then TK_LIB="$p"; break; fi
-              done
-              if [ -z "$TK_LIB" ]; then echo "FAIL: tenant-kubectl.sh helper not found (cwd=$(pwd))"; exit 1; fi
-              . "$TK_LIB"
-              tk_start
-              tk_delete project-alpha ipclaims "$NAMESPACE" iso-alpha-steal-beta >/dev/null 2>&1 || true
-              echo "beta-pool-steal cleanup done"
-            check:
-              ($error == null): true
+        - delete:
+            cluster: project-alpha
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              namespace: ($namespace)
+              name: iso-alpha-steal-beta
 
     - name: teardown-pools
       description: Delete both isolated pools under their owners.
       try:
-        - script:
-            timeout: 60s
-            content: |
-              TK_LIB=""
-              for p in ../lib/tenant-kubectl.sh lib/tenant-kubectl.sh test/e2e/lib/tenant-kubectl.sh; do
-                if [ -f "$p" ]; then TK_LIB="$p"; break; fi
-              done
-              if [ -z "$TK_LIB" ]; then echo "FAIL: tenant-kubectl.sh helper not found (cwd=$(pwd))"; exit 1; fi
-              . "$TK_LIB"
-              tk_start
-              tk_delete project-alpha ippools "" iso-pool-alpha >/dev/null 2>&1 || true
-              tk_delete project-beta  ippools "" iso-pool-beta  >/dev/null 2>&1 || true
-              echo "isolated pools deleted"
-            check:
-              ($error == null): true
+        - delete:
+            cluster: project-alpha
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              name: iso-pool-alpha
+        - delete:
+            cluster: project-beta
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              name: iso-pool-beta

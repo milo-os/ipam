@@ -1,0 +1,14 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: mt-alpha-pool
+  labels:
+    mt-suite: "true"
+spec:
+  cidr: 10.100.0.0/20
+  ipFamily: IPv4
+  visibility: consumer
+  allocation:
+    minPrefixLength: 24
+    maxPrefixLength: 28
+    strategy: BestFit

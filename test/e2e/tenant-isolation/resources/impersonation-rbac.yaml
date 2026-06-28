@@ -1,0 +1,70 @@
+# Impersonation + tenant-user RBAC for the native-chainsaw tenant-isolation
+# suite. Identical in intent to multi-tenant/resources/impersonation-rbac.yaml:
+# layer 1 lets the e2e admin identity impersonate the tenant user + parent-*
+# userextras; layer 2 grants the impersonated user ordinary ipam CRUD.
+#
+# This suite has NO cross-project `use` grants on purpose: it asserts that a
+# pool created under project A is invisible to project B and to platform scope
+# and un-allocatable cross-project. The impersonated user is not a cluster
+# admin, so those deny assertions are strict.
+#
+# The suite exercises tenancy via impersonation, which is equivalent to the
+# front-gate's requestheader extras for allocator scoping: act-as-user-extra
+# (iam.miloapis.com/parent-*) -> Impersonate-Extra-* -> kube-apiserver
+# requestheader -> X-Remote-Extra-* -> UserInfo.Extra, the same field
+# internal/tenant.FromContext reads.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: e2e-tenant-impersonator
+rules:
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+    resourceNames: ["e2e-tenant-tester"]
+  - apiGroups: [""]
+    resources: ["groups"]
+    verbs: ["impersonate"]
+    resourceNames: ["system:project:project-beta"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources:
+      - "userextras/iam.miloapis.com/parent-name"
+      - "userextras/iam.miloapis.com/parent-type"
+      - "userextras/iam.miloapis.com/parent-api-group"
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: e2e-tenant-impersonator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: e2e-tenant-impersonator
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:masters
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: e2e-tenant-ipam-user
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ippools", "ippools/status", "ipclaims", "ipclaims/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: e2e-tenant-ipam-user-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: e2e-tenant-ipam-user
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-tester

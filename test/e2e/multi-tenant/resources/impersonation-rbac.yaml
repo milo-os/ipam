@@ -1,0 +1,88 @@
+# Impersonation + tenant-user RBAC for the native-chainsaw multi-tenant suites.
+#
+# These suites drive the IPAM aggregated apiserver as a project tenant via
+# Kubernetes impersonation (kubeconfig act-as + act-as-user-extra; see
+# test/e2e/lib/gen-impersonation-kubeconfig.sh). Two authorization layers are
+# involved and both are granted here:
+#
+#   1. IMPERSONATE (authorized by the kube-apiserver/front-proxy): the test
+#      identity that the impersonation contexts authenticate as must be allowed
+#      to `impersonate` the tenant user, the parent-* userextras, and the
+#      project group. Without this every impersonated request 403s at the front
+#      door before it ever reaches IPAM.
+#
+#   2. TENANT-USER ipam access (authorized by IPAM's delegated SAR against the
+#      kube-apiserver): the impersonated user `e2e-tenant-tester` must be able
+#      to create/get/delete IPPool and IPClaim. This is ordinary (non-`use`)
+#      access; the cross-project `use` grants live in rbac.yaml /
+#      cross-project-rbac.yaml and are scoped to the shared pools only, so the
+#      private-pool deny assertions stay strict (no cluster-admin bypass — the
+#      impersonated user is deliberately not a cluster admin).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: e2e-tenant-impersonator
+rules:
+  # Impersonate the tenant user identity.
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+    resourceNames: ["e2e-tenant-tester"]
+  # Impersonate the project group used by the cross-project `use` bindings.
+  - apiGroups: [""]
+    resources: ["groups"]
+    verbs: ["impersonate"]
+    resourceNames: ["system:project:project-beta"]
+  # Impersonate the three iam.miloapis.com/parent-* userextras that carry the
+  # tenant scope into UserInfo.Extra (equivalent to the front-gate
+  # requestheader extras).
+  - apiGroups: ["authentication.k8s.io"]
+    resources:
+      - "userextras/iam.miloapis.com/parent-name"
+      - "userextras/iam.miloapis.com/parent-type"
+      - "userextras/iam.miloapis.com/parent-api-group"
+    verbs: ["impersonate"]
+---
+# Bind the impersonate permission to the e2e cluster's admin identity (the base
+# credential the impersonation contexts authenticate as). On the kind test-infra
+# cluster that is the system:masters group. If your runner authenticates as a
+# different (non-admin) identity, add it as a subject here.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: e2e-tenant-impersonator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: e2e-tenant-impersonator
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:masters
+---
+# Ordinary ipam CRUD for the impersonated tenant user. Intentionally NOT cluster
+# admin and intentionally WITHOUT the `use` verb — `use` is granted only for the
+# shared pools (rbac.yaml / cross-project-rbac.yaml), so cross-project claims
+# against private pools are denied for real.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: e2e-tenant-ipam-user
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ippools", "ippools/status", "ipclaims", "ipclaims/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: e2e-tenant-ipam-user-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: e2e-tenant-ipam-user
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-tester
