@@ -241,7 +241,6 @@ spec:
               kind: IPClaim
               metadata:
                 name: mt-cross-recheck
-                namespace: ($namespace)
                 labels:
                   mt-suite: "true"
               spec:
@@ -259,7 +258,6 @@ spec:
               kind: IPClaim
               metadata:
                 name: mt-cross-recheck
-                namespace: ($namespace)
               status:
                 phase: Bound
                 (regex_match('^172\.20\.([0-9]|1[0-5])\.0/24$', allocatedCIDR)): true
