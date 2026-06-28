@@ -1,0 +1,18 @@
+# project-beta claims against project-alpha's PRIVATE pool (visibility=consumer)
+# with no `use` grant. Must be denied: AuthorizeCrossProjectPrefix rejects
+# non-shared pools, so the apiserver returns Forbidden for this direct poolRef.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: mt-cross-private-denied
+  namespace: ($namespace)
+  labels:
+    mt-suite: "true"
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  poolRef:
+    name: mt-alpha-pool
+    projectRef:
+      name: project-alpha
+  reclaimPolicy: Delete

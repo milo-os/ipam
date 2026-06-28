@@ -43,15 +43,23 @@ type fakeAllocator struct {
 	deleteN   int
 	updateN   int
 	nextRV    int64
+
+	// captured keys, so tests can assert the tenant prefix is applied.
+	gotPoolKey      string
+	gotOwnerProject string
+	gotInsertKeys   []string
 }
 
-func (a *fakeAllocator) AllocatePrefix(_ context.Context, _ pgx.Tx, _ string, _ int, _ string, _ string, _ string) (string, error) {
+func (a *fakeAllocator) AllocatePrefix(_ context.Context, _ pgx.Tx, poolKey string, _ int, _ string, _ string, ownerProject string) (string, error) {
 	a.allocateN++
+	a.gotPoolKey = poolKey
+	a.gotOwnerProject = ownerProject
 	return a.cidr, nil
 }
 
-func (a *fakeAllocator) InsertObject(_ context.Context, _ pgx.Tx, _, _, _, _ string, _ []byte) (int64, error) {
+func (a *fakeAllocator) InsertObject(_ context.Context, _ pgx.Tx, key, _, _, _ string, _ []byte) (int64, error) {
 	a.insertN++
+	a.gotInsertKeys = append(a.gotInsertKeys, key)
 	a.nextRV++
 	return a.nextRV, nil
 }

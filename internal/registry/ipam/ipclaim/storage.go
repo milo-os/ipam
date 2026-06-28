@@ -224,13 +224,26 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		isCrossProject = !id.IsPlatform() &&
 			claim.Spec.PoolRef.ProjectRef != nil &&
 			claim.Spec.PoolRef.ProjectRef.Name != id.Name
-		poolKey = poolStorageKey(poolName)
+		// The pool lives in the caller's own project unless a cross-project
+		// ProjectRef points it elsewhere; platform callers (empty id.Name)
+		// address the platform root.
+		poolProject := id.Name
+		if isCrossProject {
+			poolProject = claim.Spec.PoolRef.ProjectRef.Name
+		}
+		poolKey = poolStorageKey(poolProject, poolName)
 	} else {
+		// Selector lookups scan one project's pools: the caller's own, or the
+		// referenced project for cross-project shared pools.
+		ownerProject := id.Name
 		if claim.Spec.PoolSelector.ProjectRef != nil {
 			isCrossProject = !id.IsPlatform() &&
 				claim.Spec.PoolSelector.ProjectRef.Name != id.Name
+			if isCrossProject {
+				ownerProject = claim.Spec.PoolSelector.ProjectRef.Name
+			}
 		}
-		resolved, rerr := allocator.ResolveIPPool(ctx, tx, claim.Spec.PoolSelector.LabelSelector, "", string(claim.Spec.IPFamily))
+		resolved, rerr := allocator.ResolveIPPool(ctx, tx, claim.Spec.PoolSelector.LabelSelector, ownerProject, string(claim.Spec.IPFamily))
 		if rerr != nil {
 			_ = tx.Rollback(ctx)
 			if errors.Is(rerr, allocator.ErrPoolNotFound) {
@@ -243,7 +256,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		poolKey = resolved
 		poolName = poolKey[strings.LastIndex(poolKey, "/")+1:]
 	}
-	claimKey := claimObjectKey(claim.Namespace, claim.Name)
+	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 
 	if isCrossProject {
 		if err := r.authorizeCrossProject(ctx, tx, poolKey); err != nil {
@@ -286,7 +299,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// the claim's namespace; its name is a stable hash of the claim
 	// namespace/name so the Delete handler can recompute it deterministically.
 	allocationName := allocationNameFor(claim.Namespace, claim.Name)
-	allocationKey := allocationObjectKey(claim.Namespace, allocationName)
+	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
 
 	// Populate the claim status with the computed allocation up-front so both
 	// the dry-run and the persisting paths return identical bound status.
@@ -418,7 +431,8 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 		return claim, true, nil
 	}
 
-	claimKey := claimObjectKey(claim.Namespace, claim.Name)
+	id := tenant.FromContext(ctx)
+	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 
 	// TX1 — publish phase=Releasing.
 	releasing := claim.DeepCopy()
@@ -516,7 +530,7 @@ func (r *AllocatingREST) releaseAndDelete(ctx context.Context, claim *ipam.IPCla
 		return fmt.Errorf("release allocation: %w", err)
 	}
 	if claim.Status.BoundAllocationRef != nil && claim.Status.BoundAllocationRef.Name != "" {
-		allocationKey := allocationObjectKey(claim.Namespace, claim.Status.BoundAllocationRef.Name)
+		allocationKey := allocationObjectKey(tenant.FromContext(ctx), claim.Namespace, claim.Status.BoundAllocationRef.Name)
 		if _, err := r.allocator.DeleteObject(ctx, tx, allocationKey); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("delete IPAllocation row: %w", err)
@@ -537,20 +551,28 @@ const (
 	deleteRetryBackoff = 100 * time.Millisecond
 )
 
-func claimObjectKey(namespace, name string) string {
-	return fmt.Sprintf("/ipam.miloapis.com/ipclaims/%s/%s", namespace, name)
+// claimObjectKey is the storage key for an IPClaim. IPClaim is
+// namespace-scoped, so the key carries the namespace segment, and the tenant
+// prefix ("project/<id>/") is applied so the key matches what the generic
+// registry Store reads and writes for the same project-scoped request.
+func claimObjectKey(id tenant.Identity, namespace, name string) string {
+	return id.ApplyPrefix(fmt.Sprintf("/ipam.miloapis.com/ipclaims/%s/%s", namespace, name))
 }
 
 // allocationObjectKey is the storage key for an IPAllocation. IPAllocation
-// is namespace-scoped, so the key carries the namespace segment.
-func allocationObjectKey(namespace, name string) string {
-	return fmt.Sprintf("/ipam.miloapis.com/ipallocations/%s/%s", namespace, name)
+// is namespace-scoped, so the key carries the namespace segment; the tenant
+// prefix is applied for the same reason as claimObjectKey.
+func allocationObjectKey(id tenant.Identity, namespace, name string) string {
+	return id.ApplyPrefix(fmt.Sprintf("/ipam.miloapis.com/ipallocations/%s/%s", namespace, name))
 }
 
-// poolStorageKey is the storage key for a cluster-scoped IPPool — matches
-// the key shape ippool/storage.go writes against.
-func poolStorageKey(name string) string {
-	return fmt.Sprintf("/ipam.miloapis.com/ippools/%s", name)
+// poolStorageKey is the storage key for an IPPool owned by the given project
+// ("" for platform scope). Although IPPool is cluster-scoped at the API layer,
+// a pool created through a project control-plane is persisted under that
+// project's tenant prefix — so the allocator must address it with the same
+// prefix rather than at the platform root.
+func poolStorageKey(project, name string) string {
+	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
 }
 
 // allocationNameFor generates a stable, collision-resistant name for the

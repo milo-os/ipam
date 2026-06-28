@@ -1,0 +1,222 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: tenant-isolation
+spec:
+  # Resources are tenant-scoped (created under impersonation contexts) and live
+  # in IPAM's postgres, not kube etcd; chainsaw's automatic cleanup runs on the
+  # default/platform cluster and cannot see them. Skip auto-cleanup and rely on
+  # the explicit per-step finally deletes (under the owning impersonation context).
+  skipDelete: true
+  description: |
+    Negative tenant-isolation suite for issue #44, driven by NATIVE chainsaw
+    operations under Kubernetes impersonation (no kubectl-proxy/curl). A pool
+    created under one project's tenant scope must be invisible to, and
+    un-allocatable from, any other scope.
+
+    TENANCY VIA IMPERSONATION (equivalent to the front gate): each project
+    context carries iam.miloapis.com/parent-* via kubeconfig act-as-user-extra,
+    which the kube-apiserver re-emits as requestheader X-Remote-Extra-* to the
+    IPAM apiserver — landing in UserInfo.Extra exactly like the front gate
+    (internal/tenant.FromContext). See test/e2e/lib/
+    gen-impersonation-kubeconfig.sh; contexts are selected per op via `cluster:`.
+
+    Because project-scoped objects persist under
+    project/<projectID>/ipam.miloapis.com/... while platform objects live at
+    /ipam.miloapis.com/..., a correctly-scoped server returns NotFound for the
+    "wrong scope" reads below — which chainsaw `error:` asserts (it passes only
+    when the named resource is absent / unmatched in that scope).
+
+    DEGRADE DETECTOR: the PLATFORM-scope check (no parent-* impersonation) is
+    load-bearing. If impersonation silently failed to carry the extras, every
+    request would collapse to platform scope: the project-alpha pool would be
+    stored at the platform root and the platform-scope read would SUCCEED, so
+    the `error:` (expect-absent) would fail loudly. That is the canary that
+    catches "tenancy degraded to platform" — not a nicety.
+
+    Asserts, for a pool created under project-alpha:
+      (a) the pool is invisible under project-beta (error: not found)
+      (b) the pool is invisible at platform scope (error: not found)  [canary]
+      (c) an IPClaim against it from project-beta is rejected
+    Plus the reverse direction (pool under project-beta invisible to
+    project-alpha and platform, and un-allocatable by project-alpha).
+
+  clusters:
+    project-alpha:
+      kubeconfig: ../.tenant-impersonation-iso.kubeconfig
+      context: tenant-project-alpha
+    project-beta:
+      kubeconfig: ../.tenant-impersonation-iso.kubeconfig
+      context: tenant-project-beta
+    platform:
+      kubeconfig: ../.tenant-impersonation-iso.kubeconfig
+      context: tenant-platform
+
+  timeouts:
+    cleanup: 90s
+    apply: 30s
+    assert: 60s
+    error: 30s
+
+  steps:
+    - name: seed-rbac
+      description: |
+        Impersonation + tenant-user RBAC: lets the e2e admin impersonate the
+        tenant user/extras and lets that user perform ipam CRUD. No cross-project
+        `use` grants here — isolation must hold without them.
+      try:
+        # Generate the impersonation kubeconfig the `clusters:` block references
+        # (in-suite so a direct `chainsaw test` invocation works, not only
+        # `task e2e`). cwd is this suite dir; cd to repo root so KUBECONFIG and
+        # the lib/output paths resolve. Per-suite filename avoids a write race.
+        - script:
+            content: |
+              cd ../../..
+              sh test/e2e/lib/gen-impersonation-kubeconfig.sh test/e2e/.tenant-impersonation-iso.kubeconfig
+            check:
+              ($error == null): true
+        - create:
+            file: resources/impersonation-rbac.yaml
+
+    - name: seed-isolated-pools
+      description: |
+        Create iso-pool-alpha under project-alpha and iso-pool-beta under
+        project-beta; assert each Ready under its OWNING project's scope.
+      try:
+        - create:
+            cluster: project-alpha
+            file: resources/iso-pool-alpha.yaml
+        - create:
+            cluster: project-beta
+            file: resources/iso-pool-beta.yaml
+        - assert:
+            cluster: project-alpha
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-alpha
+              status:
+                phase: Ready
+        - assert:
+            cluster: project-beta
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-beta
+              status:
+                phase: Ready
+
+    - name: alpha-pool-invisible-cross-project-and-platform
+      description: |
+        (a) iso-pool-alpha must be invisible under project-beta and (b) at
+        platform scope. (b) is the degrade detector — a hit there means the
+        parent-* extras were dropped and the pool leaked to the platform root.
+      try:
+        # Sanity: the owner CAN see it (assert succeeds under project-alpha).
+        - assert:
+            cluster: project-alpha
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-alpha
+              status:
+                phase: Ready
+        # (a) cross-project read under project-beta MUST NOT find it.
+        - error:
+            cluster: project-beta
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-alpha
+        # (b) platform-scope read (no parent-* impersonation) MUST NOT find it.
+        - error:
+            cluster: platform
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-alpha
+
+    - name: alpha-pool-unallocatable-from-beta
+      description: |
+        (c) An IPClaim against iso-pool-alpha from project-beta (no projectRef,
+        i.e. beta looking in its own scope) must be rejected — the pool does not
+        exist in beta's scope.
+      try:
+        - create:
+            cluster: project-beta
+            file: resources/beta-steal-alpha-claim.yaml
+            expect:
+              - check:
+                  ($error != null): true
+      finally:
+        - delete:
+            cluster: project-beta
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              namespace: ($namespace)
+              name: iso-beta-steal-alpha
+
+    - name: beta-pool-invisible-reverse-direction
+      description: |
+        Reverse: iso-pool-beta must be invisible to project-alpha and at platform
+        scope, and project-alpha must not be able to claim from it.
+      try:
+        - assert:
+            cluster: project-beta
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-beta
+              status:
+                phase: Ready
+        - error:
+            cluster: project-alpha
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-beta
+        - error:
+            cluster: platform
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: iso-pool-beta
+        - create:
+            cluster: project-alpha
+            file: resources/alpha-steal-beta-claim.yaml
+            expect:
+              - check:
+                  ($error != null): true
+      finally:
+        - delete:
+            cluster: project-alpha
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              namespace: ($namespace)
+              name: iso-alpha-steal-beta
+
+    - name: teardown-pools
+      description: Delete both isolated pools under their owners.
+      try:
+        - delete:
+            cluster: project-alpha
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              name: iso-pool-alpha
+        - delete:
+            cluster: project-beta
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              name: iso-pool-beta

@@ -1,0 +1,13 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: mt-beta-claim
+  namespace: ($namespace)
+  labels:
+    mt-suite: "true"
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  poolRef:
+    name: mt-beta-pool
+  reclaimPolicy: Delete
