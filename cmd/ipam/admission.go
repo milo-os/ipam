@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/admission"
 	genericapiserver "k8s.io/apiserver/pkg/server"
@@ -16,6 +17,7 @@ import (
 	quotaadmission "go.miloapis.com/milo/pkg/quota/admission"
 	milorequest "go.miloapis.com/milo/pkg/request"
 
+	ipamapiserver "go.miloapis.com/ipam/internal/apiserver"
 	"go.miloapis.com/ipam/internal/tenant"
 )
 
@@ -43,6 +45,37 @@ var _ admission.PluginInitializer = loopbackConfigInitializer{}
 func (i loopbackConfigInitializer) Initialize(plugin admission.Interface) {
 	if setter, ok := plugin.(loopbackConfigSetter); ok {
 		setter.SetLoopbackConfig(i.config)
+	}
+}
+
+// objectConvertorSetter is the duck-typed interface satisfied by milo's
+// ResourceQuotaEnforcementPlugin via its exported SetObjectConvertor method.
+type objectConvertorSetter interface {
+	SetObjectConvertor(runtime.ObjectConvertor)
+}
+
+// objectConvertorInitializer injects an ObjectConvertor into the quota plugin.
+//
+// IPAM is an aggregated apiserver: admission decodes its objects as INTERNAL Go
+// types (ipam.IPClaim), whose ObjectMeta is inlined without a "metadata" JSON
+// wrapper. milo's quota plugin renders the per-resource ResourceClaim name from
+// a CEL template ("trigger.metadata.name"); evaluated against an internal type
+// run through ToUnstructured, that map has no "metadata" key and the claim
+// create fails with `no such key: metadata`. milo handles this when given an
+// ObjectConvertor — it first converts the internal object to its external
+// versioned form (which carries metadata) before building the CEL trigger. The
+// scheme registers the internal⇄v1alpha1 conversions, so it is exactly the
+// convertor milo needs. Without this initializer objectConvertor stays nil and
+// every quota-enforced create is denied with an internal error.
+type objectConvertorInitializer struct {
+	convertor runtime.ObjectConvertor
+}
+
+var _ admission.PluginInitializer = objectConvertorInitializer{}
+
+func (i objectConvertorInitializer) Initialize(plugin admission.Interface) {
+	if setter, ok := plugin.(objectConvertorSetter); ok {
+		setter.SetObjectConvertor(i.convertor)
 	}
 }
 
@@ -103,6 +136,9 @@ func wireAdmissionInitializers(o *IPAMServerOptions) {
 		klog.V(2).InfoS("wiring loopback config for quota admission", "host", c.ClientConfig.Host)
 		return []admission.PluginInitializer{
 			loopbackConfigInitializer{config: rest.CopyConfig(c.ClientConfig)},
+			// IPAM's scheme converts internal types to their versioned form so
+			// the quota plugin's CEL trigger carries metadata (see initializer).
+			objectConvertorInitializer{convertor: ipamapiserver.Scheme},
 		}, nil
 	}
 }
