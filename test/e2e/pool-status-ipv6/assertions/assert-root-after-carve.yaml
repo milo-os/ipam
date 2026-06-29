@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ipv6-status-root
+status:
+  phase: Ready
+  ipFamily: IPv6
+  # One /48 carved out of sixteen leaves the next-largest free block at /45
+  # and 1/16 (6%) utilization — both computed without int64 overflow.
+  largestFreePrefix: 45
+  utilizationPercent: 6

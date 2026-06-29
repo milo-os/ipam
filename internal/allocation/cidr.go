@@ -245,6 +245,58 @@ func CountAddresses(cidr net.IPNet) int64 {
 	return int64(1) << uint(hostBits)
 }
 
+// addressCount returns the number of addresses in cidr as an exact big.Int.
+func addressCount(cidr net.IPNet) *big.Int {
+	ones, bits := cidr.Mask.Size()
+	hostBits := bits - ones
+	if hostBits < 0 {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Lsh(big.NewInt(1), uint(hostBits))
+}
+
+// LargestFreePrefixLen returns the prefix length of the largest free aligned
+// block available across parents after removing existing allocations. The
+// second return value is false when the pool is fully allocated (no free
+// block). The result is family-agnostic and never overflows.
+func LargestFreePrefixLen(parents, existing []net.IPNet) (int, bool) {
+	pool := &CIDRPool{Ranges: parents, Existing: existing}
+	block, err := pool.LargestFreeBlock()
+	if err != nil {
+		return 0, false
+	}
+	ones, _ := block.Mask.Size()
+	return ones, true
+}
+
+// UtilizationPercent returns the allocated share of the parents' total address
+// space as an integer in [0, 100], computed with arbitrary-precision
+// arithmetic so it is accurate for IPv6 spaces larger than an int64. An empty
+// pool reports 0.
+func UtilizationPercent(parents, existing []net.IPNet) int {
+	total := new(big.Int)
+	for _, p := range parents {
+		total.Add(total, addressCount(p))
+	}
+	if total.Sign() == 0 {
+		return 0
+	}
+	used := new(big.Int)
+	for _, c := range existing {
+		used.Add(used, addressCount(c))
+	}
+	// (used * 100) / total, integer division; clamp to [0, 100].
+	pct := new(big.Int).Div(new(big.Int).Mul(used, big.NewInt(100)), total)
+	switch {
+	case pct.Sign() < 0:
+		return 0
+	case pct.Cmp(big.NewInt(100)) > 0:
+		return 100
+	default:
+		return int(pct.Int64())
+	}
+}
+
 // ----------------------------------------------------------------------------
 // Internal helpers
 // ----------------------------------------------------------------------------
@@ -428,4 +480,3 @@ func splitRegionIntoAlignedCIDRs(start, end *big.Int, totalBits int) []net.IPNet
 	}
 	return out
 }
-

@@ -1,0 +1,13 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ipv6-status-child
+spec:
+  visibility: consumer
+  parentPoolRef:
+    name: ipv6-status-root
+  prefixLength: 48
+  allocation:
+    minPrefixLength: 56
+    maxPrefixLength: 56
+    strategy: FirstFit

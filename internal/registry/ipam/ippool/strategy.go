@@ -20,7 +20,6 @@ import (
 	"k8s.io/apiserver/pkg/storage/names"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
-	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/fieldindex"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 )
@@ -86,11 +85,10 @@ func (ipPoolStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
 		return
 	}
 	p.Status.AllocatedCIDR = ipnet.String()
-	// Use CountAddresses so the initial Total uses the same unit as the
-	// post-allocation persistPoolCapacity refresh; seed Available so callers
-	// can observe "available decreased" after the first allocation.
-	total := allocation.CountAddresses(*ipnet)
-	p.Status.Capacity = ipam.PoolCapacity{Total: total, Available: total}
+	// Seed all utilization fields from an empty allocation set so the initial
+	// status matches the post-allocation refresh and callers can observe
+	// "available decreased" after the first allocation.
+	setPoolStatusCapacity(p, []net.IPNet{*ipnet}, nil)
 	p.Status.Phase = ipam.PoolReady
 	p.Status.Conditions = []metav1.Condition{{
 		Type:               "Allocated",
@@ -223,7 +221,6 @@ func localRefEqual(a, b *ipam.LocalRef) bool {
 	}
 }
 
-
 func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 	p, ok := obj.(*ipam.IPPool)
 	if !ok {
@@ -239,8 +236,8 @@ func SelectableFields(p *ipam.IPPool) fields.Set {
 		parentName = p.Spec.ParentPoolRef.Name
 	}
 	specific := fields.Set{
-		"spec.ipFamily":            string(p.Spec.IPFamily),
-		"spec.parentPoolRef.name":  parentName,
+		"spec.ipFamily":           string(p.Spec.IPFamily),
+		"spec.parentPoolRef.name": parentName,
 	}
 	return generic.MergeFieldsSets(objectMetaFields, specific)
 }

@@ -1,0 +1,53 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pool-status-ipv6
+spec:
+  description: |
+    IPv6 IPPool status reporting. IPv6 address spaces exceed an int64, so the
+    integer capacity counts saturate; the family-agnostic status fields must
+    stay accurate:
+    - status.ipFamily is reported for both root and child pools (children
+      derive it from the carved CIDR rather than spec.ipFamily).
+    - status.largestFreePrefix reflects the largest free block as a prefix
+      length, never a garbage/negative value.
+    - status.utilizationPercent stays within [0, 100], computed with
+      arbitrary-precision arithmetic.
+
+  steps:
+    - name: create-root-ipv6-pool
+      description: Root IPv6 IPPool 2001:db8:e2e0::/44 (consumer, /48 children).
+      try:
+        - create:
+            file: test-data/root-pool.yaml
+        - assert:
+            file: assertions/assert-root-status.yaml
+
+    - name: create-child-ipv6-pool
+      description: |
+        Child IPPool carves the first /48 from the root. Its status must report
+        the inherited IPv6 family, a /48 largest-free block, and 0% utilization.
+      try:
+        - create:
+            file: test-data/child-pool.yaml
+        - assert:
+            file: assertions/assert-child-status.yaml
+
+    - name: root-status-after-carve
+      description: |
+        With one /48 carved, the root's utilization and largest-free block
+        must update without overflowing the int64 capacity counts.
+      try:
+        - assert:
+            file: assertions/assert-root-after-carve.yaml
+      finally:
+        - delete:
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              name: ipv6-status-child
+        - delete:
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              name: ipv6-status-root

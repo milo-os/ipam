@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -181,8 +182,9 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		LastTransitionTime: metav1.Now(),
 	}}
 	if _, ipnet, perr := net.ParseCIDR(cidr); perr == nil {
-		total := allocation.CountAddresses(*ipnet)
-		pool.Status.Capacity = ipam.PoolCapacity{Total: total, Available: total}
+		// A freshly carved child pool has no sub-allocations yet; seed all
+		// utilization fields from an empty allocation set.
+		setPoolStatusCapacity(pool, []net.IPNet{*ipnet}, nil)
 	} else {
 		pool.Status.Capacity = ipam.PoolCapacity{}
 	}
@@ -280,6 +282,47 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 // must carry the same prefix.
 func poolStorageKey(project, name string) string {
 	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
+}
+
+// setPoolStatusCapacity populates every utilization field on the pool's status
+// from its parent ranges and current allocations. The integer Capacity counts
+// saturate cleanly for address spaces wider than int64 (Total caps at MaxInt64,
+// Allocated/Available never go negative); LargestFreePrefix and
+// UtilizationPercent are computed with arbitrary-precision arithmetic and are
+// the accurate signal for IPv6. IPFamily reflects the pool's effective family.
+func setPoolStatusCapacity(pool *ipam.IPPool, parents, allocations []net.IPNet) {
+	const maxInt64 = int64(math.MaxInt64)
+	var total int64
+	for _, p := range parents {
+		c := allocation.CountAddresses(p)
+		if total > maxInt64-c {
+			total = maxInt64
+			break
+		}
+		total += c
+	}
+	var allocated int64
+	for _, a := range allocations {
+		c := allocation.CountAddresses(a)
+		if allocated > maxInt64-c {
+			allocated = maxInt64
+			break
+		}
+		allocated += c
+	}
+	allocated = min(allocated, total)
+	available := max(total-allocated, 0)
+	pool.Status.Capacity = ipam.PoolCapacity{Total: total, Allocated: allocated, Available: available}
+
+	pool.Status.UtilizationPercent = int32(allocation.UtilizationPercent(parents, allocations))
+	if prefixLen, ok := allocation.LargestFreePrefixLen(parents, allocations); ok {
+		pool.Status.LargestFreePrefix = int32(prefixLen)
+	} else {
+		pool.Status.LargestFreePrefix = 0
+	}
+	if fam, err := effectiveIPFamily(pool); err == nil {
+		pool.Status.IPFamily = ipam.IPFamily(fam)
+	}
 }
 
 // effectiveIPFamily returns a pool's address family. Root pools set it in
