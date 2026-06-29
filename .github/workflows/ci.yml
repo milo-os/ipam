@@ -161,7 +161,7 @@ jobs:
 
       - name: Install Chainsaw
         run: |
-          CHAINSAW_VERSION="v0.2.12"
+          CHAINSAW_VERSION="v0.2.15"
           curl -fsSL -o /tmp/chainsaw.tgz \
             "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_linux_amd64.tar.gz"
           tar -xzf /tmp/chainsaw.tgz -C /tmp chainsaw
