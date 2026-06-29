@@ -124,10 +124,13 @@ func convert_v1alpha1_IPPool_To_ipam(in *IPPool, out *ipam.IPPool) error {
 		Visibility:    in.Spec.Visibility,
 	}
 	out.Status = ipam.IPPoolStatus{
-		Phase:         ipam.PoolPhase(in.Status.Phase),
-		AllocatedCIDR: in.Status.AllocatedCIDR,
-		Capacity:      ipam.PoolCapacity(in.Status.Capacity),
-		Conditions:    toIpamConditions(in.Status.Conditions),
+		Phase:              ipam.PoolPhase(in.Status.Phase),
+		AllocatedCIDR:      in.Status.AllocatedCIDR,
+		IPFamily:           ipam.IPFamily(in.Status.IPFamily),
+		Capacity:           ipam.PoolCapacity(in.Status.Capacity),
+		LargestFreePrefix:  in.Status.LargestFreePrefix,
+		UtilizationPercent: in.Status.UtilizationPercent,
+		Conditions:         toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }
@@ -143,10 +146,13 @@ func convert_ipam_IPPool_To_v1alpha1(in *ipam.IPPool, out *IPPool) error {
 		Visibility:    in.Spec.Visibility,
 	}
 	out.Status = IPPoolStatus{
-		Phase:         PoolPhase(in.Status.Phase),
-		AllocatedCIDR: in.Status.AllocatedCIDR,
-		Capacity:      PoolCapacity(in.Status.Capacity),
-		Conditions:    toIpamConditions(in.Status.Conditions),
+		Phase:              PoolPhase(in.Status.Phase),
+		AllocatedCIDR:      in.Status.AllocatedCIDR,
+		IPFamily:           IPFamily(in.Status.IPFamily),
+		Capacity:           PoolCapacity(in.Status.Capacity),
+		LargestFreePrefix:  in.Status.LargestFreePrefix,
+		UtilizationPercent: in.Status.UtilizationPercent,
+		Conditions:         toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }

@@ -653,10 +653,31 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolStatus(ref common.ReferenceCallback) co
 							Format: "",
 						},
 					},
+					"ipFamily": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ipFamily is the effective address family of this pool: taken from spec.ipFamily on root pools and derived from the carved status.allocatedCIDR on child pools.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"capacity": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
 							Ref:     ref(v1alpha1.PoolCapacity{}.OpenAPIModelName()),
+						},
+					},
+					"largestFreePrefix": {
+						SchemaProps: spec.SchemaProps{
+							Description: "largestFreePrefix is the prefix length of the largest free aligned block currently available (e.g. 45 for a free /45). Zero when the pool is exhausted or its capacity is not yet computed. This is the family-agnostic signal for remaining headroom; the integer capacity fields saturate for very large address spaces.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"utilizationPercent": {
+						SchemaProps: spec.SchemaProps{
+							Description: "utilizationPercent is the allocated share of the pool's address space, 0–100, computed with arbitrary-precision arithmetic so it is accurate for both IPv4 and IPv6.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 					"conditions": {
@@ -782,7 +803,7 @@ func schema_pkg_apis_ipam_v1alpha1_PoolCapacity(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PoolCapacity reports utilization for an IPPool.",
+				Description: "PoolCapacity reports the address-count view of an IPPool. The counts are exact for IPv4. For address spaces larger than an int64 (e.g. wide IPv6 prefixes) Total saturates to the maximum int64 and Allocated/Available are clamped to non-negative values rather than overflowing; consumers needing an accurate IPv6 view should read UtilizationPercent and LargestFreePrefix.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"total": {

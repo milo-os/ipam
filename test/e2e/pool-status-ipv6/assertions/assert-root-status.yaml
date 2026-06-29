@@ -1,0 +1,16 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ipv6-status-root
+spec:
+  cidr: 2001:db8:e2e0::/44
+  ipFamily: IPv6
+status:
+  phase: Ready
+  allocatedCIDR: 2001:db8:e2e0::/44
+  # Effective family is reported in status (not only spec), so consumers can
+  # read it uniformly for root and child pools.
+  ipFamily: IPv6
+  # An empty /44 has its largest free block at the pool size and zero usage.
+  largestFreePrefix: 44
+  utilizationPercent: 0
