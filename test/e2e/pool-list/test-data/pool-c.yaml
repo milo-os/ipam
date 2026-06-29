@@ -2,6 +2,8 @@ apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPPool
 metadata:
   name: pool-list-c
+  labels:
+    e2e-suite: pool-list
 spec:
   cidr: 10.232.0.0/20
   ipFamily: IPv4
