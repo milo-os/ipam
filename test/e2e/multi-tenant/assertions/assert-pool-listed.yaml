@@ -1,0 +1,11 @@
+# No metadata.name → chainsaw uses List, not Get. Run under a project's
+# impersonation context, this fails if the tenant-scoped list comes back empty
+# while by-name reads still work — i.e. it requires a Ready suite pool to
+# actually appear in the project's list.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  labels:
+    mt-suite: "true"
+status:
+  phase: Ready
