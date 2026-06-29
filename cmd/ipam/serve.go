@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,14 +21,12 @@ import (
 	logsapi "k8s.io/component-base/logs/api/v1"
 	"k8s.io/klog/v2"
 	openapicommon "k8s.io/kube-openapi/pkg/common"
-	openapiutil "k8s.io/kube-openapi/pkg/util"
-	"k8s.io/kube-openapi/pkg/validation/spec"
 
 	quotaadmission "go.miloapis.com/milo/pkg/quota/admission"
 
-	ipamapiserver "go.miloapis.com/ipam/internal/apiserver"
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
+	ipamapiserver "go.miloapis.com/ipam/internal/apiserver"
 	"go.miloapis.com/ipam/internal/metrics"
 	pgstore "go.miloapis.com/ipam/internal/storage/postgres"
 	"go.miloapis.com/ipam/internal/version"
@@ -215,27 +212,22 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	genericConfig := genericapiserver.NewRecommendedConfig(ipamapiserver.Codecs)
 	genericConfig.EffectiveVersion = basecompatibility.NewEffectiveVersionFromString("1.36", "", "")
 
-	// OpenAPI configuration. Without generated openapi definitions we still
-	// need a definition namer to satisfy the recommended config pipeline.
+	// Definition names come from the generated OpenAPIModelName() accessors so
+	// they stay in sync with Scheme.ToOpenAPIDefinitionName(); server-side apply
+	// resolves its managed-fields type converter against that keying. Keep the
+	// default GetDefinitionName — overriding it desyncs names from their $refs
+	// and silently breaks SSA.
 	namer := openapinamer.NewDefinitionNamer(ipamapiserver.Scheme)
-	getDefinitionName := func(name string) (string, spec.Extensions) {
-		if strings.Contains(name, "/") {
-			name = openapiutil.ToRESTFriendlyName(name)
-		}
-		return namer.GetDefinitionName(name)
-	}
 	getDefs := func(ref openapicommon.ReferenceCallback) map[string]openapicommon.OpenAPIDefinition {
 		return generatedopenapi.GetOpenAPIDefinitions(ref)
 	}
 	genericConfig.OpenAPIV3Config = genericapiserver.DefaultOpenAPIV3Config(getDefs, namer)
 	genericConfig.OpenAPIV3Config.Info.Title = "IPAM"
 	genericConfig.OpenAPIV3Config.Info.Version = version.Version
-	genericConfig.OpenAPIV3Config.GetDefinitionName = getDefinitionName
 
 	genericConfig.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(getDefs, namer)
 	genericConfig.OpenAPIConfig.Info.Title = "IPAM"
 	genericConfig.OpenAPIConfig.Info.Version = version.Version
-	genericConfig.OpenAPIConfig.GetDefinitionName = getDefinitionName
 
 	// Postgres is the only storage backend; disable the recommended-options
 	// etcd path so the apiserver does not try to dial etcd or register etcd
