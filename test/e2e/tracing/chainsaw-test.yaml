@@ -77,31 +77,41 @@ spec:
     - name: assert-span-in-tempo
       description: |
         Query Tempo's TraceQL search API for a trace carrying the
-        ipam.claim.allocate span and assert the returned `traces` array is
-        non-empty. The query runs from inside the cluster (an ephemeral
-        curl pod) so it can reach the in-cluster Tempo Service.
+        ipam.claim.allocate span and assert a traceID is returned.
+
+        The query reaches Tempo via `kubectl port-forward` + curl from the
+        test host, NOT an in-cluster curl pod per attempt. The pod-per-attempt
+        approach is flaky on constrained CI runners (image pull + scheduling
+        latency for every poll), which produced spurious "no trace" failures
+        even when the span was present in Tempo. A single long-lived
+        port-forward queried with the host's curl is reliable and mirrors how
+        the export was verified by hand.
 
         OTLP export is async (batched/scheduled) and Tempo ingestion lags
-        (spans must flush from the WAL into a searchable block), so we poll
+        (spans flush from the WAL before they're searchable), so we poll
         generously — up to ~90s — before failing.
       try:
         - script:
             timeout: 120s
             content: |
               set -e
+              # Long-lived port-forward to Tempo's query API; clean up on exit.
+              kubectl -n telemetry-system port-forward svc/telemetry-system-tempo \
+                3100:3100 >/tmp/tempo-pf.log 2>&1 &
+              PF=$!
+              trap 'kill ${PF} 2>/dev/null || true' EXIT
+              # Wait for the forward to establish.
+              for i in $(seq 1 10); do
+                if curl -sf "http://localhost:3100/ready" >/dev/null 2>&1; then break; fi
+                sleep 1
+              done
               # {name="ipam.claim.allocate"} urlencoded.
               QUERY='%7Bname%3D%22ipam.claim.allocate%22%7D'
-              URL="http://telemetry-system-tempo.telemetry-system.svc.cluster.local:3100/api/search?q=${QUERY}&limit=20"
+              URL="http://localhost:3100/api/search?q=${QUERY}&limit=20"
               for i in $(seq 1 30); do
-                body=$(kubectl run tempo-search-${RANDOM} \
-                  --rm -i --restart=Never --quiet \
-                  --image=curlimages/curl:8.10.1 \
-                  -n telemetry-system -- \
-                  curl -s "$URL" 2>/dev/null || echo "")
-                # Strip any kubectl run noise; keep the JSON line(s).
+                body=$(curl -s "$URL" 2>/dev/null || echo "")
                 echo "attempt $i: $body"
-                # Tempo returns {"traces":[...]} on a hit, {"traces":[]} or
-                # {} when nothing is indexed yet. A hit contains a traceID.
+                # A hit contains a traceID; {"traces":[]} means not indexed yet.
                 if echo "$body" | grep -q '"traceID"'; then
                   echo "OK Tempo returned a trace for ipam.claim.allocate"
                   exit 0
@@ -111,14 +121,10 @@ spec:
               echo "FAIL: no ipam.claim.allocate trace in Tempo after ~90s"
               # --- diagnostics: where did the span go? ---
               echo "=== DIAG: any traces at all in Tempo ({}) ==="
-              kubectl run tempo-diag-any-${RANDOM} --rm -i --restart=Never --quiet \
-                --image=curlimages/curl:8.10.1 -n telemetry-system -- \
-                curl -s "http://telemetry-system-tempo.telemetry-system.svc.cluster.local:3100/api/search?q=%7B%7D&limit=20" 2>/dev/null || true
+              curl -s "http://localhost:3100/api/search?q=%7B%7D&limit=20" 2>/dev/null || true
               echo
-              echo "=== DIAG: Tempo /status/config search/ingester knobs ==="
-              kubectl run tempo-diag-ready-${RANDOM} --rm -i --restart=Never --quiet \
-                --image=curlimages/curl:8.10.1 -n telemetry-system -- \
-                curl -s "http://telemetry-system-tempo.telemetry-system.svc.cluster.local:3100/ready" 2>/dev/null || true
+              echo "=== DIAG: port-forward log ==="
+              cat /tmp/tempo-pf.log 2>/dev/null || true
               echo
               echo "=== DIAG: IPAM apiserver --tracing-config-file arg ==="
               kubectl -n ipam-system get deploy ipam-apiserver \
