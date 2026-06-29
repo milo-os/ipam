@@ -617,18 +617,22 @@ func (s *Store) nextResourceVersion(ctx context.Context, querier interface {
 // bookmark RV whose underlying row is not yet in the changelog, regressing
 // the commit-ordering guarantee the watcher's xmin-horizon cursor provides.
 //
-// The max(resource_version) in ipam_changelog filtered by commit_xid below
-// the snapshot horizon is the highest RV every future snapshot will see.
-// On a freshly bootstrapped database the changelog is empty; we return 1
-// rather than 0 because the apiserver storage layer rejects list responses
-// with resource version 0 ("illegal resource version from storage: 0"),
-// which deadlocks informers on first start.
+// It takes the highest version among the live object rows and recently
+// committed changelog entries (the latter cover deletes whose object rows are
+// already gone). The object rows must be included: the changelog is pruned to
+// a short window, so on a quiet, long-lived database it can be empty while
+// objects with much higher versions remain — reading the changelog alone would
+// report a stale version and make list results come back empty. When both are
+// empty (a new database) it returns 1, never 0.
 func (s *Store) currentResourceVersion(ctx context.Context) (int64, error) {
 	var rv int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT GREATEST(COALESCE(MAX(resource_version), 0), 1)
-		   FROM ipam_changelog
-		  WHERE commit_xid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint`,
+		`SELECT GREATEST(
+		          (SELECT COALESCE(MAX(resource_version), 0) FROM ipam_objects),
+		          (SELECT COALESCE(MAX(resource_version), 0)
+		             FROM ipam_changelog
+		            WHERE commit_xid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint),
+		          1)`,
 	).Scan(&rv)
 	return rv, err
 }

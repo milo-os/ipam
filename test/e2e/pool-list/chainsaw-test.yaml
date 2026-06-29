@@ -1,0 +1,45 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pool-list
+spec:
+  description: |
+    Verifies that listing IPPools returns the pools that exist — created pools
+    must appear in a list, not only in by-name lookups.
+
+    The failure this guards against surfaces only on a long-lived database, so a
+    fresh cluster can't reproduce it here; the deterministic check lives in the
+    storage-layer Go tests. This suite is the end-to-end guard that the list
+    path returns what was created.
+  steps:
+    - name: create-pools
+      description: Create three IPPools carrying the suite label.
+      try:
+        - create:
+            file: test-data/pool-a.yaml
+        - create:
+            file: test-data/pool-b.yaml
+        - create:
+            file: test-data/pool-c.yaml
+
+    - name: pools-ready-by-name
+      description: |
+        Each pool reaches Ready. A named assert is served by Get — the symptom
+        was that by-name reads worked while the list was empty, so this is the
+        baseline the list step is compared against. Chainsaw polls until Ready.
+      try:
+        - assert:
+            file: assertions/pool-a-ready.yaml
+        - assert:
+            file: assertions/pool-b-ready.yaml
+        - assert:
+            file: assertions/pool-c-ready.yaml
+
+    - name: pools-returned-by-list
+      description: |
+        The assertion has no metadata.name, so chainsaw uses List rather than
+        Get. If the list comes back empty even though the pools exist, this
+        step fails — while the Get-based step above would still pass.
+      try:
+        - assert:
+            file: assertions/listed-by-label.yaml

@@ -775,18 +775,14 @@ func (w *postgresWatch) sendInitialEventsEndBookmark() bool {
 		return false
 	}
 
-	// Use the highest committed resource version as the bookmark RV: the
-	// max over rows whose commit_xid is strictly below the current
-	// snapshot horizon. Never read last_value from the sequence here —
-	// that's observable before the owning tx commits and would let the
-	// cacher advertise a resume point whose underlying row is still
-	// in flight.
-	var maxRV int64
-	if err := w.db.QueryRow(
-		`SELECT COALESCE(MAX(resource_version), 0)
-		   FROM ipam_changelog
-		  WHERE commit_xid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint`,
-	).Scan(&maxRV); err != nil {
+	// Use the highest committed resource version as the bookmark RV (the max
+	// over durable ipam_objects and the committed changelog; see
+	// committedMaxResourceVersion). Never read last_value from the sequence
+	// here — that's observable before the owning tx commits and would let
+	// the cacher advertise a resume point whose underlying row is still in
+	// flight.
+	maxRV, err := committedMaxResourceVersion(w.db)
+	if err != nil {
 		klog.ErrorS(err, "Failed to get committed max resource version for initial-events-end bookmark")
 		return false
 	}
@@ -1051,18 +1047,30 @@ func (w *postgresWatch) toWatchEvent(eventType string, data []byte, rv int64) (*
 	}, nil
 }
 
-// sendBookmark sends a periodic bookmark event reflecting the latest RV
-// that is guaranteed committed. We use only changelog rows whose commit_xid
-// is strictly below the current snapshot xmin so the advertised RV can be
-// safely handed back as a resume point — resume-from a not-yet-committed RV
-// would confuse seedCursorFromRV into skipping rows.
-func (w *postgresWatch) sendBookmark() {
+// committedMaxResourceVersion returns the highest resource version known to be
+// durably committed: the higher of the live object rows and recently committed
+// changelog entries (which cover deletes whose object rows are gone). The
+// object rows must be included — the changelog is pruned to a short window, so
+// on a quiet, long-lived database it can be empty while objects with much
+// higher versions remain, and a version taken from the changelog alone would
+// be stale and make list results come back empty.
+func committedMaxResourceVersion(db *sql.DB) (int64, error) {
 	var maxRV int64
-	err := w.db.QueryRow(
-		`SELECT COALESCE(MAX(resource_version), 0)
-		   FROM ipam_changelog
-		  WHERE commit_xid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint`,
+	err := db.QueryRow(
+		`SELECT GREATEST(
+		          (SELECT COALESCE(MAX(resource_version), 0) FROM ipam_objects),
+		          (SELECT COALESCE(MAX(resource_version), 0)
+		             FROM ipam_changelog
+		            WHERE commit_xid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint),
+		          0)`,
 	).Scan(&maxRV)
+	return maxRV, err
+}
+
+// sendBookmark sends a periodic bookmark event reflecting the latest RV
+// that is guaranteed committed.
+func (w *postgresWatch) sendBookmark() {
+	maxRV, err := committedMaxResourceVersion(w.db)
 	if err != nil {
 		klog.ErrorS(err, "Failed to get max resource version for bookmark")
 		return
