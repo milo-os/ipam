@@ -153,7 +153,12 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 	if !ok {
 		return nil, fmt.Errorf("unexpected parent pool type %T", parentObj)
 	}
-	ipFamily := string(parentPool.Spec.IPFamily)
+	// Child pools inherit their family from the parent rather than setting
+	// spec.ipFamily, so resolve it before allocating.
+	ipFamily, err := effectiveIPFamily(parentPool)
+	if err != nil {
+		return nil, apierrors.NewBadRequest(err.Error())
+	}
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -275,6 +280,28 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 // must carry the same prefix.
 func poolStorageKey(project, name string) string {
 	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
+}
+
+// effectiveIPFamily returns a pool's address family. Root pools set it in
+// spec.ipFamily; child pools leave that empty and carry the family in their
+// carved status.allocatedCIDR. Both are one hop away, so no chain walk.
+func effectiveIPFamily(pool *ipam.IPPool) (string, error) {
+	if pool.Spec.IPFamily != "" {
+		return string(pool.Spec.IPFamily), nil
+	}
+	cidr := pool.Status.AllocatedCIDR
+	if cidr == "" {
+		// Not yet provisioned: no family to inherit.
+		return "", fmt.Errorf("parent IPPool %q has no resolved IP family", pool.Name)
+	}
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", fmt.Errorf("parse parent allocated CIDR %q: %w", cidr, err)
+	}
+	if ip.To4() != nil {
+		return string(ipam.IPv4), nil
+	}
+	return string(ipam.IPv6), nil
 }
 
 // mapAllocationError translates allocator sentinel errors into the matching

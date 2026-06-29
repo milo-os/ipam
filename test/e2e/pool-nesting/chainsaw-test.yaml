@@ -1,0 +1,169 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pool-nesting
+spec:
+  description: |
+    Multi-level IPPool nesting: root -> child -> grandchild (child-of-child).
+
+    Regression for milo-os/ipam#55: creating a pool whose parent is itself a
+    child pool failed because the child-pool carve path read the parent's
+    spec.ipFamily — empty on a child pool — and inserted NULL into
+    ipam_cidr_allocations.ip_family, violating the CHECK constraint. The
+    effective family must instead be resolved from the parent's
+    status.allocatedCIDR.
+
+    - Root IPPool (10.0.0.0/8, IPv4) reaches Ready
+    - Child IPPool (parentPoolRef=root, /12) reaches Ready
+    - Grandchild IPPool (parentPoolRef=child, /16) reaches Ready and carves a
+      sub-prefix within the child's range. Before the fix this CREATE fails.
+    - A leaf IPClaim against the grandchild binds inside the grandchild range.
+
+  steps:
+    - name: create-root-pool
+      description: Root IPPool 10.0.0.0/8, explicit ipFamily IPv4
+      try:
+        - create:
+            file: test-data/root-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool nest-root \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: nest-root not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+
+    - name: create-child-pool
+      description: |
+        Child IPPool nest-child (parentPoolRef=nest-root, /12). Carved from
+        the root; status.allocatedCIDR carries the inherited IPv4 family.
+      try:
+        - create:
+            file: test-data/child-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool nest-child \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: nest-child not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+              cidr=$(kubectl get ippool nest-child -o jsonpath='{.status.allocatedCIDR}')
+              python3 -c "
+              import ipaddress, sys
+              child = ipaddress.ip_network('$cidr')
+              if child.prefixlen != 12 or not child.subnet_of(ipaddress.ip_network('10.0.0.0/8')):
+                  print(f'FAIL: bad child cidr {child}', file=sys.stderr); sys.exit(1)
+              print(f'OK nest-child cidr={child}')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK nest-child cidr=')): true
+
+    - name: create-grandchild-pool
+      description: |
+        Grandchild IPPool nest-grandchild (parentPoolRef=nest-child, /16). The
+        parent is itself a child pool with empty spec.ipFamily; the server must
+        resolve the family from the parent's status.allocatedCIDR. Before the
+        fix this CREATE fails with a 23514 CHECK-constraint violation and the
+        pool never reaches Ready.
+      try:
+        - create:
+            file: test-data/grandchild-pool.yaml
+        - script:
+            timeout: 45s
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ippool nest-grandchild \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Ready" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Ready" ]; then
+                echo "FAIL: nest-grandchild not Ready after 30s (phase=$phase)"
+                exit 1
+              fi
+              gc=$(kubectl get ippool nest-grandchild -o jsonpath='{.status.allocatedCIDR}')
+              child=$(kubectl get ippool nest-child -o jsonpath='{.status.allocatedCIDR}')
+              if [ -z "$gc" ]; then
+                echo "FAIL: nest-grandchild status.allocatedCIDR empty"
+                exit 1
+              fi
+              python3 -c "
+              import ipaddress, sys
+              gc = ipaddress.ip_network('$gc')
+              parent = ipaddress.ip_network('$child')
+              if gc.prefixlen != 16:
+                  print(f'FAIL: expected /16, got {gc}', file=sys.stderr); sys.exit(1)
+              if not gc.subnet_of(parent):
+                  print(f'FAIL: {gc} not subnet of {parent}', file=sys.stderr); sys.exit(1)
+              print(f'OK nest-grandchild cidr={gc}')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK nest-grandchild cidr=')): true
+
+    - name: claim-leaf-against-grandchild
+      description: /24 IPClaim against the grandchild binds within its range
+      try:
+        - create:
+            file: test-data/grandchild-claim.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" nest-grandchild-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: nest-grandchild-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+              leaf=$(kubectl get ipclaim -n "$NAMESPACE" nest-grandchild-claim -o jsonpath='{.status.allocatedCIDR}')
+              gc=$(kubectl get ippool nest-grandchild -o jsonpath='{.status.allocatedCIDR}')
+              python3 -c "
+              import ipaddress, sys
+              leaf = ipaddress.ip_network('$leaf', strict=False)
+              gc = ipaddress.ip_network('$gc', strict=False)
+              if not leaf.subnet_of(gc):
+                  print(f'FAIL: leaf {leaf} not subnet of grandchild {gc}', file=sys.stderr); sys.exit(1)
+              print(f'OK leaf {leaf} subset of grandchild {gc}')
+              "
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK leaf ')): true
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" nest-grandchild-claim --ignore-not-found=true
+              kubectl delete ippool nest-grandchild --ignore-not-found=true
+              kubectl delete ippool nest-child --ignore-not-found=true
+              kubectl delete ippool nest-root --ignore-not-found=true
+              echo "pool-nesting cleanup done"
+            check:
+              ($error == null): true
