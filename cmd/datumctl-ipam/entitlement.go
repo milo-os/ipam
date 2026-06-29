@@ -106,9 +106,9 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 			withFix(fmt.Sprintf("request access (requires provider approval) with:\n       datumctl services enable %s", ipamServiceName))
 	}
 
-	fmt.Fprintf(out, "IPAM is not enabled for project %q.\n", project)
-	fmt.Fprintf(out, "Requesting access submits a request that a provider must approve before IPAM can be used.\n")
-	fmt.Fprintf(out, "Would you like to submit the request now? [y/N]: ")
+	_, _ = fmt.Fprintf(out, "IPAM is not enabled for project %q.\n", project)
+	_, _ = fmt.Fprint(out, "Requesting access submits a request that a provider must approve before IPAM can be used.\n")
+	_, _ = fmt.Fprint(out, "Would you like to submit the request now? [y/N]: ")
 
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
@@ -119,7 +119,7 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 		return entitlementNotEnabledErr(project)
 	}
 
-	fmt.Fprintf(out, "Submitting an IPAM access request for project %q...\n", project)
+	_, _ = fmt.Fprintf(out, "Submitting an IPAM access request for project %q...\n", project)
 
 	entitlement := &servicesv1alpha1.ServiceEntitlement{
 		ObjectMeta: metav1.ObjectMeta{Name: ipamServiceName},
@@ -150,9 +150,9 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 	for {
 		select {
 		case <-watchCtx.Done():
-			fmt.Fprintf(out, "\nYour IPAM access request for project %q has been submitted and is awaiting provider approval.\n", project)
-			fmt.Fprintf(out, "Run your command again once it becomes active.\n\n")
-			fmt.Fprintf(out, "Check status with: datumctl services list\n")
+			_, _ = fmt.Fprintf(out, "\nYour IPAM access request for project %q has been submitted and is awaiting provider approval.\n", project)
+			_, _ = fmt.Fprintf(out, "Run your command again once it becomes active.\n\n")
+			_, _ = fmt.Fprintf(out, "Check status with: datumctl services list\n")
 			return pendingApprovalErr(project)
 
 		case event, ok := <-watcher.ResultChan():
@@ -171,13 +171,13 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 			}
 			switch item.Status.Phase {
 			case servicesv1alpha1.EntitlementPhaseActive:
-				fmt.Fprintf(out, "IPAM enabled for project %q.\n\n", project)
+				_, _ = fmt.Fprintf(out, "IPAM enabled for project %q.\n\n", project)
 				return nil
 			case servicesv1alpha1.EntitlementPhasePendingApproval:
-				fmt.Fprintf(out, "\nYour IPAM access request for project %q has been submitted,\n", project)
-				fmt.Fprintf(out, "but it requires provider approval before IPAM can be used.\n")
-				fmt.Fprintf(out, "You will be notified when access is granted.\n\n")
-				fmt.Fprintf(out, "Check status with: datumctl services list\n")
+				_, _ = fmt.Fprintf(out, "\nYour IPAM access request for project %q has been submitted,\n", project)
+				_, _ = fmt.Fprintf(out, "but it requires provider approval before IPAM can be used.\n")
+				_, _ = fmt.Fprintf(out, "You will be notified when access is granted.\n\n")
+				_, _ = fmt.Fprintf(out, "Check status with: datumctl services list\n")
 				return pendingApprovalErr(project)
 			case servicesv1alpha1.EntitlementPhaseRejected:
 				return newCLIError(exitForbidden,

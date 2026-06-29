@@ -96,7 +96,7 @@ func (a *app) renderMachine(obj any, nameFn func() string) (done bool, err error
 	case outputYAML:
 		return true, encodeYAML(a.io.Out, obj)
 	case outputName:
-		fmt.Fprintln(a.io.Out, nameFn())
+		_, _ = fmt.Fprintln(a.io.Out, nameFn())
 		return true, nil
 	}
 	return false, nil

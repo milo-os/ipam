@@ -101,20 +101,6 @@ func isTerminal(w io.Writer) bool {
 	return term.IsTerminal(int(f.Fd()))
 }
 
-// terminalWidth returns the width of the terminal attached to w, or a sensible
-// default when w is not a terminal (e.g. a pipe or a test buffer).
-func terminalWidth(w io.Writer) int {
-	f, ok := w.(*os.File)
-	if !ok {
-		return 100
-	}
-	width, _, err := term.GetSize(int(f.Fd()))
-	if err != nil || width <= 0 {
-		return 100
-	}
-	return width
-}
-
 // table is a small helper over text/tabwriter for aligned, column output.
 type table struct {
 	w       *tabwriter.Writer
@@ -126,12 +112,12 @@ func newTable(out io.Writer, headers []string) *table {
 		w:       tabwriter.NewWriter(out, 0, 2, 3, ' ', 0),
 		headers: headers,
 	}
-	fmt.Fprintln(t.w, strings.Join(headers, "\t"))
+	_, _ = fmt.Fprintln(t.w, strings.Join(headers, "\t"))
 	return t
 }
 
 func (t *table) row(cells ...string) {
-	fmt.Fprintln(t.w, strings.Join(cells, "\t"))
+	_, _ = fmt.Fprintln(t.w, strings.Join(cells, "\t"))
 }
 
 func (t *table) flush() error {

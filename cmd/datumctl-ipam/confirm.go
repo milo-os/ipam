@@ -31,7 +31,7 @@ func (a *app) confirmYesNo(prompt string) bool {
 	if a.nonInteractive() {
 		return true
 	}
-	fmt.Fprintf(a.io.ErrOut, "%s [y/N]: ", prompt)
+	_, _ = fmt.Fprintf(a.io.ErrOut, "%s [y/N]: ", prompt)
 	reader := bufio.NewReader(a.io.In)
 	line, _ := reader.ReadString('\n')
 	line = strings.ToLower(strings.TrimSpace(line))
@@ -48,11 +48,11 @@ func (a *app) confirmTyped(name, prompt string) (bool, error) {
 	}
 	if a.nonInteractive() {
 		return false, newCLIError(exitAborted,
-			fmt.Sprintf("refusing to perform a destructive action non-interactively without confirmation")).
+			"refusing to perform a destructive action non-interactively without confirmation").
 			withFix("re-run with --yes to confirm releasing " + name + ".")
 	}
-	fmt.Fprintln(a.io.ErrOut, prompt)
-	fmt.Fprintf(a.io.ErrOut, "Type the name %q to confirm: ", name)
+	_, _ = fmt.Fprintln(a.io.ErrOut, prompt)
+	_, _ = fmt.Fprintf(a.io.ErrOut, "Type the name %q to confirm: ", name)
 	reader := bufio.NewReader(a.io.In)
 	line, _ := reader.ReadString('\n')
 	if strings.TrimSpace(line) != name {

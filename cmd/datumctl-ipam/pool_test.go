@@ -8,11 +8,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
-	"go.miloapis.com/ipam/pkg/client/clientset/versioned/fake"
 )
 
 func TestPoolListTable(t *testing.T) {
-	cs := fake.NewSimpleClientset(
+	cs := newFakeClientset(
 		newPool("prod-backbone", "10.0.0.0/8", ipamv1alpha1.IPv4, 100, 73),
 		newPool("edge-v6", "2001:db8::/32", ipamv1alpha1.IPv6, 100, 4),
 	)
@@ -53,7 +52,7 @@ func TestPoolListPrefersServerStatus(t *testing.T) {
 			LargestFreePrefix:  45,
 		},
 	}
-	cs := fake.NewSimpleClientset(child)
+	cs := newFakeClientset(child)
 	ta := newTestApp(cs, nil)
 	cmd := newPoolListCommand(ta.app)
 	if err := cmd.RunE(cmd, nil); err != nil {
@@ -71,7 +70,7 @@ func TestPoolListPrefersServerStatus(t *testing.T) {
 }
 
 func TestPoolListName(t *testing.T) {
-	cs := fake.NewSimpleClientset(newPool("p1", "10.0.0.0/8", ipamv1alpha1.IPv4, 100, 0))
+	cs := newFakeClientset(newPool("p1", "10.0.0.0/8", ipamv1alpha1.IPv4, 100, 0))
 	ta := newTestApp(cs, &globalOptions{output: outputName, color: "never"})
 	cmd := newPoolListCommand(ta.app)
 	if err := cmd.RunE(cmd, nil); err != nil {
@@ -86,7 +85,7 @@ func TestPoolTreeHierarchy(t *testing.T) {
 	root := newPool("prod-backbone", "10.0.0.0/8", ipamv1alpha1.IPv4, 100, 73)
 	child := newPool("us-west", "10.1.0.0/16", ipamv1alpha1.IPv4, 100, 61)
 	child.Spec.ParentPoolRef = &ipamv1alpha1.LocalRef{Name: "prod-backbone"}
-	cs := fake.NewSimpleClientset(root, child)
+	cs := newFakeClientset(root, child)
 	ta := newTestApp(cs, nil)
 	cmd := newPoolTreeCommand(ta.app)
 	if err := cmd.RunE(cmd, nil); err != nil {
@@ -112,10 +111,10 @@ func TestPoolReleaseDryRunListsBlastRadius(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "leaf", Namespace: "default"},
 		Spec:       ipamv1alpha1.IPClaimSpec{IPFamily: ipamv1alpha1.IPv4, PrefixLength: 24, PoolRef: &ipamv1alpha1.NamespacedRef{Name: "backbone"}},
 	}
-	cs := fake.NewSimpleClientset(root, child, claim)
+	cs := newFakeClientset(root, child, claim)
 	ta := newTestApp(cs, nil)
 	cmd := newPoolReleaseCommand(ta.app)
-	cmd.Flags().Set("dry-run", "true")
+	_ = cmd.Flags().Set("dry-run", "true")
 	if err := cmd.RunE(cmd, []string{"backbone"}); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +125,7 @@ func TestPoolReleaseDryRunListsBlastRadius(t *testing.T) {
 }
 
 func TestPoolReleaseRefusesNonInteractiveWithoutYes(t *testing.T) {
-	cs := fake.NewSimpleClientset(newPool("backbone", "10.0.0.0/8", ipamv1alpha1.IPv4, 100, 0))
+	cs := newFakeClientset(newPool("backbone", "10.0.0.0/8", ipamv1alpha1.IPv4, 100, 0))
 	// Default test app stdin is a strings.Reader (not a TTY) -> non-interactive.
 	ta := newTestApp(cs, nil)
 	cmd := newPoolReleaseCommand(ta.app)
@@ -140,11 +139,11 @@ func TestPoolReleaseRefusesNonInteractiveWithoutYes(t *testing.T) {
 }
 
 func TestPoolCreateDryRun(t *testing.T) {
-	cs := fake.NewSimpleClientset()
+	cs := newFakeClientset()
 	ta := newTestApp(cs, nil)
 	cmd := newPoolCreateCommand(ta.app)
-	cmd.Flags().Set("cidr", "10.0.0.0/8")
-	cmd.Flags().Set("dry-run", "true")
+	_ = cmd.Flags().Set("cidr", "10.0.0.0/8")
+	_ = cmd.Flags().Set("dry-run", "true")
 	if err := cmd.RunE(cmd, []string{"newpool"}); err != nil {
 		t.Fatal(err)
 	}

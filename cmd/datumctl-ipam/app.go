@@ -158,6 +158,6 @@ func (a *app) scopeLine(namespace string) string {
 // vlogf writes a diagnostic line to stderr only when --verbose is set.
 func (a *app) vlogf(format string, args ...any) {
 	if a.opts.verbose {
-		fmt.Fprintf(a.io.ErrOut, format+"\n", args...)
+		_, _ = fmt.Fprintf(a.io.ErrOut, format+"\n", args...)
 	}
 }

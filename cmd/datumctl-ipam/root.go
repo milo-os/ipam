@@ -109,7 +109,7 @@ func newVersionCommand(io IOStreams) *cobra.Command {
 		Short: "Print the plugin version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintf(io.Out, "datumctl-ipam %s (IPAM API %s)\n", pluginVersion, minAPIVersion)
+			_, _ = fmt.Fprintf(io.Out, "datumctl-ipam %s (IPAM API %s)\n", pluginVersion, minAPIVersion)
 			return nil
 		},
 	}

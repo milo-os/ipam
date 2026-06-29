@@ -67,7 +67,7 @@ The layout is computed client-side from data the API already returns.`,
 					return newCLIError(exitNotFound, fmt.Sprintf("pool %q is not visible in the active project", name)).
 						withFix("list visible pools:\n       datumctl ipam pool list")
 				}
-				fmt.Fprintln(a.io.ErrOut, "No pools found.")
+				_, _ = fmt.Fprintln(a.io.ErrOut, "No pools found.")
 				return nil
 			}
 
@@ -164,7 +164,7 @@ func (a *app) printTreeNode(
 	}
 	line := fmt.Sprintf("%s%s\t%s\t%s\t%.0f%% used\t(%s)",
 		indent+connector, pool.Name, orDash(cidr), orDash(string(pool.Spec.IPFamily)), pct, kind)
-	fmt.Fprintln(w, line)
+	_, _ = fmt.Fprintln(w, line)
 
 	children := byParent[pool.Name]
 	claims := leaves[pool.Name]
@@ -189,6 +189,6 @@ func (a *app) printPrefixLeaf(w io.Writer, claim ipamv1alpha1.IPClaim, indent st
 	if claim.Spec.OwnerRef != nil && claim.Spec.OwnerRef.Name != "" {
 		owner = claim.Spec.OwnerRef.Name
 	}
-	fmt.Fprintf(w, "%s%s\t%s\t%s\t─\t(prefix · %s)\n",
+	_, _ = fmt.Fprintf(w, "%s%s\t%s\t%s\t─\t(prefix · %s)\n",
 		indent+connector, claim.Name, orDash(cidr), orDash(string(claim.Spec.IPFamily)), owner)
 }

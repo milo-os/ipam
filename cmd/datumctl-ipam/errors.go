@@ -196,7 +196,7 @@ func exhaustionError(poolName string, family string, requested int, util float64
 		fmt.Fprintf(&b, "\n       Utilization is %.0f%%.", util)
 	}
 
-	fix := "request a smaller prefix"
+	var fix string
 	if largestFree > requested {
 		fix = fmt.Sprintf("request a smaller prefix (--length %d) or free space:", largestFree)
 	} else {
@@ -218,9 +218,9 @@ func noMatchingPoolError(ref string, selector string, candidates []string) *cliE
 	}
 	ce := newCLIError(exitNotFound, b.String())
 	if len(candidates) > 0 {
-		ce.withFix("pools that are visible here:\n       " + strings.Join(candidates, "\n       "))
+		ce = ce.withFix("pools that are visible here:\n       " + strings.Join(candidates, "\n       "))
 	} else {
-		ce.withFix("list visible pools:\n       datumctl ipam pool list")
+		ce = ce.withFix("list visible pools:\n       datumctl ipam pool list")
 	}
 	return ce
 }

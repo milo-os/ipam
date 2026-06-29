@@ -31,10 +31,10 @@ type loggingRoundTripper struct {
 func (l *loggingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := l.inner.RoundTrip(req)
 	if err != nil {
-		fmt.Fprintf(l.w, "API call: %s %s -> error: %v\n", req.Method, req.URL.Path, err)
+		_, _ = fmt.Fprintf(l.w, "API call: %s %s -> error: %v\n", req.Method, req.URL.Path, err)
 		return resp, err
 	}
-	fmt.Fprintf(l.w, "API call: %s %s -> %s\n", req.Method, req.URL.Path, resp.Status)
+	_, _ = fmt.Fprintf(l.w, "API call: %s %s -> %s\n", req.Method, req.URL.Path, resp.Status)
 	return resp, err
 }
 

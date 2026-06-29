@@ -10,12 +10,11 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
-	"go.miloapis.com/ipam/pkg/client/clientset/versioned/fake"
 )
 
 func TestPrefixClaimHappyPath(t *testing.T) {
 	pool := newPool("staging-backbone", "10.7.0.0/16", ipamv1alpha1.IPv4, 65536, 20316)
-	cs := fake.NewSimpleClientset(pool)
+	cs := newFakeClientset(pool)
 	cs.PrependReactor("create", "ipclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		claim := action.(k8stesting.CreateAction).GetObject().(*ipamv1alpha1.IPClaim)
 		claim.Name = "staging-env-7"
@@ -40,7 +39,7 @@ func TestPrefixClaimHappyPath(t *testing.T) {
 
 func TestPrefixClaimQuietPrintsOnlyCIDR(t *testing.T) {
 	pool := newPool("p", "10.7.0.0/16", ipamv1alpha1.IPv4, 65536, 0)
-	cs := fake.NewSimpleClientset(pool)
+	cs := newFakeClientset(pool)
 	cs.PrependReactor("create", "ipclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		claim := action.(k8stesting.CreateAction).GetObject().(*ipamv1alpha1.IPClaim)
 		claim.Name = "x"
@@ -58,7 +57,7 @@ func TestPrefixClaimQuietPrintsOnlyCIDR(t *testing.T) {
 
 func TestPrefixClaimExhaustionExitCode(t *testing.T) {
 	pool := newPool("env-pool", "10.7.0.0/22", ipamv1alpha1.IPv4, 1024, 1004)
-	cs := fake.NewSimpleClientset(pool)
+	cs := newFakeClientset(pool)
 	cs.PrependReactor("create", "ipclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, statusErr(507, "InsufficientStorage", "pool full")
 	})
@@ -78,7 +77,7 @@ func TestPrefixClaimExhaustionExitCode(t *testing.T) {
 
 func TestPrefixClaimDryRunShowsExactCIDR(t *testing.T) {
 	pool := newPool("prod-backbone", "10.0.0.0/8", ipamv1alpha1.IPv4, 1024, 256)
-	cs := fake.NewSimpleClientset(pool)
+	cs := newFakeClientset(pool)
 	// The server (honoring DryRun) computes the real next block and persists
 	// nothing; model that by returning a claim with the computed CIDR and
 	// handling the action so the tracker stays empty.
@@ -130,7 +129,7 @@ func TestPrefixClaimIdempotentByName(t *testing.T) {
 		},
 		Status: ipamv1alpha1.IPClaimStatus{Phase: ipamv1alpha1.ClaimBound, AllocatedCIDR: "10.4.16.0/24"},
 	}
-	cs := fake.NewSimpleClientset(pool, existing)
+	cs := newFakeClientset(pool, existing)
 	createCalls := 0
 	cs.PrependReactor("create", "ipclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		createCalls++
@@ -151,7 +150,7 @@ func TestPrefixClaimIdempotentByName(t *testing.T) {
 }
 
 func TestPrefixClaimRequiresPoolOrSelector(t *testing.T) {
-	cs := fake.NewSimpleClientset()
+	cs := newFakeClientset()
 	ta := newTestApp(cs, nil)
 	err := runPrefixClaim(ta.app, &claimOptions{length: 24})
 	if err == nil {
@@ -163,7 +162,7 @@ func TestPrefixClaimRequiresPoolOrSelector(t *testing.T) {
 }
 
 func TestPrefixClaimChildPoolUnsupported(t *testing.T) {
-	cs := fake.NewSimpleClientset()
+	cs := newFakeClientset()
 	ta := newTestApp(cs, nil)
 	err := runPrefixClaim(ta.app, &claimOptions{pool: "p", length: 24, childPool: "kid"})
 	if err == nil || toCLIError(err).code != exitUsage {
@@ -204,7 +203,7 @@ func TestGenerateResourceNameDNS1123(t *testing.T) {
 		t.Fatalf("missing prefix: %q", name)
 	}
 	for _, r := range name {
-		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-') {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
 			t.Fatalf("name %q contains non-DNS-1123 rune %q", name, r)
 		}
 	}
@@ -215,7 +214,7 @@ func TestPrefixClaimDefaultPathCreatesNamedClaim(t *testing.T) {
 	// succeeds (mirrors the live-cluster Story 1 path that previously failed with
 	// "metadata.name was not generated").
 	pool := newPool("us-west", "10.0.0.0/16", ipamv1alpha1.IPv4, 65536, 0)
-	cs := fake.NewSimpleClientset(pool)
+	cs := newFakeClientset(pool)
 	var sawName string
 	cs.PrependReactor("create", "ipclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		claim := action.(k8stesting.CreateAction).GetObject().(*ipamv1alpha1.IPClaim)
@@ -246,7 +245,7 @@ func TestPrefixListJSON(t *testing.T) {
 		Spec:       ipamv1alpha1.IPClaimSpec{IPFamily: ipamv1alpha1.IPv4, PrefixLength: 24},
 		Status:     ipamv1alpha1.IPClaimStatus{Phase: ipamv1alpha1.ClaimBound, AllocatedCIDR: "10.0.0.0/24"},
 	}
-	cs := fake.NewSimpleClientset(claim)
+	cs := newFakeClientset(claim)
 	ta := newTestApp(cs, &globalOptions{output: outputJSON, color: "never"})
 	cmd := newPrefixListCommand(ta.app)
 	if err := cmd.RunE(cmd, nil); err != nil {

@@ -35,20 +35,20 @@ func renderExit(io IOStreams, err error) int {
 
 	// Primary error line and optional remediation, all on stderr so machine
 	// output on stdout stays clean.
-	io.ErrOut.Write([]byte("Error: " + ce.msg + "\n"))
+	_, _ = io.ErrOut.Write([]byte("Error: " + ce.msg + "\n"))
 	if ce.fix != "" {
-		io.ErrOut.Write([]byte("Fix:   " + ce.fix + "\n"))
+		_, _ = io.ErrOut.Write([]byte("Fix:   " + ce.fix + "\n"))
 	}
 	// The symbolic exit-code name aids log readers; show it always so the
 	// "pool full vs auth failed" distinction is visible in CI logs.
 	if name := exitCodeNames[ce.code]; name != "" && ce.code != exitOK {
-		io.ErrOut.Write([]byte("exit status " + itoa(ce.code) + "   # " + name + "\n"))
+		_, _ = io.ErrOut.Write([]byte("exit status " + itoa(ce.code) + "   # " + name + "\n"))
 	}
 	if ce.cause != nil {
 		// Stack-trace-equivalent detail only under --verbose/--debug, surfaced by
 		// the cause being printed.
 		if verboseEnabled() {
-			io.ErrOut.Write([]byte("cause: " + ce.cause.Error() + "\n"))
+			_, _ = io.ErrOut.Write([]byte("cause: " + ce.cause.Error() + "\n"))
 		}
 	}
 	return ce.code

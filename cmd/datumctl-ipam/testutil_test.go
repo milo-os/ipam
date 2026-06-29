@@ -5,10 +5,22 @@ import (
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	clientset "go.miloapis.com/ipam/pkg/client/clientset/versioned"
+	"go.miloapis.com/ipam/pkg/client/clientset/versioned/fake"
 )
+
+// newFakeClientset wraps the generated fake constructor. The generated client
+// ships only NewSimpleClientset (NewClientset requires apply-config generation,
+// which this client doesn't use), so the deprecation is suppressed once here
+// rather than at every call site.
+//
+//nolint:staticcheck // NewClientset is not generated for this client
+func newFakeClientset(objects ...runtime.Object) *fake.Clientset {
+	return fake.NewSimpleClientset(objects...)
+}
 
 // testApp wires an app with buffer-backed streams and an injected clientset so
 // command behavior can be asserted without a real cluster or TTY.

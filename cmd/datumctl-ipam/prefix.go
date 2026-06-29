@@ -244,7 +244,7 @@ func (a *app) renderClaimResult(claim *ipamv1alpha1.IPClaim, poolBefore *ipamv1a
 	cidr := claim.Status.AllocatedCIDR
 	if a.opts.quiet {
 		// Script-friendly: just the CIDR (the one fact the caller came for).
-		fmt.Fprintln(a.io.Out, cidr)
+		_, _ = fmt.Fprintln(a.io.Out, cidr)
 		return nil
 	}
 
@@ -267,19 +267,19 @@ func (a *app) renderClaimResult(claim *ipamv1alpha1.IPClaim, poolBefore *ipamv1a
 	if idempotent {
 		verb = "Reused existing claim for"
 	}
-	fmt.Fprintf(a.io.Out, "%s %s %s from pool %q%s\n", successPrefix(a.color), verb, orDash(cidr), poolName, utilNote)
-	fmt.Fprintf(a.io.Out, "  prefix:      %s\n", claim.Name)
+	_, _ = fmt.Fprintf(a.io.Out, "%s %s %s from pool %q%s\n", successPrefix(a.color), verb, orDash(cidr), poolName, utilNote)
+	_, _ = fmt.Fprintf(a.io.Out, "  prefix:      %s\n", claim.Name)
 	if claim.Status.BoundAllocationRef != nil {
-		fmt.Fprintf(a.io.Out, "  allocation:  %s\n", claim.Status.BoundAllocationRef.Name)
+		_, _ = fmt.Fprintf(a.io.Out, "  allocation:  %s\n", claim.Status.BoundAllocationRef.Name)
 	}
 	if poolBefore != nil {
 		poolCIDR := poolBefore.Status.AllocatedCIDR
 		if poolCIDR == "" {
 			poolCIDR = poolBefore.Spec.CIDR
 		}
-		fmt.Fprintf(a.io.Out, "  pool:        %s (%s, %s)\n", poolName, orDash(poolCIDR), orDash(string(claim.Spec.IPFamily)))
+		_, _ = fmt.Fprintf(a.io.Out, "  pool:        %s (%s, %s)\n", poolName, orDash(poolCIDR), orDash(string(claim.Spec.IPFamily)))
 	}
-	fmt.Fprintf(a.io.Out, "  org/project: %s\n", a.scopeLine(claim.Namespace))
+	_, _ = fmt.Fprintf(a.io.Out, "  org/project: %s\n", a.scopeLine(claim.Namespace))
 	return nil
 }
 
@@ -289,12 +289,12 @@ func (a *app) renderClaimDryRun(o *claimOptions, pool *ipamv1alpha1.IPPool, fami
 	if done, err := a.renderMachine(dryClaim, func() string { return "ipclaim/" + dryClaim.Name }); done {
 		return err
 	}
-	fmt.Fprintln(a.io.ErrOut, "Dry run — no allocation was made.")
+	_, _ = fmt.Fprintln(a.io.ErrOut, "Dry run — no allocation was made.")
 	// The server (honoring DryRun) returns the exact block it would allocate.
 	if cidr := dryClaim.Status.AllocatedCIDR; cidr != "" {
-		fmt.Fprintf(a.io.ErrOut, "Would claim:   %s from pool %q\n", cidr, poolDisplay(o))
+		_, _ = fmt.Fprintf(a.io.ErrOut, "Would claim:   %s from pool %q\n", cidr, poolDisplay(o))
 	} else {
-		fmt.Fprintf(a.io.ErrOut, "Would claim:   a /%d from pool %q\n", o.length, poolDisplay(o))
+		_, _ = fmt.Fprintf(a.io.ErrOut, "Would claim:   a /%d from pool %q\n", o.length, poolDisplay(o))
 	}
 	if pool != nil {
 		before, after := projectedUtilization(pool.Status.Capacity, family, o.length)
@@ -303,7 +303,7 @@ func (a *app) renderClaimDryRun(o *claimOptions, pool *ipamv1alpha1.IPPool, fami
 		if freeAfter > 0 {
 			freeStr = fmt.Sprintf("/%d", freeAfter)
 		}
-		fmt.Fprintf(a.io.ErrOut, "Pool after:    utilization %.0f%% → %.0f%%, largest free block %s\n", before, after, freeStr)
+		_, _ = fmt.Fprintf(a.io.ErrOut, "Pool after:    utilization %.0f%% → %.0f%%, largest free block %s\n", before, after, freeStr)
 	}
 	return nil
 }
@@ -385,7 +385,7 @@ func newPrefixListCommand(a *app) *cobra.Command {
 				return encodeYAML(a.io.Out, list)
 			case outputName:
 				for i := range items {
-					fmt.Fprintf(a.io.Out, "ipclaim/%s\n", items[i].Name)
+					_, _ = fmt.Fprintf(a.io.Out, "ipclaim/%s\n", items[i].Name)
 				}
 				return nil
 			}
@@ -399,7 +399,7 @@ func newPrefixListCommand(a *app) *cobra.Command {
 func (a *app) renderPrefixTable(claims []ipamv1alpha1.IPClaim) error {
 	if len(claims) == 0 {
 		if !a.opts.quiet {
-			fmt.Fprintln(a.io.ErrOut, "No prefixes found.")
+			_, _ = fmt.Fprintln(a.io.ErrOut, "No prefixes found.")
 		}
 		return nil
 	}
@@ -555,10 +555,10 @@ func newPrefixReleaseCommand(a *app) *cobra.Command {
 			}
 
 			if dryRun {
-				fmt.Fprintln(a.io.ErrOut, "Dry run — nothing was released.")
-				fmt.Fprintf(a.io.ErrOut, "Would release prefix %q (%s).\n", name, orDash(claim.Status.AllocatedCIDR))
+				_, _ = fmt.Fprintln(a.io.ErrOut, "Dry run — nothing was released.")
+				_, _ = fmt.Fprintf(a.io.ErrOut, "Would release prefix %q (%s).\n", name, orDash(claim.Status.AllocatedCIDR))
 				if claim.Status.BoundAllocationRef != nil {
-					fmt.Fprintf(a.io.ErrOut, "Would free allocation %q.\n", claim.Status.BoundAllocationRef.Name)
+					_, _ = fmt.Fprintf(a.io.ErrOut, "Would free allocation %q.\n", claim.Status.BoundAllocationRef.Name)
 				}
 				return nil
 			}
@@ -571,10 +571,10 @@ func newPrefixReleaseCommand(a *app) *cobra.Command {
 				return classifyError(err)
 			}
 			if a.opts.output == outputName {
-				fmt.Fprintf(a.io.Out, "ipclaim/%s\n", name)
+				_, _ = fmt.Fprintf(a.io.Out, "ipclaim/%s\n", name)
 				return nil
 			}
-			fmt.Fprintf(a.io.Out, "%s Released prefix %q\n", successPrefix(a.color), name)
+			_, _ = fmt.Fprintf(a.io.Out, "%s Released prefix %q\n", successPrefix(a.color), name)
 			return nil
 		},
 	}

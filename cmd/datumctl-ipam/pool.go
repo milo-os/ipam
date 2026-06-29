@@ -123,8 +123,8 @@ func newPoolCreateCommand(a *app) *cobra.Command {
 			}
 
 			if dryRun {
-				fmt.Fprintln(a.io.ErrOut, "Dry run — no pool was created.")
-				fmt.Fprintf(a.io.ErrOut, "Would create pool %q (cidr %s, family %s).\n",
+				_, _ = fmt.Fprintln(a.io.ErrOut, "Dry run — no pool was created.")
+				_, _ = fmt.Fprintf(a.io.ErrOut, "Would create pool %q (cidr %s, family %s).\n",
 					name, orDash(cidr), orDash(string(pool.Spec.IPFamily)))
 				_, err := a.renderMachine(pool, func() string { return "ippool/" + name })
 				return err
@@ -142,7 +142,7 @@ func newPoolCreateCommand(a *app) *cobra.Command {
 			if done, err := a.renderMachine(created, func() string { return "ippool/" + created.Name }); done {
 				return err
 			}
-			fmt.Fprintf(a.io.Out, "%s Created pool %q\n", successPrefix(a.color), created.Name)
+			_, _ = fmt.Fprintf(a.io.Out, "%s Created pool %q\n", successPrefix(a.color), created.Name)
 			return nil
 		},
 	}
@@ -194,7 +194,7 @@ func newPoolListCommand(a *app) *cobra.Command {
 				return encodeYAML(a.io.Out, list)
 			case outputName:
 				for i := range list.Items {
-					fmt.Fprintf(a.io.Out, "ippool/%s\n", list.Items[i].Name)
+					_, _ = fmt.Fprintf(a.io.Out, "ippool/%s\n", list.Items[i].Name)
 				}
 				return nil
 			}
@@ -229,7 +229,7 @@ func childCounts(cs clientset.Interface, namespace string, pools []ipamv1alpha1.
 func (a *app) renderPoolTable(pools []ipamv1alpha1.IPPool) error {
 	if len(pools) == 0 {
 		if !a.opts.quiet {
-			fmt.Fprintln(a.io.ErrOut, "No pools found.")
+			_, _ = fmt.Fprintln(a.io.ErrOut, "No pools found.")
 		}
 		return nil
 	}
@@ -389,17 +389,17 @@ given (mirroring the server's deletion protection).`,
 			blast := len(childPools) + len(heldPrefixes)
 
 			if dryRun {
-				fmt.Fprintln(a.io.ErrOut, "Dry run — nothing was released.")
-				fmt.Fprintf(a.io.ErrOut, "Would release pool %q.\n", name)
+				_, _ = fmt.Fprintln(a.io.ErrOut, "Dry run — nothing was released.")
+				_, _ = fmt.Fprintf(a.io.ErrOut, "Would release pool %q.\n", name)
 				if blast == 0 {
-					fmt.Fprintln(a.io.ErrOut, "Blast radius: none (no child pools or active prefixes).")
+					_, _ = fmt.Fprintln(a.io.ErrOut, "Blast radius: none (no child pools or active prefixes).")
 				} else {
-					fmt.Fprintf(a.io.ErrOut, "Blast radius: %d child pool(s), %d active prefix(es):\n", len(childPools), len(heldPrefixes))
+					_, _ = fmt.Fprintf(a.io.ErrOut, "Blast radius: %d child pool(s), %d active prefix(es):\n", len(childPools), len(heldPrefixes))
 					for _, c := range childPools {
-						fmt.Fprintf(a.io.ErrOut, "  child pool: %s\n", c)
+						_, _ = fmt.Fprintf(a.io.ErrOut, "  child pool: %s\n", c)
 					}
 					for _, p := range heldPrefixes {
-						fmt.Fprintf(a.io.ErrOut, "  prefix:     %s\n", p)
+						_, _ = fmt.Fprintf(a.io.ErrOut, "  prefix:     %s\n", p)
 					}
 				}
 				return nil
@@ -440,10 +440,10 @@ given (mirroring the server's deletion protection).`,
 			}
 			_ = pool
 			if a.opts.output == outputName {
-				fmt.Fprintf(a.io.Out, "ippool/%s\n", name)
+				_, _ = fmt.Fprintf(a.io.Out, "ippool/%s\n", name)
 				return nil
 			}
-			fmt.Fprintf(a.io.Out, "%s Released pool %q\n", successPrefix(a.color), name)
+			_, _ = fmt.Fprintf(a.io.Out, "%s Released pool %q\n", successPrefix(a.color), name)
 			return nil
 		},
 	}
