@@ -7,7 +7,7 @@ require (
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
-	go.miloapis.com/milo v0.28.4-0.20260626190724-dfc7496d84c1
+	go.miloapis.com/milo v0.28.4-0.20260629130346-79689376fe11
 	k8s.io/apimachinery v0.36.0
 	k8s.io/apiserver v0.36.0
 	k8s.io/client-go v0.36.0
