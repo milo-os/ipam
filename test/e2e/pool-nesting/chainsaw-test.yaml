@@ -6,12 +6,9 @@ spec:
   description: |
     Multi-level IPPool nesting: root -> child -> grandchild (child-of-child).
 
-    Regression for milo-os/ipam#55: creating a pool whose parent is itself a
-    child pool failed because the child-pool carve path read the parent's
-    spec.ipFamily — empty on a child pool — and inserted NULL into
-    ipam_cidr_allocations.ip_family, violating the CHECK constraint. The
-    effective family must instead be resolved from the parent's
-    status.allocatedCIDR.
+    A pool created under another child pool must inherit its address family
+    correctly, so deeper hierarchies can be built the same way two-level ones
+    are.
 
     - Root IPPool (10.0.0.0/8, IPv4) reaches Ready
     - Child IPPool (parentPoolRef=root, /12) reaches Ready
