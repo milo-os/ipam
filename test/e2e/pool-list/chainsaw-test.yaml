@@ -1,0 +1,120 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pool-list
+spec:
+  description: |
+    LIST coverage for IPPool (cluster-scoped) — regression guard for issue #54,
+    where `kubectl get ippools` returned an empty list even though the pools
+    existed and were fetchable by name.
+
+    Steps:
+    1. Create three IPPools → wait Ready.
+    2. Assert a cache-served LIST (`kubectl get ippools`, no resourceVersion →
+       served from the apiserver watch cache) returns all three by name.
+    3. Assert the LIST carries a non-zero metadata.resourceVersion (the bug
+       collapsed the list RV to 0/1, which leaves the watch cache unsynced).
+    4. Cross-check: each pool is also fetchable by name (the symptom was that
+       by-name GET worked while LIST was empty) and the by-name set matches
+       the LIST set.
+
+    NOTE: the underlying bug only manifests on a long-lived database whose
+    changelog has been pruned past its retention window (the steady state on
+    staging), so a fresh-cluster chainsaw run cannot reproduce the empty-list
+    failure on its own — the deterministic detector is the Go integration test
+    in internal/storage/postgres (TestGetList_ResourceVersionAfterChangelogPruned,
+    TestCurrentResourceVersion_AnchoredOnObjects), which prunes the changelog
+    explicitly. This suite is the end-to-end coverage guard for the LIST path.
+
+  steps:
+    - name: create-pools
+      description: Create three IPPools and wait for each to reach Ready.
+      try:
+        - create:
+            file: test-data/pool-a.yaml
+        - create:
+            file: test-data/pool-b.yaml
+        - create:
+            file: test-data/pool-c.yaml
+        - script:
+            timeout: 60s
+            content: |
+              set -e
+              for name in pool-list-a pool-list-b pool-list-c; do
+                for i in $(seq 1 30); do
+                  phase=$(kubectl get ippool "$name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                  if [ "$phase" = "Ready" ]; then break; fi
+                  sleep 1
+                done
+                if [ "$phase" != "Ready" ]; then
+                  echo "FAIL: $name not Ready after 30s (phase=$phase)"
+                  exit 1
+                fi
+              done
+              echo "OK all pools Ready"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK all pools Ready')): true
+
+    - name: list-returns-pools
+      description: |
+        A cache-served LIST must return all three pools and a non-zero
+        resourceVersion. This is the core #54 assertion: by-name GETs worked
+        while the LIST came back empty.
+      try:
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              # No --resource-version → served from the apiserver watch cache.
+              names=$(kubectl get ippools -o jsonpath='{.items[*].metadata.name}')
+              echo "listed names: $names"
+              for want in pool-list-a pool-list-b pool-list-c; do
+                echo "$names" | grep -qw "$want" || {
+                  echo "FAIL: $want missing from cache-served LIST (got: '$names')"
+                  exit 1
+                }
+              done
+              rv=$(kubectl get ippools -o jsonpath='{.metadata.resourceVersion}')
+              echo "list resourceVersion: $rv"
+              if [ -z "$rv" ] || [ "$rv" = "0" ]; then
+                echo "FAIL: LIST returned empty/zero resourceVersion ('$rv')"
+                exit 1
+              fi
+              echo "OK LIST returned all pools with resourceVersion=$rv"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK LIST returned all pools')): true
+
+    - name: by-name-matches-list
+      description: |
+        Each pool is fetchable by name and the by-name set equals the LIST set
+        — i.e. the cache is not silently hiding objects that exist.
+      try:
+        - script:
+            timeout: 30s
+            content: |
+              set -e
+              for name in pool-list-a pool-list-b pool-list-c; do
+                got=$(kubectl get ippool "$name" -o jsonpath='{.metadata.name}' 2>/dev/null || echo "")
+                if [ "$got" != "$name" ]; then
+                  echo "FAIL: by-name GET for $name returned '$got'"
+                  exit 1
+                fi
+              done
+              count=$(kubectl get ippools -o jsonpath='{.items}' | grep -o 'pool-list-' | wc -l | tr -d ' ')
+              if [ "$count" -lt 3 ]; then
+                echo "FAIL: LIST returned $count pool-list-* entries, want >= 3"
+                exit 1
+              fi
+              echo "OK by-name GETs and LIST agree"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK by-name GETs and LIST agree')): true
+      finally:
+        - script:
+            content: |
+              kubectl delete ippool pool-list-a pool-list-b pool-list-c --ignore-not-found >/dev/null 2>&1 || true
+              echo "pool-list suite cleanup done"
+            check:
+              ($error == null): true
