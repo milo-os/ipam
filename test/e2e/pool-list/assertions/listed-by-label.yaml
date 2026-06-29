@@ -1,6 +1,6 @@
-# No metadata.name → chainsaw performs a List (not a Get). The #54 symptom was
-# an empty list while the objects existed, which fails this assert: it requires
-# a Ready pool carrying the suite label to be present in the listed collection.
+# No metadata.name → chainsaw performs a List (not a Get). An empty list while
+# the pools exist fails this assert: it requires a Ready pool carrying the suite
+# label to be present in the listed collection.
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPPool
 metadata:

@@ -4,18 +4,13 @@ metadata:
   name: pool-list
 spec:
   description: |
-    LIST coverage for IPPool — regression guard for issue #54, where
-    `kubectl get ippools` returned an empty list even though the pools existed
-    and were fetchable by name.
+    Verifies that listing IPPools returns the pools that exist — created pools
+    must appear in a list, not only in by-name lookups.
 
-    The underlying bug only manifests on a long-lived database whose changelog
-    has been pruned past its retention window (the steady state on staging), so
-    a fresh cluster cannot reproduce the empty-list failure. The deterministic
-    detector is the Go integration test in internal/storage/postgres
-    (TestGetList_ResourceVersionAfterChangelogPruned), which prunes the
-    changelog explicitly and asserts the list resourceVersion — something a
-    resource-level chainsaw assertion can't express. This suite is the
-    end-to-end guard that the LIST path returns the pools that exist.
+    The failure this guards against surfaces only on a long-lived database, so a
+    fresh cluster can't reproduce it here; the deterministic check lives in the
+    storage-layer Go tests. This suite is the end-to-end guard that the list
+    path returns what was created.
   steps:
     - name: create-pools
       description: Create three IPPools carrying the suite label.
@@ -42,9 +37,9 @@ spec:
 
     - name: pools-returned-by-list
       description: |
-        Core #54 assertion. The assertion has no metadata.name, so chainsaw
-        uses List — an empty list (the bug) fails here even though the Get-based
-        step above passed.
+        The assertion has no metadata.name, so chainsaw uses List rather than
+        Get. If the list comes back empty even though the pools exist, this
+        step fails — while the Get-based step above would still pass.
       try:
         - assert:
             file: assertions/listed-by-label.yaml

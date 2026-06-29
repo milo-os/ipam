@@ -48,10 +48,10 @@ func pruneChangelog(t *testing.T, s *Store) {
 	}
 }
 
-// TestGetList_ResourceVersionAfterChangelogPruned is the regression guard for
-// #54: once the changelog is pruned (the steady state of a quiescent
-// long-lived DB), GetList must still return the durable max RV from
-// ipam_objects and include the existing objects — not collapse to 1.
+// TestGetList_ResourceVersionAfterChangelogPruned: once the changelog has been
+// pruned (the steady state of a quiet, long-lived database), a list must still
+// report the durable version from the object rows and include those objects,
+// rather than collapsing to the empty-database value.
 func TestGetList_ResourceVersionAfterChangelogPruned(t *testing.T) {
 	cases := []struct {
 		name string

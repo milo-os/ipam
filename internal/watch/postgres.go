@@ -1047,21 +1047,13 @@ func (w *postgresWatch) toWatchEvent(eventType string, data []byte, rv int64) (*
 	}, nil
 }
 
-// committedMaxResourceVersion returns the highest resource version known to
-// be durably committed, taken as the max over two sources:
-//
-//   - ipam_objects.resource_version — the durable live state, never pruned.
-//   - ipam_changelog.resource_version below the snapshot xmin horizon —
-//     catches recent DELETEs whose object rows are gone.
-//
-// Anchoring on ipam_objects is the fix for issue #54: the changelog is
-// pruned to defaultChangelogRetention, so on a long-lived but quiescent
-// database a changelog-only MAX collapses to 0 even though objects with high
-// RVs exist. A bookmark at RV 0 (or a stale low RV) leaves the apiserver
-// cacher's watch cache unsynced, so cache-served LISTs return empty while
-// by-name GETs still resolve. Resuming a watch from an RV whose changelog
-// row has been pruned yields the standard "too old" re-list — the same
-// behaviour as any resume point older than the retention window.
+// committedMaxResourceVersion returns the highest resource version known to be
+// durably committed: the higher of the live object rows and recently committed
+// changelog entries (which cover deletes whose object rows are gone). The
+// object rows must be included — the changelog is pruned to a short window, so
+// on a quiet, long-lived database it can be empty while objects with much
+// higher versions remain, and a version taken from the changelog alone would
+// be stale and make list results come back empty.
 func committedMaxResourceVersion(db *sql.DB) (int64, error) {
 	var maxRV int64
 	err := db.QueryRow(

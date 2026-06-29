@@ -617,18 +617,13 @@ func (s *Store) nextResourceVersion(ctx context.Context, querier interface {
 // bookmark RV whose underlying row is not yet in the changelog, regressing
 // the commit-ordering guarantee the watcher's xmin-horizon cursor provides.
 //
-// The RV is the max of two sources:
-//   - ipam_objects.resource_version — the durable floor; these rows are never
-//     pruned.
-//   - committed ipam_changelog.resource_version below the snapshot horizon —
-//     catches recent DELETEs whose object rows are already gone.
-//
-// Anchoring on ipam_objects is the fix for #54: the changelog is pruned to a
-// short window (defaultChangelogRetention), so on a quiescent long-lived DB a
-// changelog-only RV collapses to the floor of 1 — below the live objects' RVs
-// — and the apiserver watch cache never syncs (cache-served LISTs come back
-// empty while by-name GETs still resolve). Both tables empty (fresh DB) yields
-// 1, since the apiserver rejects an RV of 0.
+// It takes the highest version among the live object rows and recently
+// committed changelog entries (the latter cover deletes whose object rows are
+// already gone). The object rows must be included: the changelog is pruned to
+// a short window, so on a quiet, long-lived database it can be empty while
+// objects with much higher versions remain — reading the changelog alone would
+// report a stale version and make list results come back empty. When both are
+// empty (a new database) it returns 1, never 0.
 func (s *Store) currentResourceVersion(ctx context.Context) (int64, error) {
 	var rv int64
 	err := s.db.QueryRowContext(ctx,
