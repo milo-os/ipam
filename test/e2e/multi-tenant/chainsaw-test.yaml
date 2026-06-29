@@ -107,6 +107,20 @@ spec:
             cluster: project-alpha
             file: assertions/assert-shared-pool-ready.yaml
 
+    - name: pools-listed-under-tenant
+      description: |
+        Listing under a project's own context must return that project's pools.
+        The assertion has no metadata.name, so chainsaw uses List rather than
+        Get — a tenant scope where by-name reads work but the list comes back
+        empty fails here. Checked for both projects against their own context.
+      try:
+        - assert:
+            cluster: project-alpha
+            file: assertions/assert-pool-listed.yaml
+        - assert:
+            cluster: project-beta
+            file: assertions/assert-pool-listed.yaml
+
     - name: same-project-claim-alpha
       description: |
         project-alpha claims against its own pool and reads status back under the
