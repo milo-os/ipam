@@ -255,14 +255,15 @@ func (a *app) renderPoolTable(pools []ipamv1alpha1.IPPool) error {
 		if cidr == "" {
 			cidr = p.Spec.CIDR
 		}
-		util := utilizationCell(p.Status.Capacity, 10, a.color.enabled)
-		free := largestFreeCell(p.Spec.IPFamily, p.Status.Capacity)
+		util := utilizationCell(poolUtilization(p), 10, a.color.enabled)
+		free := poolLargestFreeCell(p)
+		family := orDash(string(poolFamily(p)))
 		if wide {
-			t.row(p.Name, orDash(cidr), orDash(string(p.Spec.IPFamily)), util, free,
+			t.row(p.Name, orDash(cidr), family, util, free,
 				itoa(children[p.Name]), itoa(prefixes[p.Name]), orDash(string(p.Status.Phase)),
 				humanDuration(p.CreationTimestamp))
 		} else {
-			t.row(p.Name, orDash(cidr), orDash(string(p.Spec.IPFamily)), util, free,
+			t.row(p.Name, orDash(cidr), family, util, free,
 				humanDuration(p.CreationTimestamp))
 		}
 	}
@@ -303,11 +304,11 @@ func (a *app) renderPoolDetail(p *ipamv1alpha1.IPPool) error {
 	if cidr == "" {
 		cidr = p.Spec.CIDR
 	}
-	pct := utilizationPercent(p.Status.Capacity)
+	pct := poolUtilization(p)
 	t := newTable(a.io.Out, []string{"FIELD", "VALUE"})
 	t.row("Name", p.Name)
 	t.row("CIDR", orDash(cidr))
-	t.row("Family", orDash(string(p.Spec.IPFamily)))
+	t.row("Family", orDash(string(poolFamily(p))))
 	t.row("Phase", orDash(string(p.Status.Phase)))
 	if p.Spec.ParentPoolRef != nil {
 		t.row("Parent", p.Spec.ParentPoolRef.Name)
@@ -321,9 +322,14 @@ func (a *app) renderPoolDetail(p *ipamv1alpha1.IPPool) error {
 		utilText += " (" + label + ")"
 	}
 	t.row("Utilization", utilText)
-	t.row("Capacity", fmt.Sprintf("total=%d allocated=%d available=%d",
-		p.Status.Capacity.Total, p.Status.Capacity.Allocated, p.Status.Capacity.Available))
-	t.row("Largest free", largestFreeCell(p.Spec.IPFamily, p.Status.Capacity))
+	// The int64 capacity counts are exact for IPv4 but saturate for IPv6
+	// address spaces, so only show the raw totals when they're meaningful;
+	// IPv6 pools are summarized by utilization and largest-free instead.
+	if poolFamily(p) != ipamv1alpha1.IPv6 {
+		t.row("Capacity", fmt.Sprintf("total=%d allocated=%d available=%d",
+			p.Status.Capacity.Total, p.Status.Capacity.Allocated, p.Status.Capacity.Available))
+	}
+	t.row("Largest free", poolLargestFreeCell(p))
 	if alloc := p.Spec.Allocation; alloc.MinPrefixLength != 0 || alloc.MaxPrefixLength != 0 || alloc.Strategy != "" {
 		t.row("Allocation", fmt.Sprintf("min=/%d max=/%d strategy=%s",
 			alloc.MinPrefixLength, alloc.MaxPrefixLength, orDash(string(alloc.Strategy))))

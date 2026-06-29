@@ -65,14 +65,54 @@ func largestFreePrefix(family ipamv1alpha1.IPFamily, available int64) int {
 // utilizationCell renders the at-a-glance utilization for a table row: a bar (in
 // color when enabled) plus the always-present numeric percentage and a textual
 // severity label so the cell is meaningful without color.
-func utilizationCell(c ipamv1alpha1.PoolCapacity, width int, useColor bool) string {
-	pct := utilizationPercent(c)
+func utilizationCell(pct float64, width int, useColor bool) string {
 	bar := utilizationBar(pct, width, useColor)
 	label := utilizationLabel(pct)
 	if label != "" {
 		return fmt.Sprintf("%s %3.0f%% (%s)", bar, pct, label)
 	}
 	return fmt.Sprintf("%s %3.0f%%", bar, pct)
+}
+
+// poolHasServerStatus reports whether the server populated the family-agnostic
+// status fields (ipFamily, utilizationPercent, largestFreePrefix). The status
+// family is the reliable signal: the server sets it for both root and child
+// pools, so its presence means the accurate fields can be trusted over the
+// int64 capacity counts, which saturate for IPv6.
+func poolHasServerStatus(p *ipamv1alpha1.IPPool) bool {
+	return p.Status.IPFamily != ""
+}
+
+// poolFamily returns the pool's effective address family. It prefers the
+// server-reported status family — set on child pools too, which inherit rather
+// than declare spec.ipFamily — and falls back to the spec family.
+func poolFamily(p *ipamv1alpha1.IPPool) ipamv1alpha1.IPFamily {
+	if p.Status.IPFamily != "" {
+		return p.Status.IPFamily
+	}
+	return p.Spec.IPFamily
+}
+
+// poolUtilization returns the pool's utilization as a percentage. The server
+// computes this with arbitrary-precision arithmetic (accurate for IPv6); the
+// int64 capacity ratio is used only for older servers that don't report it.
+func poolUtilization(p *ipamv1alpha1.IPPool) float64 {
+	if poolHasServerStatus(p) {
+		return float64(p.Status.UtilizationPercent)
+	}
+	return utilizationPercent(p.Status.Capacity)
+}
+
+// poolLargestFreeCell formats the largest-free-block column, preferring the
+// server's exact prefix length over the int64-capacity approximation.
+func poolLargestFreeCell(p *ipamv1alpha1.IPPool) string {
+	if poolHasServerStatus(p) {
+		if p.Status.LargestFreePrefix <= 0 {
+			return "—"
+		}
+		return fmt.Sprintf("/%d", p.Status.LargestFreePrefix)
+	}
+	return largestFreeCell(p.Spec.IPFamily, p.Status.Capacity)
 }
 
 // utilizationBar renders a fixed-width bar of filled/empty cells. When color is

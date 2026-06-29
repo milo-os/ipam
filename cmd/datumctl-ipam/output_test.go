@@ -49,7 +49,7 @@ func TestNoColorEnvDisablesAuto(t *testing.T) {
 func TestUtilizationCellHasTextSignal(t *testing.T) {
 	// Even without color, the cell must carry the numeric percentage and, when
 	// high, a textual severity label.
-	cell := utilizationCell(ipamv1alpha1.PoolCapacity{Total: 100, Allocated: 98}, 10, false)
+	cell := utilizationCell(98, 10, false)
 	if !strings.Contains(cell, "98%") {
 		t.Errorf("cell missing percentage: %q", cell)
 	}
