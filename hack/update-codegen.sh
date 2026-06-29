@@ -35,11 +35,20 @@ kube::codegen::gen_helpers \
   "${SCRIPT_ROOT}/pkg/apis"
 
 echo "Generating OpenAPI definitions..."
+# --output-model-name-file emits OpenAPIModelName() accessors so generated
+# definition names match Scheme.ToOpenAPIDefinitionName(); server-side apply
+# depends on that alignment. The k8s dep packages already ship their accessors,
+# so mark them read-only to avoid writing into the module cache.
 go run k8s.io/kube-openapi/cmd/openapi-gen \
   --go-header-file "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
   --output-dir "${SCRIPT_ROOT}/pkg/generated/openapi" \
   --output-pkg "${MODULE_NAME}/pkg/generated/openapi" \
   --output-file zz_generated.openapi.go \
+  --output-model-name-file zz_generated.model_name.go \
+  --readonly-pkg "k8s.io/apimachinery/pkg/apis/meta/v1" \
+  --readonly-pkg "k8s.io/apimachinery/pkg/api/resource" \
+  --readonly-pkg "k8s.io/apimachinery/pkg/runtime" \
+  --readonly-pkg "k8s.io/apimachinery/pkg/version" \
   --report-filename /dev/null \
   "${MODULE_NAME}/pkg/apis/ipam/v1alpha1" \
   "k8s.io/apimachinery/pkg/apis/meta/v1" \
