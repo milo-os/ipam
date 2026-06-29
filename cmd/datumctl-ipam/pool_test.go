@@ -103,6 +103,52 @@ func TestPoolTreeHierarchy(t *testing.T) {
 	}
 }
 
+// TestPoolTreePrefersServerStatus mirrors the list/show coverage: the tree must
+// render family and utilization from the server-reported status (set on child
+// pools and accurate for IPv6), not from spec.ipFamily and the int64 capacity
+// counts that are blank on children and overflow for IPv6.
+func TestPoolTreePrefersServerStatus(t *testing.T) {
+	root := &ipamv1alpha1.IPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "v6-root"},
+		Spec:       ipamv1alpha1.IPPoolSpec{CIDR: "2001:db8::/32", IPFamily: ipamv1alpha1.IPv6},
+		Status: ipamv1alpha1.IPPoolStatus{
+			Phase: ipamv1alpha1.PoolReady, AllocatedCIDR: "2001:db8::/32",
+			IPFamily: ipamv1alpha1.IPv6, UtilizationPercent: 18, LargestFreePrefix: 33,
+		},
+	}
+	child := &ipamv1alpha1.IPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "v6-region"},
+		// No spec.ipFamily — inherited; family comes from status.
+		Spec: ipamv1alpha1.IPPoolSpec{ParentPoolRef: &ipamv1alpha1.LocalRef{Name: "v6-root"}},
+		Status: ipamv1alpha1.IPPoolStatus{
+			Phase: ipamv1alpha1.PoolReady, AllocatedCIDR: "2001:db8::/36",
+			IPFamily: ipamv1alpha1.IPv6, UtilizationPercent: 12, LargestFreePrefix: 37,
+			// A saturated capacity that the old client-side path would misread.
+			Capacity: ipamv1alpha1.PoolCapacity{Total: 1<<63 - 1, Allocated: 0, Available: 1<<63 - 1},
+		},
+	}
+	cs := newFakeClientset(root, child)
+	ta := newTestApp(cs, nil)
+	cmd := newPoolTreeCommand(ta.app)
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	out := ta.out.String()
+	// The child line must carry IPv6 (from status) and 12% (from status), and
+	// must not show a blank family or the saturated 0%/100%.
+	if !strings.Contains(out, "v6-region") {
+		t.Fatalf("tree missing child node:\n%s", out)
+	}
+	for _, want := range []string{"IPv6", "12% used", "18% used"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("tree missing server-reported %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "—     ") || strings.Contains(out, "100% used") {
+		t.Errorf("tree used spec family / saturated capacity instead of status:\n%s", out)
+	}
+}
+
 func TestPoolReleaseDryRunListsBlastRadius(t *testing.T) {
 	root := newPool("backbone", "10.0.0.0/8", ipamv1alpha1.IPv4, 100, 10)
 	child := newPool("region", "10.1.0.0/16", ipamv1alpha1.IPv4, 100, 5)

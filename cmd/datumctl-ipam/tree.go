@@ -157,13 +157,13 @@ func (a *app) printTreeNode(
 	if cidr == "" {
 		cidr = pool.Spec.CIDR
 	}
-	pct := utilizationPercent(pool.Status.Capacity)
+	pct := poolUtilization(&pool)
 	kind := "child pool"
 	if pool.Spec.ParentPoolRef == nil {
 		kind = "root pool"
 	}
 	line := fmt.Sprintf("%s%s\t%s\t%s\t%.0f%% used\t(%s)",
-		indent+connector, pool.Name, orDash(cidr), orDash(string(pool.Spec.IPFamily)), pct, kind)
+		indent+connector, pool.Name, orDash(cidr), orDash(string(poolFamily(&pool))), pct, kind)
 	_, _ = fmt.Fprintln(w, line)
 
 	children := byParent[pool.Name]
