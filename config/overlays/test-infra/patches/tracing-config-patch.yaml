@@ -1,0 +1,15 @@
+# Point tracing at the Tempo instance the test cluster already runs, and sample
+# at 100% so a single claim is recorded deterministically for the e2e assertion.
+# The endpoint uses Tempo's chart-generated Service name, which is what resolves
+# in DNS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ipam-tracing-config
+  namespace: ipam-system
+data:
+  tracing.yaml: |
+    apiVersion: apiserver.config.k8s.io/v1beta1
+    kind: TracingConfiguration
+    endpoint: telemetry-system-tempo.telemetry-system.svc.cluster.local:4317
+    samplingRatePerMillion: 1000000

@@ -1,0 +1,19 @@
+# project-beta claims a /32 host address from project-alpha's shared host pool.
+# Same cross-project auth path as the prefix shared claim; the use grant is in
+# cross-project-rbac.yaml.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: mt-cross-addr-claim
+  namespace: ($namespace)
+  labels:
+    mt-suite: "true"
+    mt-cross-addr: "true"
+spec:
+  ipFamily: IPv4
+  prefixLength: 32
+  poolRef:
+    name: mt-host-shared-pool
+    projectRef:
+      name: project-alpha
+  reclaimPolicy: Delete

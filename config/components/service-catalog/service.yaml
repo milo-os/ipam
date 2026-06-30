@@ -1,0 +1,17 @@
+apiVersion: services.miloapis.com/v1alpha1
+kind: Service
+metadata:
+  name: ipam-miloapis-com
+spec:
+  serviceName: ipam.miloapis.com
+  displayName: IP Address Management
+  description: >-
+    IP Address Management. Allocate and manage IP prefixes and individual IP
+    addresses across the platform with atomic, synchronous allocation from
+    project-scoped pools.
+  phase: Published
+  owner:
+    producerProjectRef:
+      name: datum-cloud
+  enablementPolicy:
+    mode: GatedByProvider

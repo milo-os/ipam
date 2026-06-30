@@ -1,0 +1,6 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: mt-shared-pool
+status:
+  phase: Ready

@@ -13,6 +13,15 @@ components:
   - ../../components/namespace
   - ../../components/api-registration
   - ../../components/postgres
+  # Distributed tracing, enabled only in test-infra so the e2e suite can assert
+  # the export pipeline. `tracing` wires --tracing-config-file into the
+  # apiserver. Spans are exported to the cluster's existing collector, Grafana
+  # Tempo (deployed by `task test-infra:install-observability` into the
+  # telemetry-system namespace) — no bespoke collector is stood up. The
+  # tracing-config-patch below repoints the endpoint at Tempo (:4317) and bumps
+  # sampling to 100%; the tracing-egress NetworkPolicy patch opens egress to
+  # telemetry-system on :4317. Dev and the deployed-env base omit tracing.
+  - ../../components/tracing
 
 images:
   - name: ghcr.io/milo-os/ipam
@@ -28,6 +37,13 @@ patches:
   - path: patches/tls-volume-patch.yaml
     target:
       kind: Deployment
+      name: ipam-apiserver
+  - path: patches/tracing-config-patch.yaml
+  # Open egress from the apiserver to Tempo (telemetry-system) on :4317 so the
+  # OTLP exporter can ship spans. The base NetworkPolicy is default-deny egress.
+  - path: patches/tracing-egress-networkpolicy-patch.yaml
+    target:
+      kind: NetworkPolicy
       name: ipam-apiserver
 
 labels:

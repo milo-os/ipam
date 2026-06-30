@@ -1,0 +1,24 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: ipam.miloapis.com-admin
+  annotations:
+    kubernetes.io/display-name: IPAM Admin
+    kubernetes.io/description: "Full access to all IPAM resources"
+spec:
+  launchStage: Beta
+  # Admin is the union of provider (pool CRUD + use) and consumer (claim CRUD),
+  # both of which inherit viewer (reads). On top it adds full management of the
+  # system-created IPAllocation records and the status subresource on every
+  # resource type.
+  inheritedRoles:
+    - name: ipam.miloapis.com-provider
+    - name: ipam.miloapis.com-consumer
+  includedPermissions:
+    - ipam.miloapis.com/ipallocations.create
+    - ipam.miloapis.com/ipallocations.update
+    - ipam.miloapis.com/ipallocations.patch
+    - ipam.miloapis.com/ipallocations.delete
+    - ipam.miloapis.com/ippools.updateStatus
+    - ipam.miloapis.com/ipclaims.updateStatus
+    - ipam.miloapis.com/ipallocations.updateStatus

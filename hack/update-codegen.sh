@@ -34,6 +34,33 @@ kube::codegen::gen_helpers \
   --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
   "${SCRIPT_ROOT}/pkg/apis"
 
+# OpenAPIModelName() accessors make the generated definition names match
+# Scheme.ToOpenAPIDefinitionName(); server-side apply depends on that alignment.
+#
+# We run openapi-gen in two passes because the kube-openapi pinned for k8s 0.35
+# predates the --readonly-pkg flag. Without that flag, the single combined
+# invocation tries to (re)write zz_generated.model_name.go into every tagged
+# input package, including the k8s dependency packages that live in the
+# read-only module cache -> "permission denied". Those dependency packages
+# already ship their committed accessors, so we never need to regenerate them.
+#
+# Pass 1 (model names): only our v1alpha1 package is an input, so the accessor
+# file is written solely into our writable tree.
+# Pass 2 (definitions): all packages are inputs but --output-model-name-file is
+# omitted, so nothing is written into the dependencies. The definition writer
+# still keys $refs by model name because it reads the +k8s:openapi-model-package
+# tag from each package's comments, not from the generated accessor files.
+
+echo "Generating OpenAPI model name accessors..."
+go run k8s.io/kube-openapi/cmd/openapi-gen \
+  --go-header-file "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
+  --output-dir "${SCRIPT_ROOT}/pkg/generated/openapi" \
+  --output-pkg "${MODULE_NAME}/pkg/generated/openapi" \
+  --output-file zz_generated.openapi.go \
+  --output-model-name-file zz_generated.model_name.go \
+  --report-filename /dev/null \
+  "${MODULE_NAME}/pkg/apis/ipam/v1alpha1"
+
 echo "Generating OpenAPI definitions..."
 go run k8s.io/kube-openapi/cmd/openapi-gen \
   --go-header-file "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \

@@ -17,6 +17,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
@@ -34,6 +36,7 @@ import (
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
 	"go.miloapis.com/ipam/internal/tenant"
+	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -105,10 +108,17 @@ func newInnerStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGette
 type AllocatingREST struct {
 	*IPClaimStorage
 	allocator   allocator.PrefixAllocator
-	db          *pgxpool.Pool
+	db          txBeginner
 	strategy    ipClaimStrategy
 	poolChecker access.PoolAccessChecker
 	codec       runtime.Codec
+}
+
+// txBeginner is the minimal slice of *pgxpool.Pool the allocation handlers
+// depend on. Narrowing the field to this interface lets unit tests inject a
+// fake transaction without a live Postgres.
+type txBeginner interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // NewAllocatingStorage builds the IPClaim REST storage with synchronous
@@ -144,11 +154,48 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, fmt.Errorf("expected *ipam.IPClaim, got %T", obj)
 	}
 
+	// A server-side dry-run must compute the would-be allocation but persist
+	// nothing and consume no capacity (see Create body for how the transaction
+	// is rolled back).
+	dryRun := isDryRun(options.DryRun)
+
 	id := tenant.FromContext(ctx)
 	project := id.Project()
 	org := id.Org()
 
 	ipFamily := string(claim.Spec.IPFamily)
+
+	// Root span for the whole allocation; every downstream span (tenant resolve,
+	// authorization, block search, DB calls) nests under it. ctx is rebound so
+	// those calls attach. failSpan marks the span failed at the points that
+	// already classify failures for metrics.
+	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanClaimAllocate)
+	defer span.End()
+	failSpan := func(reason string) {
+		span.SetAttributes(attribute.String(tracing.AttrErrorReason, reason))
+		span.SetStatus(codes.Error, reason)
+	}
+
+	// Record the resolved tenant scope and whether the request carried its
+	// parent identity extras — the signal that tells a real project identity
+	// apart from one that arrived stripped of them.
+	_, resolveSpan := tracing.Tracer().Start(ctx, tracing.SpanTenantResolve)
+	resolveSpan.SetAttributes(
+		attribute.String(tracing.AttrScope, tracing.Scope(id.IsPlatform())),
+		attribute.String(tracing.AttrProject, project),
+		attribute.Bool(tracing.AttrHasParentExtras, id.APIGroup != "" || id.Kind != "" || id.Name != ""),
+	)
+	resolveSpan.End()
+
+	span.SetAttributes(
+		attribute.String(tracing.AttrTenantScope, tracing.Scope(id.IsPlatform())),
+		attribute.String(tracing.AttrTenantProject, project),
+		attribute.String(tracing.AttrTenantOrg, org),
+		attribute.Int(tracing.AttrClaimPrefix, claim.Spec.PrefixLength),
+		attribute.String(tracing.AttrClaimIPFamily, ipFamily),
+		attribute.Bool(tracing.AttrDryRun, dryRun),
+	)
+
 	metrics.AllocationAttempts.WithLabelValues("ipclaim", ipFamily, project, org).Inc()
 	allocStart := time.Now()
 	result := "error"
@@ -196,6 +243,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		failSpan(tracing.ReasonTxError)
 		return nil, fmt.Errorf("begin allocation transaction: %w", err)
 	}
 
@@ -212,26 +260,42 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		isCrossProject = !id.IsPlatform() &&
 			claim.Spec.PoolRef.ProjectRef != nil &&
 			claim.Spec.PoolRef.ProjectRef.Name != id.Name
-		poolKey = poolStorageKey(poolName)
+		// The pool lives in the caller's own project unless a cross-project
+		// ProjectRef points it elsewhere; platform callers (empty id.Name)
+		// address the platform root.
+		poolProject := id.Name
+		if isCrossProject {
+			poolProject = claim.Spec.PoolRef.ProjectRef.Name
+		}
+		poolKey = poolStorageKey(poolProject, poolName)
 	} else {
+		// Selector lookups scan one project's pools: the caller's own, or the
+		// referenced project for cross-project shared pools.
+		ownerProject := id.Name
 		if claim.Spec.PoolSelector.ProjectRef != nil {
 			isCrossProject = !id.IsPlatform() &&
 				claim.Spec.PoolSelector.ProjectRef.Name != id.Name
+			if isCrossProject {
+				ownerProject = claim.Spec.PoolSelector.ProjectRef.Name
+			}
 		}
-		resolved, rerr := allocator.ResolveIPPool(ctx, tx, claim.Spec.PoolSelector.LabelSelector, "", string(claim.Spec.IPFamily))
+		resolved, rerr := allocator.ResolveIPPool(ctx, tx, claim.Spec.PoolSelector.LabelSelector, ownerProject, string(claim.Spec.IPFamily))
 		if rerr != nil {
 			_ = tx.Rollback(ctx)
 			if errors.Is(rerr, allocator.ErrPoolNotFound) {
 				metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+				failSpan(tracing.ReasonPoolNotFound)
 				return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
 			}
 			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			failSpan(tracing.ReasonTxError)
 			return nil, fmt.Errorf("resolve IPPool: %w", rerr)
 		}
 		poolKey = resolved
 		poolName = poolKey[strings.LastIndex(poolKey, "/")+1:]
 	}
-	claimKey := claimObjectKey(claim.Namespace, claim.Name)
+	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
+	span.SetAttributes(attribute.String(tracing.AttrPoolName, poolName))
 
 	if isCrossProject {
 		if err := r.authorizeCrossProject(ctx, tx, poolKey); err != nil {
@@ -245,9 +309,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 				// named the pool by hand.
 				if claim.Spec.PoolSelector != nil {
 					metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+					failSpan(tracing.ReasonCrossProjectDenied)
 					return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
 				}
 				metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+				failSpan(tracing.ReasonCrossProjectDenied)
 				return nil, apierrors.NewForbidden(
 					v1alpha1.Resource("ippools"),
 					poolKey,
@@ -255,6 +321,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 				)
 			}
 			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			failSpan(tracing.ReasonTxError)
 			return nil, err
 		}
 	}
@@ -264,8 +331,14 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
 		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org)
-		if reason == "pool_exhausted" {
+		switch reason {
+		case "pool_exhausted":
 			result = "exhausted"
+			failSpan(tracing.ReasonExhausted)
+		case "pool_not_found":
+			failSpan(tracing.ReasonPoolNotFound)
+		default:
+			failSpan(tracing.ReasonTxError)
 		}
 		return nil, mapAllocationError(err)
 	}
@@ -274,7 +347,25 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// the claim's namespace; its name is a stable hash of the claim
 	// namespace/name so the Delete handler can recompute it deterministically.
 	allocationName := allocationNameFor(claim.Namespace, claim.Name)
-	allocationKey := allocationObjectKey(claim.Namespace, allocationName)
+	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
+
+	// Populate the claim status with the computed allocation up-front so both
+	// the dry-run and the persisting paths return identical bound status.
+	claim.Status.Phase = ipam.ClaimBound
+	claim.Status.AllocatedCIDR = cidr
+	claim.Status.BoundAllocationRef = &ipam.LocalRef{Name: allocationName}
+
+	// Server dry-run: the allocator has computed the real next CIDR inside the
+	// transaction (SELECT … FOR UPDATE + FindFirstAvailableBlock), but we must
+	// not persist anything or consume capacity. Roll the transaction back —
+	// undoing the allocation row reserved by AllocatePrefix — and return the
+	// claim with its would-be status. No IPAllocation row, no claim row, no
+	// changelog event, no committed capacity change.
+	if dryRun {
+		_ = tx.Rollback(ctx)
+		result = "success"
+		return claim, nil
+	}
 
 	alloc := &ipam.IPAllocation{
 		ObjectMeta: metav1.ObjectMeta{
@@ -302,13 +393,10 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, fmt.Errorf("persist IPAllocation: %w", err)
 	}
 
-	// Populate the claim status with the allocated CIDR + reference back to
-	// the IPAllocation row that records it. Watchers see a single ADDED
-	// event with the terminal bound state.
-	claim.Status.Phase = ipam.ClaimBound
-	claim.Status.AllocatedCIDR = cidr
-	claim.Status.BoundAllocationRef = &ipam.LocalRef{Name: allocationName}
-
+	// Claim status was populated above (before the dry-run branch); the
+	// persisted record carries the allocated CIDR + reference back to the
+	// IPAllocation row. Watchers see a single ADDED event with the terminal
+	// bound state.
 	claimData, err := runtime.Encode(r.codec, claim)
 	if err != nil {
 		_ = tx.Rollback(ctx)
@@ -335,6 +423,18 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 
 	result = "success"
 	return claim, nil
+}
+
+// isDryRun reports whether a create/delete options' DryRun slice requests a
+// server-side dry-run. The apiserver only ever sets [metav1.DryRunAll], but we
+// match defensively on the constant.
+func isDryRun(dryRun []string) bool {
+	for _, v := range dryRun {
+		if v == metav1.DryRunAll {
+			return true
+		}
+	}
+	return false
 }
 
 // allocationFailureReason maps an allocator error onto the canonical reason
@@ -373,7 +473,24 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 		}
 	}
 
-	claimKey := claimObjectKey(claim.Namespace, claim.Name)
+	// Server dry-run: report what would be deleted without releasing the
+	// allocation or removing any rows.
+	if options != nil && isDryRun(options.DryRun) {
+		return claim, true, nil
+	}
+
+	// Release span — mirrors the allocation span for the teardown path so a
+	// release is traceable end-to-end. ctx is rebound so the DB spans attach.
+	id := tenant.FromContext(ctx)
+	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanClaimRelease)
+	defer span.End()
+	span.SetAttributes(
+		attribute.String(tracing.AttrTenantScope, tracing.Scope(id.IsPlatform())),
+		attribute.String(tracing.AttrTenantProject, id.Project()),
+		attribute.String(tracing.AttrClaimIPFamily, string(claim.Spec.IPFamily)),
+	)
+
+	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 
 	// TX1 — publish phase=Releasing.
 	releasing := claim.DeepCopy()
@@ -416,6 +533,8 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 	}
 	if lastErr != nil {
 		klog.ErrorS(lastErr, "claim stuck in Releasing after retries — manual intervention may be required", "claim", name, "attempts", deleteMaxAttempts)
+		span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
+		span.SetStatus(codes.Error, "release failed after retries")
 		return nil, false, fmt.Errorf("release allocation after %d attempts: %w", deleteMaxAttempts, lastErr)
 	}
 
@@ -471,7 +590,7 @@ func (r *AllocatingREST) releaseAndDelete(ctx context.Context, claim *ipam.IPCla
 		return fmt.Errorf("release allocation: %w", err)
 	}
 	if claim.Status.BoundAllocationRef != nil && claim.Status.BoundAllocationRef.Name != "" {
-		allocationKey := allocationObjectKey(claim.Namespace, claim.Status.BoundAllocationRef.Name)
+		allocationKey := allocationObjectKey(tenant.FromContext(ctx), claim.Namespace, claim.Status.BoundAllocationRef.Name)
 		if _, err := r.allocator.DeleteObject(ctx, tx, allocationKey); err != nil {
 			_ = tx.Rollback(ctx)
 			return fmt.Errorf("delete IPAllocation row: %w", err)
@@ -492,20 +611,28 @@ const (
 	deleteRetryBackoff = 100 * time.Millisecond
 )
 
-func claimObjectKey(namespace, name string) string {
-	return fmt.Sprintf("/ipam.miloapis.com/ipclaims/%s/%s", namespace, name)
+// claimObjectKey is the storage key for an IPClaim. IPClaim is
+// namespace-scoped, so the key carries the namespace segment, and the tenant
+// prefix ("project/<id>/") is applied so the key matches what the generic
+// registry Store reads and writes for the same project-scoped request.
+func claimObjectKey(id tenant.Identity, namespace, name string) string {
+	return id.ApplyPrefix(fmt.Sprintf("/ipam.miloapis.com/ipclaims/%s/%s", namespace, name))
 }
 
 // allocationObjectKey is the storage key for an IPAllocation. IPAllocation
-// is namespace-scoped, so the key carries the namespace segment.
-func allocationObjectKey(namespace, name string) string {
-	return fmt.Sprintf("/ipam.miloapis.com/ipallocations/%s/%s", namespace, name)
+// is namespace-scoped, so the key carries the namespace segment; the tenant
+// prefix is applied for the same reason as claimObjectKey.
+func allocationObjectKey(id tenant.Identity, namespace, name string) string {
+	return id.ApplyPrefix(fmt.Sprintf("/ipam.miloapis.com/ipallocations/%s/%s", namespace, name))
 }
 
-// poolStorageKey is the storage key for a cluster-scoped IPPool — matches
-// the key shape ippool/storage.go writes against.
-func poolStorageKey(name string) string {
-	return fmt.Sprintf("/ipam.miloapis.com/ippools/%s", name)
+// poolStorageKey is the storage key for an IPPool owned by the given project
+// ("" for platform scope). Although IPPool is cluster-scoped at the API layer,
+// a pool created through a project control-plane is persisted under that
+// project's tenant prefix — so the allocator must address it with the same
+// prefix rather than at the platform root.
+func poolStorageKey(project, name string) string {
+	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
 }
 
 // allocationNameFor generates a stable, collision-resistant name for the

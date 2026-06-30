@@ -1,0 +1,13 @@
+# mt-beta-claim must be Bound with a /24 inside 10.101.0.0/20, read back under
+# project-beta scope. Because alpha lives in 10.100.0.0/20 and beta in
+# 10.101.0.0/20, the two projects' allocations are non-overlapping by
+# construction (disjoint /20s).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: mt-beta-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (regex_match('^10\.101\.([0-9]|1[0-5])\.0/24$', allocatedCIDR)): true
+  (boundAllocationRef != null): true

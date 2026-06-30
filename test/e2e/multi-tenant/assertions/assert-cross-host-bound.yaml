@@ -1,0 +1,10 @@
+# mt-cross-addr-claim: project-beta's /32 host claim against project-alpha's
+# shared host pool (172.21.0.0/29 -> hosts .0 .. .7). A /32 allocation.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: mt-cross-addr-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (regex_match('^172\.21\.0\.[0-7]/32$', allocatedCIDR)): true

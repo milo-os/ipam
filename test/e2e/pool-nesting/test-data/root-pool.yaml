@@ -1,0 +1,12 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: nest-root
+spec:
+  cidr: 10.0.0.0/8
+  ipFamily: IPv4
+  visibility: platform
+  allocation:
+    minPrefixLength: 12
+    maxPrefixLength: 28
+    strategy: FirstFit

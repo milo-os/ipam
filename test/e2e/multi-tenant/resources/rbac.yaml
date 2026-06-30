@@ -1,10 +1,11 @@
-# Specification of expected RBAC for the cross-project shared-pool flow.
-# Once Milo's multi-tenant authorizer lands, the X-Remote-Extra parent-project
-# headers identify the caller and this binding governs whether project-beta
-# can issue claims against mt-shared-pool (owned by project-alpha).
-#
-# TODO: requires multi-tenant server implementation — today the server does
-# not consult these bindings; they exist as a forward-looking spec only.
+# Cross-project `use` grant for the shared-pool flow. The suite drives requests
+# under Kubernetes impersonation: the impersonated project-beta identity carries
+# the group system:project:project-beta, which this ClusterRoleBinding grants
+# `use` on mt-shared-pool (owned by project-alpha). IPAM's cross-project claim
+# path (internal/access.AuthorizeCrossProjectPrefix) runs a real `use`
+# SubjectAccessReview, so this binding is what makes the cross-project shared
+# claim succeed — and its absence for private pools is what makes the
+# private-pool claim fail. resourceNames scopes the grant to mt-shared-pool only.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:

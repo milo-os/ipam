@@ -3,14 +3,12 @@ package postgres
 import (
 	"database/sql"
 	"fmt"
-	"sync"
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/storage"
-	cacherstorage "k8s.io/apiserver/pkg/storage/cacher"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/storage/storagebackend/factory"
 	"k8s.io/client-go/tools/cache"
@@ -25,12 +23,6 @@ type RESTOptionsGetter struct {
 	// creates, so the polled watcher skips events for those keys. Used
 	// when the postgres-native QuotaClaim REST layer is active.
 	watchExcludedKeyPrefixes []string
-	// disableCacher, when true, causes the storage decorator to return
-	// the raw Postgres Store directly without wrapping it in the
-	// in-memory cacher. GET/LIST then go to Postgres; WATCH uses the
-	// polled PostgresWatcher directly. This trades ~10us cached reads
-	// for lower memory and GC pressure at scale.
-	disableCacher bool
 }
 
 // NewRESTOptionsGetter creates a RESTOptionsGetter that produces Postgres-backed stores.
@@ -59,13 +51,13 @@ func NewRESTOptionsGetter(dsn string) (*RESTOptionsGetter, error) {
 	return &RESTOptionsGetter{db: db, dsn: dsn}, nil
 }
 
-// GetRESTOptions returns the REST options for a given resource.
-// It builds a custom StorageDecorator that wraps the Postgres Store in the
-// standard apiserver in-memory cacher (cacherstorage.Cacher). The cacher
-// performs ONE initial LIST and a single WATCH against Postgres at startup,
-// then serves all subsequent reads from memory at ~10us latency. Without
-// this wrapper, every kubectl get hits Postgres directly, which is what
-// caused the 8x read latency gap vs etcd in initial benchmarks.
+// GetRESTOptions returns the REST options for a given resource. Its
+// StorageDecorator serves reads and writes straight from the Postgres store
+// and watches through the LISTEN/NOTIFY watcher, deliberately skipping the
+// apiserver's in-memory cacher: the cacher seeds itself under a tenant-less
+// context and so can't serve project-scoped lists, which is wrong for this
+// service's per-project key layout. Reads hit Postgres directly, which the
+// connection pool is sized for.
 func (r *RESTOptionsGetter) GetRESTOptions(resource schema.GroupResource, example runtime.Object) (generic.RESTOptions, error) {
 	ret := generic.RESTOptions{
 		ResourcePrefix: resource.Group + "/" + resource.Resource,
@@ -97,49 +89,15 @@ func (r *RESTOptionsGetter) GetRESTOptions(resource schema.GroupResource, exampl
 			rawStore := NewWithWatchExclusions(r.db, r.codec, r.dsn, r.watchExcludedKeyPrefixes)
 			rawStore.SetNewFunc(newFunc)
 
-			if r.disableCacher {
-				// Return the raw store directly — no cacher, no watch cache.
-				// GET/LIST go to Postgres; WATCH uses the polled
-				// PostgresWatcher directly. Destroy hook stops the
-				// watcher's LISTEN connection and cleanup goroutine so
-				// shutdown is symmetric with the cacher branch below.
-				return rawStore, rawStore.Stop, nil
-			}
-
-			cacherConfig := cacherstorage.Config{
-				Storage:             rawStore,
-				Versioner:           storage.APIObjectVersioner{},
-				GroupResource:       config.GroupResource,
-				ResourcePrefix:      resourcePrefix,
-				KeyFunc:             keyFunc,
-				NewFunc:             newFunc,
-				NewListFunc:         newListFunc,
-				GetAttrsFunc:        getAttrsFunc,
-				IndexerFuncs:        trigger,
-				Indexers:            indexers,
-				Codec:               r.codec,
-				EventsHistoryWindow: config.EventsHistoryWindow,
-			}
-			cacher, err := cacherstorage.NewCacherFromConfig(cacherConfig)
-			if err != nil {
-				return nil, func() {}, fmt.Errorf("failed to create cacher for %s: %w", config.GroupResource, err)
-			}
-			delegator := cacherstorage.NewCacheDelegator(cacher, rawStore)
-			var once sync.Once
-			destroy := func() {
-				once.Do(func() {
-					delegator.Stop()
-					cacher.Stop()
-					// Stop the PostgresWatcher's LISTEN/NOTIFY listener
-					// and changelog cleanup goroutine. Without this the
-					// LISTEN connection leaks across rolling restarts and
-					// the per-resource cleanup loop keeps DELETEing from
-					// ipam_changelog after the apiserver considers itself
-					// shut down.
-					rawStore.Stop()
-				})
-			}
-			return delegator, destroy, nil
+			// Serve reads and writes straight from Postgres — the apiserver's
+			// in-memory cacher is intentionally not used. The cacher seeds
+			// itself under the apiserver's tenant-less context, so it never
+			// sees project-scoped objects and would make project-scoped lists
+			// come back empty even when the objects exist. Going to the store
+			// keeps each request's own tenant scope; WATCH uses the polled
+			// PostgresWatcher. Destroy stops its LISTEN connection and changelog
+			// cleanup goroutine so the connection doesn't leak across restarts.
+			return rawStore, rawStore.Stop, nil
 		},
 	}
 	return ret, nil
@@ -157,14 +115,6 @@ func (r *RESTOptionsGetter) SetCodec(codec runtime.Codec) {
 // captures the current slice.
 func (r *RESTOptionsGetter) SetWatchExcludedKeyPrefixes(excludedKeyPrefixes []string) {
 	r.watchExcludedKeyPrefixes = append([]string(nil), excludedKeyPrefixes...)
-}
-
-// SetDisableCacher controls whether the storage decorator skips the
-// in-memory cacher. When true, GET/LIST/WATCH for non-native resources
-// (QuotaDefinition, QuotaGrant, QuotaBucket, policies) go directly to
-// Postgres. Must be called before the RESTOptionsGetter produces stores.
-func (r *RESTOptionsGetter) SetDisableCacher(disable bool) {
-	r.disableCacher = disable
 }
 
 // DB exposes the underlying *sql.DB so components like the synchronous

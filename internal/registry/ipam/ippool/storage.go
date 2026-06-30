@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +24,8 @@ import (
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
+	"go.miloapis.com/ipam/internal/tenant"
+	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -119,6 +124,15 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		return r.Store.Create(ctx, obj, createValidation, options)
 	}
 
+	// Child-pool creation reuses the allocation path, so trace it the same way a
+	// claim is traced. ctx is rebound so the downstream spans nest under this one.
+	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanPoolChildAllocate)
+	defer span.End()
+	span.SetAttributes(
+		attribute.String(tracing.AttrPoolName, pool.Spec.ParentPoolRef.Name),
+		attribute.Int(tracing.AttrClaimPrefix, pool.Spec.PrefixLength),
+	)
+
 	objectMeta, err := meta.Accessor(pool)
 	if err != nil {
 		return nil, fmt.Errorf("get object metadata: %w", err)
@@ -134,9 +148,12 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		}
 	}
 
+	// Parent and child pools both live in the caller's project (ParentPoolRef
+	// carries no cross-project pointer); platform callers address the root.
+	id := tenant.FromContext(ctx)
 	parentName := pool.Spec.ParentPoolRef.Name
-	parentKey := poolStorageKey(parentName)
-	childKey := poolStorageKey(pool.Name)
+	parentKey := poolStorageKey(id.Name, parentName)
+	childKey := poolStorageKey(id.Name, pool.Name)
 
 	// Resolve the parent pool's IPFamily before entering the transaction so
 	// the explicit value can be passed to AllocatePrefix. IPFamily is
@@ -149,16 +166,32 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 	if !ok {
 		return nil, fmt.Errorf("unexpected parent pool type %T", parentObj)
 	}
-	ipFamily := string(parentPool.Spec.IPFamily)
+	// Child pools inherit their family from the parent rather than setting
+	// spec.ipFamily, so resolve it before allocating.
+	ipFamily, err := effectiveIPFamily(parentPool)
+	if err != nil {
+		return nil, apierrors.NewBadRequest(err.Error())
+	}
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin child-pool allocation transaction: %w", err)
 	}
 
+	span.SetAttributes(attribute.String(tracing.AttrClaimIPFamily, ipFamily))
+
 	cidr, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, ipFamily, childKey, "")
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		switch {
+		case errors.Is(err, allocator.ErrPoolExhausted):
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonExhausted))
+		case errors.Is(err, allocator.ErrPoolNotFound):
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonPoolNotFound))
+		default:
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
+		}
+		span.SetStatus(codes.Error, err.Error())
 		return nil, mapAllocationError(err)
 	}
 
@@ -172,8 +205,9 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		LastTransitionTime: metav1.Now(),
 	}}
 	if _, ipnet, perr := net.ParseCIDR(cidr); perr == nil {
-		total := allocation.CountAddresses(*ipnet)
-		pool.Status.Capacity = ipam.PoolCapacity{Total: total, Available: total}
+		// A freshly carved child pool has no sub-allocations yet; seed all
+		// utilization fields from an empty allocation set.
+		setPoolStatusCapacity(pool, []net.IPNet{*ipnet}, nil)
 	} else {
 		pool.Status.Capacity = ipam.PoolCapacity{}
 	}
@@ -221,7 +255,7 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 		}
 	}
 
-	poolKey := poolStorageKey(name)
+	poolKey := poolStorageKey(tenant.FromContext(ctx).Name, name)
 	var count int
 	if err := r.db.QueryRow(ctx,
 		`SELECT COUNT(*) FROM ipam_cidr_allocations WHERE pool_key = $1`,
@@ -263,11 +297,77 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	return pool, true, nil
 }
 
-// poolStorageKey is the canonical ipam_objects key for a cluster-scoped
-// IPPool. Matches the key shape used by allocator.AllocatePrefix and the
-// FOR UPDATE lock on the pool row.
-func poolStorageKey(name string) string {
-	return fmt.Sprintf("/ipam.miloapis.com/ippools/%s", name)
+// poolStorageKey is the canonical ipam_objects key for an IPPool owned by the
+// given project ("" for platform scope). Matches the key shape used by
+// allocator.AllocatePrefix and the FOR UPDATE lock on the pool row. Although
+// IPPool is cluster-scoped at the API layer, a pool created through a project
+// control-plane is persisted under that project's tenant prefix, so the key
+// must carry the same prefix.
+func poolStorageKey(project, name string) string {
+	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
+}
+
+// setPoolStatusCapacity populates every utilization field on the pool's status
+// from its parent ranges and current allocations. The integer Capacity counts
+// saturate cleanly for address spaces wider than int64 (Total caps at MaxInt64,
+// Allocated/Available never go negative); LargestFreePrefix and
+// UtilizationPercent are computed with arbitrary-precision arithmetic and are
+// the accurate signal for IPv6. IPFamily reflects the pool's effective family.
+func setPoolStatusCapacity(pool *ipam.IPPool, parents, allocations []net.IPNet) {
+	const maxInt64 = int64(math.MaxInt64)
+	var total int64
+	for _, p := range parents {
+		c := allocation.CountAddresses(p)
+		if total > maxInt64-c {
+			total = maxInt64
+			break
+		}
+		total += c
+	}
+	var allocated int64
+	for _, a := range allocations {
+		c := allocation.CountAddresses(a)
+		if allocated > maxInt64-c {
+			allocated = maxInt64
+			break
+		}
+		allocated += c
+	}
+	allocated = min(allocated, total)
+	available := max(total-allocated, 0)
+	pool.Status.Capacity = ipam.PoolCapacity{Total: total, Allocated: allocated, Available: available}
+
+	pool.Status.UtilizationPercent = int32(allocation.UtilizationPercent(parents, allocations))
+	if prefixLen, ok := allocation.LargestFreePrefixLen(parents, allocations); ok {
+		pool.Status.LargestFreePrefix = int32(prefixLen)
+	} else {
+		pool.Status.LargestFreePrefix = 0
+	}
+	if fam, err := effectiveIPFamily(pool); err == nil {
+		pool.Status.IPFamily = ipam.IPFamily(fam)
+	}
+}
+
+// effectiveIPFamily returns a pool's address family. Root pools set it in
+// spec.ipFamily; child pools leave that empty and carry the family in their
+// carved status.allocatedCIDR. Both are one hop away, so no chain walk.
+func effectiveIPFamily(pool *ipam.IPPool) (string, error) {
+	if pool.Spec.IPFamily != "" {
+		return string(pool.Spec.IPFamily), nil
+	}
+	cidr := pool.Status.AllocatedCIDR
+	if cidr == "" {
+		// Not yet provisioned: no family to inherit.
+		return "", fmt.Errorf("parent IPPool %q has no resolved IP family", pool.Name)
+	}
+	ip, _, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", fmt.Errorf("parse parent allocated CIDR %q: %w", cidr, err)
+	}
+	if ip.To4() != nil {
+		return string(ipam.IPv4), nil
+	}
+	return string(ipam.IPv6), nil
 }
 
 // mapAllocationError translates allocator sentinel errors into the matching

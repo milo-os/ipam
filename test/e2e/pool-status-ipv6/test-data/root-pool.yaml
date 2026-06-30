@@ -1,0 +1,12 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ipv6-status-root
+spec:
+  cidr: 2001:db8:e2e0::/44
+  ipFamily: IPv6
+  visibility: consumer
+  allocation:
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit

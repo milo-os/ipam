@@ -161,7 +161,7 @@ jobs:
 
       - name: Install Chainsaw
         run: |
-          CHAINSAW_VERSION="v0.2.12"
+          CHAINSAW_VERSION="v0.2.15"
           curl -fsSL -o /tmp/chainsaw.tgz \
             "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_linux_amd64.tar.gz"
           tar -xzf /tmp/chainsaw.tgz -C /tmp chainsaw
@@ -188,6 +188,26 @@ jobs:
             -n ipam-system \
             --from-file=ca.crt=/tmp/requestheader-ca.crt \
             --dry-run=client -o yaml | kubectl apply -f -
+
+      # Deploy ONLY Tempo (not the full observability stack) so the
+      # test/e2e/tracing suite has a real collector to assert against. The full
+      # stack (Victoria Metrics + Loki + Grafana) is unnecessary here and too
+      # heavy for the single-node runner — Loki in particular times out. The
+      # manifests live in the test-infra clone that cluster-up created.
+      #
+      # Tempo MUST be Ready BEFORE the IPAM apiserver starts: the apiserver's
+      # OTLP gRPC exporter dials telemetry-system-tempo on startup, and if the
+      # endpoint is absent the gRPC client enters a reconnect backoff (up to
+      # ~120s) — long enough that the first allocation span never lands in Tempo
+      # within the tracing suite's poll window. Deploying Tempo first lets the
+      # exporter connect to a live collector immediately.
+      - name: Deploy Tempo (tracing e2e collector)
+        run: |
+          kubectl apply -f .test-infra/components/observability/namespace.yaml
+          kubectl apply -f .test-infra/components/observability/helm-repositories.yaml
+          kubectl apply -f .test-infra/components/observability/tempo-hr.yaml
+          kubectl -n flux-system wait helmrelease/tempo --for=condition=Ready --timeout=300s
+          kubectl -n telemetry-system rollout status statefulset/telemetry-system-tempo --timeout=180s
 
       - name: Deploy IPAM service
         run: |

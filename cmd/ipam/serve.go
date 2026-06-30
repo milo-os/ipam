@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/apiserver/pkg/admission"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/healthz"
@@ -21,14 +21,15 @@ import (
 	basecompatibility "k8s.io/component-base/compatibility"
 	"k8s.io/component-base/logs"
 	logsapi "k8s.io/component-base/logs/api/v1"
+	tracingbase "k8s.io/component-base/tracing"
 	"k8s.io/klog/v2"
 	openapicommon "k8s.io/kube-openapi/pkg/common"
-	openapiutil "k8s.io/kube-openapi/pkg/util"
-	"k8s.io/kube-openapi/pkg/validation/spec"
 
-	ipamapiserver "go.miloapis.com/ipam/internal/apiserver"
+	quotaadmission "go.miloapis.com/milo/pkg/quota/admission"
+
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
+	ipamapiserver "go.miloapis.com/ipam/internal/apiserver"
 	"go.miloapis.com/ipam/internal/metrics"
 	pgstore "go.miloapis.com/ipam/internal/storage/postgres"
 	"go.miloapis.com/ipam/internal/version"
@@ -54,10 +55,10 @@ const pgxpoolStatsInterval = 15 * time.Second
 // tolerance before failing — enough for the standard postgres bring-up,
 // short enough that a genuinely-broken DSN still surfaces quickly.
 var allocatorPoolRetrySchedule = []time.Duration{
-	0,                  // first attempt is immediate
-	2 * time.Second,    // 2s before the second
-	4 * time.Second,    // 4s before the third
-	8 * time.Second,    // 8s before giving up (only used when len > 3)
+	0,               // first attempt is immediate
+	2 * time.Second, // 2s before the second
+	4 * time.Second, // 4s before the third
+	8 * time.Second, // 8s before giving up (only used when len > 3)
 }
 
 // newAllocatorPoolWithRetry opens the pgxpool with bounded exponential
@@ -149,6 +150,13 @@ type IPAMServerOptions struct {
 	// PostgresDSN is the PostgreSQL connection string. Required — postgres is
 	// the only supported storage backend.
 	PostgresDSN string
+
+	// EnableQuota gates Milo quota enforcement. Default true (production
+	// enforces). Environments without a Milo quota backend (kind/dev, e2e)
+	// must set --enable-quota=false: the quota plugin's ClaimCreationPolicy /
+	// resource-type informers cannot sync against a cluster that lacks the
+	// quota.miloapis.com CRDs, which would otherwise block readyz forever.
+	EnableQuota bool
 }
 
 func NewIPAMServerOptions() *IPAMServerOptions {
@@ -157,18 +165,20 @@ func NewIPAMServerOptions() *IPAMServerOptions {
 			"/registry/ipam.miloapis.com",
 			ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...),
 		),
-		Logs: logsapi.NewLoggingConfiguration(),
+		Logs:        logsapi.NewLoggingConfiguration(),
+		EnableQuota: true,
 	}
 
 	// IPAM is a delegating aggregated apiserver — admission webhooks, policies,
 	// and namespace lifecycle are all enforced by the main kube-apiserver before
-	// requests are forwarded here. Replace the default plugin registry with an
-	// empty one to avoid informers for Namespace, WebhookConfiguration,
-	// ValidatingAdmissionPolicy, etc. that silently block readyz without a
-	// wired-up CoreAPI client.
-	opts.RecommendedOptions.Admission.Plugins = admission.NewPlugins()
-	opts.RecommendedOptions.Admission.RecommendedPluginOrder = []string{}
-	opts.RecommendedOptions.Admission.DefaultOffPlugins = nil
+	// requests are forwarded here, so the recommended plugins (Namespace,
+	// WebhookConfiguration, ValidatingAdmissionPolicy, …) are disabled by
+	// default — their informers silently block readyz without a wired-up CoreAPI
+	// client. The one admission concern IPAM owns is quota enforcement, which
+	// Config() layers on top (replacing this empty set with the quota plugins)
+	// only when --enable-quota is set, since the quota plugin needs flags parsed
+	// first and a reachable Milo quota backend.
+	disableAllAdmission(opts)
 
 	return opts
 }
@@ -179,6 +189,11 @@ func (o *IPAMServerOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.StringVar(&o.PostgresDSN, "postgres-dsn", o.PostgresDSN,
 		"PostgreSQL connection string (required)")
+
+	fs.BoolVar(&o.EnableQuota, "enable-quota", o.EnableQuota,
+		"Enforce Milo quota on resource creation (default true). Requires a reachable "+
+			"Milo quota backend via --kubeconfig; set false in environments without one "+
+			"(e.g. kind/dev, e2e) to avoid readyz blocking on quota informers.")
 }
 
 func (o *IPAMServerOptions) Complete() error { return nil }
@@ -200,35 +215,62 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	genericConfig := genericapiserver.NewRecommendedConfig(ipamapiserver.Codecs)
 	genericConfig.EffectiveVersion = basecompatibility.NewEffectiveVersionFromString("1.36", "", "")
 
-	// OpenAPI configuration. Without generated openapi definitions we still
-	// need a definition namer to satisfy the recommended config pipeline.
+	// Definition names come from the generated OpenAPIModelName() accessors so
+	// they stay in sync with Scheme.ToOpenAPIDefinitionName(); server-side apply
+	// resolves its managed-fields type converter against that keying. Keep the
+	// default GetDefinitionName — overriding it desyncs names from their $refs
+	// and silently breaks SSA.
 	namer := openapinamer.NewDefinitionNamer(ipamapiserver.Scheme)
-	getDefinitionName := func(name string) (string, spec.Extensions) {
-		if strings.Contains(name, "/") {
-			name = openapiutil.ToRESTFriendlyName(name)
-		}
-		return namer.GetDefinitionName(name)
-	}
 	getDefs := func(ref openapicommon.ReferenceCallback) map[string]openapicommon.OpenAPIDefinition {
 		return generatedopenapi.GetOpenAPIDefinitions(ref)
 	}
 	genericConfig.OpenAPIV3Config = genericapiserver.DefaultOpenAPIV3Config(getDefs, namer)
 	genericConfig.OpenAPIV3Config.Info.Title = "IPAM"
 	genericConfig.OpenAPIV3Config.Info.Version = version.Version
-	genericConfig.OpenAPIV3Config.GetDefinitionName = getDefinitionName
 
 	genericConfig.OpenAPIConfig = genericapiserver.DefaultOpenAPIConfig(getDefs, namer)
 	genericConfig.OpenAPIConfig.Info.Title = "IPAM"
 	genericConfig.OpenAPIConfig.Info.Version = version.Version
-	genericConfig.OpenAPIConfig.GetDefinitionName = getDefinitionName
 
 	// Postgres is the only storage backend; disable the recommended-options
 	// etcd path so the apiserver does not try to dial etcd or register etcd
 	// healthchecks.
 	o.RecommendedOptions.Etcd = nil
 
+	// Quota enforcement is wired here (not in NewIPAMServerOptions) because it
+	// depends on parsed flags (--enable-quota) and a reachable Milo quota
+	// backend. When enabled, replace the empty admission set with the quota
+	// plugins, supply the loopback config, and mirror the tenant scope onto the
+	// request context (via keys milo's quota plugin reads) — the filter must run
+	// after authentication and before admission, which installing it as the
+	// innermost API-handler wrapper guarantees.
+	if o.EnableQuota {
+		registerQuotaAdmission(o)
+		wireAdmissionInitializers(o)
+		installConsumerContextFilter(genericConfig)
+	}
+
 	if err := o.RecommendedOptions.ApplyTo(genericConfig); err != nil {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
+	}
+
+	// IPAM's own spans come from the global OpenTelemetry provider, but the
+	// apiserver only sets its provider on the server config, not globally — so
+	// publish it here. Without this, domain spans would export nothing and would
+	// not nest under the per-request span. With tracing off this is a no-op
+	// provider, so it stays safe either way.
+	if genericConfig.TracerProvider != nil {
+		otel.SetTracerProvider(genericConfig.TracerProvider)
+	}
+	otel.SetTextMapPropagator(tracingbase.Propagators())
+
+	if o.EnableQuota {
+		// Gate readiness on the quota plugin's caches syncing so IPAM does not
+		// serve (and silently bypass quota) before the ClaimCreationPolicy /
+		// resource-type informers are warm. APF's FlowSchema /
+		// PriorityLevelConfiguration informers sync via the same CoreAPI client
+		// (see #38), so FlowControl is left enabled.
+		genericConfig.AddReadyzChecks(quotaadmission.ReadinessCheck())
 	}
 
 	codec := ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...)
@@ -277,6 +319,13 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)
 	}
 	poolCfg.MaxConns = 10
+	// Trace every database call on this pool so a claim's trace shows lock-wait
+	// and query latency without instrumenting the allocator. The SQL text is
+	// static and carries no user data, so it is safe to record; bound parameters
+	// are deliberately excluded because they carry tenant-scoped values.
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer(
+		otelpgx.WithTrimSQLInSpanName(),
+	)
 	allocatorPool, err := newAllocatorPoolWithRetry(context.Background(), poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pgx pool: %w", err)

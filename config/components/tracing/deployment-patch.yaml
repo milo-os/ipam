@@ -1,0 +1,17 @@
+# Turns tracing on. The base passes --tracing-config-file=$(TRACING_CONFIG_FILE)
+# unconditionally; setting the env var to the mounted config path is what
+# enables export. The ConfigMap holding that config is mounted by the companion
+# patch in kustomization.yaml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-apiserver
+  namespace: ipam-system
+spec:
+  template:
+    spec:
+      containers:
+        - name: apiserver
+          env:
+            - name: TRACING_CONFIG_FILE
+              value: /etc/ipam/tracing/tracing.yaml

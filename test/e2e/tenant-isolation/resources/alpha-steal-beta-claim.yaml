@@ -1,0 +1,16 @@
+# Reverse direction: project-alpha tries to claim iso-pool-beta by name (no
+# projectRef). The pool does not exist in alpha's tenant prefix, so the create
+# must be rejected.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: iso-alpha-steal-beta
+  namespace: ($namespace)
+  labels:
+    iso-suite: "true"
+spec:
+  ipFamily: IPv4
+  prefixLength: 24
+  poolRef:
+    name: iso-pool-beta
+  reclaimPolicy: Delete

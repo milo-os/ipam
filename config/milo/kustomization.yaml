@@ -1,11 +1,15 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Milo IAM integration: ClusterRoleBindings that map IAM roles to the
-# IPAM API. Apply these on top of an overlay that already includes
-# Milo's IAM resources.
+# Milo IAM integration for the IPAM service. This is the install path consumed
+# by the infra `milo-configuration` Flux Kustomization (targetNamespace
+# milo-system), which renders the cluster-scoped ProtectedResources and the
+# namespaced Roles that Milo's OpenFGA-backed authorizer evaluates.
+#
+# NOTE: do not set a `namespace:` here. ProtectedResource is cluster-scoped and
+# Role is namespaced; the namespaced Roles must land in milo-system, which the
+# installing Flux Kustomization assigns via targetNamespace. Stamping a
+# namespace here would place the Roles in the wrong namespace.
 
-namespace: ipam-system
-
-resources:
-  - rbac.yaml
+components:
+  - ../components/iam

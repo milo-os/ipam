@@ -94,7 +94,11 @@ type AllocationSpec struct {
 	Strategy        Strategy
 }
 
-// PoolCapacity reports utilization for an IPPool.
+// PoolCapacity reports the address-count view of an IPPool. The counts are
+// exact for IPv4. For address spaces larger than an int64 (e.g. wide IPv6
+// prefixes) Total saturates to the maximum int64 and Allocated/Available are
+// clamped to non-negative values rather than overflowing; consumers needing an
+// accurate IPv6 view should read UtilizationPercent and LargestFreePrefix.
 type PoolCapacity struct {
 	Total     int64
 	Allocated int64
@@ -129,8 +133,22 @@ type IPPoolSpec struct {
 type IPPoolStatus struct {
 	Phase         PoolPhase
 	AllocatedCIDR string
-	Capacity      PoolCapacity
-	Conditions    []metav1.Condition
+	// IPFamily is the effective address family of this pool: taken from
+	// spec.ipFamily on root pools and derived from the carved
+	// status.allocatedCIDR on child pools.
+	IPFamily IPFamily
+	Capacity PoolCapacity
+	// LargestFreePrefix is the prefix length of the largest free aligned
+	// block currently available (e.g. 45 for a free /45). Zero when the pool
+	// is exhausted or its capacity is not yet computed. This is the
+	// family-agnostic signal for remaining headroom; the integer Capacity
+	// fields saturate for very large address spaces.
+	LargestFreePrefix int32
+	// UtilizationPercent is the allocated share of the pool's address space,
+	// 0–100, computed with arbitrary-precision arithmetic so it is accurate
+	// for both IPv4 and IPv6.
+	UtilizationPercent int32
+	Conditions         []metav1.Condition
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

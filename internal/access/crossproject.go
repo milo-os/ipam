@@ -7,7 +7,10 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 
+	"go.miloapis.com/ipam/internal/tracing"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
@@ -44,28 +47,52 @@ var ErrCrossProjectDenied = errors.New("ipam: cross-project pool not accessible"
 // Callers translate the sentinel into a 400 "no pool matches" for
 // selector lookups and a 403 Forbidden for direct poolRef lookups.
 func AuthorizeCrossProjectPrefix(ctx context.Context, tx pgx.Tx, poolKey string, checker PoolAccessChecker) error {
-	if checker == nil {
+	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanAuthorizeCrossPrj)
+	defer span.End()
+	// This gate is only reached for genuinely cross-project claims.
+	span.SetAttributes(attribute.Bool(tracing.AttrCrossProject, true))
+
+	// deny records a denial decision (decision=denied + the precise reason)
+	// before returning the sentinel, so a trace shows *why* a cross-project
+	// claim was refused without leaking it onto the API error.
+	deny := func(reason string) error {
+		span.SetAttributes(
+			attribute.String(tracing.AttrDecision, "denied"),
+			attribute.String(tracing.AttrReason, reason),
+		)
 		return ErrCrossProjectDenied
+	}
+
+	if checker == nil {
+		return deny("no_checker")
 	}
 
 	pool, err := loadIPPool(ctx, tx, poolKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrCrossProjectDenied
+			// Collapsed into not_shared at the API surface; the trace keeps the
+			// real reason for the operator.
+			return deny("not_shared")
 		}
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("load pool for access check: %w", err)
 	}
 	if pool.Spec.Visibility != "shared" {
-		return ErrCrossProjectDenied
+		return deny("not_shared")
 	}
 
 	allowed, err := checker.CanUsePool(ctx, poolKey)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("authorize pool access: %w", err)
 	}
 	if !allowed {
-		return ErrCrossProjectDenied
+		return deny("sar_denied")
 	}
+	span.SetAttributes(
+		attribute.String(tracing.AttrDecision, "allowed"),
+		attribute.String(tracing.AttrReason, "allowed"),
+	)
 	return nil
 }
 
