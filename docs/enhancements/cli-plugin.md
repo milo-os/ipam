@@ -207,19 +207,16 @@ and the largest contiguous block left is a /14, then decides accordingly.
 Before releasing a regional pool, Sam wants to understand what lives under it:
 
 ```console
-$ datumctl ipam pool tree prod-backbone
-prod-backbone            10.0.0.0/8      IPv4   73% used
+$ datumctl ipam pool tree prod-backbone --prefixes
+prod-backbone            10.0.0.0/8      IPv4   73% used   (root pool)
 ├─ us-west               10.1.0.0/16     IPv4   61% used   (child pool)
 │  ├─ payments-prod      10.1.0.0/24     IPv4   ─          (prefix · team-payments)
 │  └─ search-prod        10.1.1.0/24     IPv4   ─          (prefix · team-search)
-├─ us-east               10.2.0.0/16     IPv4   12% used   (child pool)
-│  └─ analytics-prod     10.2.0.0/22     IPv4   ─          (prefix · team-analytics)
-└─ (free)                10.4.0.0/14 …   IPv4   largest contiguous free block
+└─ us-east               10.2.0.0/16     IPv4   12% used   (child pool)
+   └─ analytics-prod     10.2.0.0/22     IPv4   ─          (prefix · team-analytics)
 ```
 
-The nesting that `kubectl` forces Sam to reconstruct by hand — following
-`parentPoolRef` links across a flat list — is rendered directly, with utilization
-at every level and the consuming team on each leaf.
+The nesting that `kubectl` forces Sam to reconstruct by hand — following `parentPoolRef` links across a flat list — is rendered directly, with each pool's "% used" at every level. Leaf prefixes and the consuming team on each are shown when Sam adds `--prefixes`; by default the tree shows just the pool hierarchy.
 
 #### Story 4: A pipeline claims a CIDR and fails loudly when space runs out
 
@@ -259,8 +256,7 @@ Would claim:   10.4.0.0/14 from pool "prod-backbone"
 Pool after:    utilization 73% → 98%, largest free block /17
 ```
 
-Dana sees the claim would nearly fill the pool and chooses a different parent.
-Nothing was allocated; the rehearsal was free.
+The block Dana sees is exact: `--dry-run` is a real server-side dry run, so the apiserver runs the allocation it *would* perform and reports the precise CIDR before rolling it back — nothing is persisted and no capacity is consumed. The projected after-utilization and largest-free block shown alongside it are estimates. Dana sees the claim would nearly fill the pool and chooses a different parent. Nothing was allocated; the rehearsal was free.
 
 ### Notes/Constraints/Caveats
 
@@ -350,18 +346,20 @@ verb vocabulary reused across every noun, capped at three levels under
 
 ```console
 # Pools (IPPool)
-datumctl ipam pool create <name> --cidr 10.0.0.0/8 [--family ipv4] [flags]
-datumctl ipam pool list [--selector k=v] [-o wide|json|yaml]
+datumctl ipam pool create <name> [--cidr 10.0.0.0/8 | --parent <name> --prefix-length <n>] [--family ipv4|ipv6] [--min-length <n>] [--max-length <n>] [--strategy FirstFit|BestFit|LeastUtilized] [--visibility platform|consumer|shared] [--dry-run]
+datumctl ipam pool list [--selector k=v] [-o table|wide|json|yaml|name]
 datumctl ipam pool show <name>
-datumctl ipam pool tree [<name>]
-datumctl ipam pool release <name> [--cascade] [--yes]
+datumctl ipam pool tree [<name>] [--prefixes]
+datumctl ipam pool release <name> [--cascade] [--dry-run] [--yes]
 
 # Prefixes (IPClaim / IPAllocation)
-datumctl ipam prefix claim --pool <name> --length <n> [--name <n>] [--dry-run]
-datumctl ipam prefix list [--pool <name>] [-o wide|json|yaml]
+datumctl ipam prefix claim (--pool <name> | --selector k=v) (--length <n> | --cidr <cidr>) [--family ipv4|ipv6] [--name <n>] [--strategy FirstFit|BestFit|LeastUtilized] [--reclaim-policy Delete|Retain] [--dry-run]
+datumctl ipam prefix list [--pool <name>] [-o table|wide|json|yaml|name]
 datumctl ipam prefix show <cidr|name>
-datumctl ipam prefix release <name> [--yes]
+datumctl ipam prefix release <name> [--dry-run] [--yes]
 ```
+
+Global flags apply to every command: `-o table|wide|json|yaml|name` selects the output format (table by default), `--quiet`, `--verbose`, `--color`, and `--yes`/`--force` behave as described below, and `--org`/`--project` override the active context. Two flags exist for development and end-to-end testing only — `--kubeconfig` to point at a dev/e2e cluster directly and `-n`/`--namespace` to target a specific namespace for claims and allocations — and are not part of the everyday, context-inheriting workflow.
 
 Design choices and their rationale:
 
@@ -385,14 +383,13 @@ login, and the plugin holds no long-lived credential of its own. Every call is
 scoped to the active org/project, so a user sees only their own tenant — exactly
 as the service enforces.
 
-What this buys the user is one identity and one place context lives. The plugin
-echoes the resolved org/project (in the claim success line and under `--verbose`)
-so it is always clear which tenant an allocation lands in, and `--org`/`--project`
-override per invocation with the standard precedence (flags > env > config).
-Switching context is the same `datumctl` operation users already know. The
-underlying contract — how `datumctl` hands a plugin its context and brokers
-short-lived tokens — belongs to the [marketplace enhancement][marketplace]; this
-plugin simply consumes it.
+What this buys the user is one identity and one place context lives. The plugin echoes the resolved org/project (in the claim success line and under `--verbose`) so it is always clear which tenant an allocation lands in, and `--org`/`--project` override per invocation with the standard precedence (flags > env > config). Switching context is the same `datumctl` operation users already know. The underlying contract — how `datumctl` hands a plugin its context and brokers short-lived tokens — belongs to the [marketplace enhancement][marketplace]; this plugin simply consumes it.
+
+#### Enabling IPAM for a project
+
+IPAM is an opt-in service, so being logged in to a project is not the same as having IPAM turned on there. The first time the plugin runs an IPAM command in a project, it checks whether IPAM is enabled for that project. If it is, the command proceeds as normal. If it isn't and the user is at an interactive terminal, the plugin explains that IPAM isn't enabled and offers to request access on the spot, so the user never has to go hunting for a separate enablement step.
+
+Because IPAM requires provider approval, requesting access typically results in a *pending* request rather than instant access — the plugin says so plainly, points the user at `datumctl services list` to check status, and leaves IPAM commands blocked until access is granted. In non-interactive use (scripts, CI) there is nothing to prompt, so the plugin returns an actionable error telling the operator how to request access rather than hanging on a question no one can answer.
 
 ### Claiming a prefix
 
@@ -411,12 +408,7 @@ $ datumctl ipam prefix claim --pool prod-backbone --length 24
 - **The CIDR is the headline.** The one fact the user came for leads the output,
   with the resulting utilization in parentheses so they immediately see the cost
   of what they did.
-- **Inputs are flexible.** `--length 24` claims by size; `--cidr 10.4.16.0/24`
-  requests a specific block; `--family`/`--strategy` are available but default
-  sensibly (family inferred from the pool, strategy from the pool's
-  configuration). The pool can be chosen by name (`--pool`) or by label
-  (`--selector environment=staging,region=us-west`), matching the API's
-  `poolRef`/`poolSelector` choice.
+- **Inputs are flexible.** `--length 24` claims by size; `--cidr 10.4.16.0/24` is a convenience that sets the requested prefix length and family from the CIDR — the server still chooses the actual block, since the API allocates by length and has no "pin this exact block" field. `--family`/`--strategy` are available but default sensibly (family inferred from the pool, strategy from the pool's configuration). The pool can be chosen by name (`--pool`) or by label (`--selector environment=staging,region=us-west`), matching the API's `poolRef`/`poolSelector` choice.
 - **Retries are safe.** Allocation is not idempotent, so the plugin lets the user
   pass a stable `--name`. A retried claim with the same name returns the existing
   allocation rather than consuming a second block — turning an inherently unsafe
@@ -436,18 +428,10 @@ shows the real resource for anyone who wants it.
 
 ### Seeing the shape of your address space
 
-Two views surface what `kubectl` hides, computed entirely from `status` fields the
-API already returns:
+Two views surface what `kubectl` hides, computed from the pool status the API already returns:
 
-- **`pool list` makes utilization a column.** Total/allocated/available and the
-  largest free block come from `status.capacity`; the plugin renders a utilization
-  bar and percentage for humans and the raw numbers under `-o json`. `-o wide`
-  adds child-pool and active-prefix counts.
-- **`pool tree` renders the hierarchy.** The plugin fetches the pools (and,
-  optionally, the leaf prefixes) for the active project and lays out the
-  `parentPoolRef` graph as an indented tree, annotating each node with utilization
-  and each leaf with its consuming owner reference. This is the view that replaces
-  manually chasing `parentPoolRef` links across a flat `kubectl get` list.
+- **`pool list` makes utilization a column.** Utilization, the largest free block, and the address family are read from the server's reported pool status — which is what makes them correct for IPv6 pools and for child pools that inherit their family from a parent — with client-side capacity math used only as a fallback for older servers that don't report them. The plugin renders a utilization bar and percentage for humans and the underlying values under `-o json`. Raw capacity totals are shown for IPv4 but hidden for IPv6, where the address counts don't fit a counter and utilization plus largest-free are the meaningful summary. `-o wide` adds child-pool and active-prefix counts.
+- **`pool tree` renders the hierarchy.** The plugin fetches the pools (and, optionally, the leaf prefixes) for the active project and lays out the `parentPoolRef` graph as an indented tree, annotating each pool node with its "% used" and each leaf with its consuming owner reference. This is the view that replaces manually chasing `parentPoolRef` links across a flat `kubectl get` list.
 
 Both are read-only and safe to run anywhere; neither introduces server-side
 state.
@@ -495,9 +479,7 @@ Stack traces are suppressed by default and available under `--verbose`/`--debug`
 Trust is built by making consequences visible before they happen and friction
 proportional to blast radius:
 
-- **`--dry-run` on every mutation.** A claim shows the CIDR it *would* allocate and
-  the projected utilization (Story 5); a pool release lists every prefix that would
-  be freed. Nothing is consumed.
+- **`--dry-run` on every mutation.** A claim runs a real server-side dry run and shows the exact CIDR the server *would* allocate, with the projected after-utilization shown alongside as an estimate (Story 5); a pool release lists every child pool and prefix that would be freed. Nothing is consumed.
 - **Confirmation scaled to risk.** A single `prefix claim` has no prompt and a
   clear success line. `prefix release` confirms by default. `pool release`, which
   can free many allocations, states the blast radius and requires typing the pool
