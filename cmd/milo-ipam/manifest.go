@@ -13,7 +13,7 @@ import (
 const (
 	pluginName        = "ipam"
 	pluginVersion     = "0.1.0"
-	pluginDescription = "Manage IP address space (pools and prefixes) on Datum"
+	pluginDescription = "Manage IP address space (pools and prefixes) across the platform"
 	// pluginAPIVersion is the version of the datumctl <-> plugin contract this
 	// binary speaks, not the IPAM API version.
 	pluginAPIVersion = 1
