@@ -23,12 +23,12 @@ const (
 	minAPIVersion = "ipam.miloapis.com/v1alpha1"
 )
 
-// pluginVersion is the plugin's release version. It defaults to a development
-// value for local builds and is overridden at release time by goreleaser via
+// pluginVersion is the plugin's release version. It defaults to "0.0.0" to mark
+// an unreleased local build and is overridden at release time by goreleaser via
 // -ldflags "-X main.pluginVersion=<version>" (the git tag without its leading
 // "v"), so a published binary reports the version it was released under. It is
 // a var (not a const) precisely so the linker can set it.
-var pluginVersion = "0.1.0"
+var pluginVersion = "0.0.0"
 
 // pluginManifest is the document emitted in response to --plugin-manifest.
 type pluginManifest struct {
