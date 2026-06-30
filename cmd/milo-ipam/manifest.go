@@ -12,7 +12,6 @@ import (
 
 const (
 	pluginName        = "ipam"
-	pluginVersion     = "0.1.0"
 	pluginDescription = "Manage IP address space (pools and prefixes) across the platform"
 	// pluginAPIVersion is the version of the datumctl <-> plugin contract this
 	// binary speaks, not the IPAM API version.
@@ -23,6 +22,13 @@ const (
 	// minAPIVersion is the IPAM apiserver API group/version this plugin targets.
 	minAPIVersion = "ipam.miloapis.com/v1alpha1"
 )
+
+// pluginVersion is the plugin's release version. It defaults to a development
+// value for local builds and is overridden at release time by goreleaser via
+// -ldflags "-X main.pluginVersion=<version>" (the git tag without its leading
+// "v"), so a published binary reports the version it was released under. It is
+// a var (not a const) precisely so the linker can set it.
+var pluginVersion = "0.1.0"
 
 // pluginManifest is the document emitted in response to --plugin-manifest.
 type pluginManifest struct {

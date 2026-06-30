@@ -28,6 +28,12 @@ builds:
     goarch:
       - amd64
       - arm64
+    # Inject the release version (the git tag without its leading "v") so the
+    # published binary's --plugin-manifest and `milo-ipam --version` report the
+    # version it was released under, rather than the in-source default.
+    ldflags:
+      - -s -w
+      - -X main.pluginVersion={{ .Version }}
 
 archives:
   - id: milo-ipam
