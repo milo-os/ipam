@@ -72,6 +72,7 @@ func TestUtilizationBarFilled(t *testing.T) {
 
 func TestEncodeJSONIsValidAndClean(t *testing.T) {
 	pool := newPool("p", "10.0.0.0/8", ipamv1alpha1.IPv4, 100, 50)
+	setPoolGVK(pool) // production sets GVK before encoding; the printer requires it
 	var buf bytes.Buffer
 	if err := encodeJSON(&buf, pool); err != nil {
 		t.Fatal(err)
@@ -79,6 +80,9 @@ func TestEncodeJSONIsValidAndClean(t *testing.T) {
 	var back map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &back); err != nil {
 		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if back["apiVersion"] != apiVersion || back["kind"] != "IPPool" {
+		t.Errorf("JSON missing GVK: apiVersion=%v kind=%v", back["apiVersion"], back["kind"])
 	}
 }
 

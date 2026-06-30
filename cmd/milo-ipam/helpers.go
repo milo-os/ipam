@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -87,9 +88,9 @@ func parseLabelSelector(s string) *metav1.LabelSelector {
 
 // renderMachine handles the machine output formats (json, yaml, name). It
 // returns done=true when it produced output for the requested format, so the
-// caller can skip its human rendering. nameFn supplies the "kind/name" line for
-// -o name.
-func (a *app) renderMachine(obj any, nameFn func() string) (done bool, err error) {
+// caller can skip its human rendering. obj must carry its GVK for json/yaml;
+// nameFn supplies the "kind/name" line for -o name.
+func (a *app) renderMachine(obj runtime.Object, nameFn func() string) (done bool, err error) {
 	switch a.opts.output {
 	case outputJSON:
 		return true, encodeJSON(a.io.Out, obj)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -9,7 +8,9 @@ import (
 	"text/tabwriter"
 
 	"golang.org/x/term"
-	"sigs.k8s.io/yaml"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/cli-runtime/pkg/genericiooptions"
+	"k8s.io/cli-runtime/pkg/printers"
 )
 
 // Output formats. The default human table is for a person at a terminal; json
@@ -36,14 +37,10 @@ func isValidOutput(o string) bool {
 	return false
 }
 
-// IOStreams bundles the process streams so commands and tests can be wired with
-// buffers instead of os.Stdout/os.Stderr. Data goes to Out; all diagnostics,
-// prompts, and progress go to ErrOut, keeping `-o json > file` clean.
-type IOStreams struct {
-	In     io.Reader
-	Out    io.Writer
-	ErrOut io.Writer
-}
+// IOStreams is kubectl's standard stream bundle (data on Out, diagnostics and
+// prompts on ErrOut) so `-o json > file` stays clean and tests can wire buffers.
+// Aliased to the cli-runtime type so the plugin shares the host CLI's contract.
+type IOStreams = genericiooptions.IOStreams
 
 func stdStreams() IOStreams {
 	return IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr}
@@ -124,21 +121,17 @@ func (t *table) flush() error {
 	return t.w.Flush()
 }
 
-// encodeJSON writes obj as indented JSON to the data stream.
-func encodeJSON(out io.Writer, obj any) error {
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	return enc.Encode(obj)
+// encodeJSON writes obj as JSON to the data stream using cli-runtime's printer,
+// so the bytes match kubectl's `-o json` exactly. obj must carry its GVK.
+func encodeJSON(out io.Writer, obj runtime.Object) error {
+	return (&printers.JSONPrinter{}).PrintObj(obj, out)
 }
 
-// encodeYAML writes obj as YAML to the data stream.
-func encodeYAML(out io.Writer, obj any) error {
-	b, err := yaml.Marshal(obj)
-	if err != nil {
-		return err
-	}
-	_, err = out.Write(b)
-	return err
+// encodeYAML writes obj as YAML using cli-runtime's printer, matching kubectl's
+// `-o yaml`. A fresh printer per call avoids the document separator the shared
+// printer prepends after its first object. obj must carry its GVK.
+func encodeYAML(out io.Writer, obj runtime.Object) error {
+	return (&printers.YAMLPrinter{}).PrintObj(obj, out)
 }
 
 // successPrefix returns a "✓" mark, colored green when enabled. On non-TTY it is
