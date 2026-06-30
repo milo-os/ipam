@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"go.opentelemetry.io/otel"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
 	genericapiserver "k8s.io/apiserver/pkg/server"
@@ -19,6 +21,7 @@ import (
 	basecompatibility "k8s.io/component-base/compatibility"
 	"k8s.io/component-base/logs"
 	logsapi "k8s.io/component-base/logs/api/v1"
+	tracingbase "k8s.io/component-base/tracing"
 	"k8s.io/klog/v2"
 	openapicommon "k8s.io/kube-openapi/pkg/common"
 
@@ -52,10 +55,10 @@ const pgxpoolStatsInterval = 15 * time.Second
 // tolerance before failing — enough for the standard postgres bring-up,
 // short enough that a genuinely-broken DSN still surfaces quickly.
 var allocatorPoolRetrySchedule = []time.Duration{
-	0,                  // first attempt is immediate
-	2 * time.Second,    // 2s before the second
-	4 * time.Second,    // 4s before the third
-	8 * time.Second,    // 8s before giving up (only used when len > 3)
+	0,               // first attempt is immediate
+	2 * time.Second, // 2s before the second
+	4 * time.Second, // 4s before the third
+	8 * time.Second, // 8s before giving up (only used when len > 3)
 }
 
 // newAllocatorPoolWithRetry opens the pgxpool with bounded exponential
@@ -251,6 +254,16 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
 	}
 
+	// IPAM's own spans come from the global OpenTelemetry provider, but the
+	// apiserver only sets its provider on the server config, not globally — so
+	// publish it here. Without this, domain spans would export nothing and would
+	// not nest under the per-request span. With tracing off this is a no-op
+	// provider, so it stays safe either way.
+	if genericConfig.TracerProvider != nil {
+		otel.SetTracerProvider(genericConfig.TracerProvider)
+	}
+	otel.SetTextMapPropagator(tracingbase.Propagators())
+
 	if o.EnableQuota {
 		// Gate readiness on the quota plugin's caches syncing so IPAM does not
 		// serve (and silently bypass quota) before the ClaimCreationPolicy /
@@ -306,6 +319,13 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)
 	}
 	poolCfg.MaxConns = 10
+	// Trace every database call on this pool so a claim's trace shows lock-wait
+	// and query latency without instrumenting the allocator. The SQL text is
+	// static and carries no user data, so it is safe to record; bound parameters
+	// are deliberately excluded because they carry tenant-scoped values.
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer(
+		otelpgx.WithTrimSQLInSpanName(),
+	)
 	allocatorPool, err := newAllocatorPoolWithRetry(context.Background(), poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pgx pool: %w", err)

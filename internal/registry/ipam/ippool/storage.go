@@ -8,6 +8,8 @@ import (
 	"net"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -23,6 +25,7 @@ import (
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
 	"go.miloapis.com/ipam/internal/tenant"
+	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -121,6 +124,15 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		return r.Store.Create(ctx, obj, createValidation, options)
 	}
 
+	// Child-pool creation reuses the allocation path, so trace it the same way a
+	// claim is traced. ctx is rebound so the downstream spans nest under this one.
+	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanPoolChildAllocate)
+	defer span.End()
+	span.SetAttributes(
+		attribute.String(tracing.AttrPoolName, pool.Spec.ParentPoolRef.Name),
+		attribute.Int(tracing.AttrClaimPrefix, pool.Spec.PrefixLength),
+	)
+
 	objectMeta, err := meta.Accessor(pool)
 	if err != nil {
 		return nil, fmt.Errorf("get object metadata: %w", err)
@@ -166,9 +178,20 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		return nil, fmt.Errorf("begin child-pool allocation transaction: %w", err)
 	}
 
+	span.SetAttributes(attribute.String(tracing.AttrClaimIPFamily, ipFamily))
+
 	cidr, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, ipFamily, childKey, "")
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		switch {
+		case errors.Is(err, allocator.ErrPoolExhausted):
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonExhausted))
+		case errors.Is(err, allocator.ErrPoolNotFound):
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonPoolNotFound))
+		default:
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
+		}
+		span.SetStatus(codes.Error, err.Error())
 		return nil, mapAllocationError(err)
 	}
 

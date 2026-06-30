@@ -1,0 +1,15 @@
+# Let the apiserver reach Tempo for trace export. Egress is default-deny, so
+# without this rule the spans never leave the pod. The peer is matched by
+# namespace only, because the kustomize label transformer rewrites pod labels
+# and a podSelector would match nothing. The append preserves the base egress
+# rules instead of replacing them.
+- op: add
+  path: /spec/egress/-
+  value:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: telemetry-system
+    ports:
+      - port: 4317
+        protocol: TCP

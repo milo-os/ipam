@@ -126,6 +126,10 @@ spec:
             # ENABLE_QUOTA=false, otherwise the quota informers can't sync
             # against the missing quota.miloapis.com CRDs and readyz never passes.
             - --enable-quota=$(ENABLE_QUOTA)
+            # Distributed tracing. Off by default: an empty TRACING_CONFIG_FILE
+            # is treated as "no tracing". Composing the tracing component sets
+            # this env var to the mounted config path and turns export on.
+            - --tracing-config-file=$(TRACING_CONFIG_FILE)
             - --requestheader-client-ca-file=/etc/kubernetes/pki/requestheader/ca.crt
             - --requestheader-username-headers=$(REQUESTHEADER_USERNAME_HEADERS)
             - --requestheader-group-headers=$(REQUESTHEADER_GROUP_HEADERS)
@@ -165,6 +169,10 @@ spec:
             # quota backend (kind/dev, e2e) override this to "false".
             - name: ENABLE_QUOTA
               value: "true"
+            # Empty disables tracing; the tracing component overrides this with
+            # the mounted config path.
+            - name: TRACING_CONFIG_FILE
+              value: ""
             - name: REQUESTHEADER_USERNAME_HEADERS
               value: "X-Remote-User"
             - name: REQUESTHEADER_GROUP_HEADERS

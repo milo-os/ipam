@@ -1,0 +1,24 @@
+# Tracing configuration the IPAM apiserver loads via --tracing-config-file.
+#
+# endpoint points at the in-cluster OpenTelemetry Collector that forwards to
+# Tempo; this is the deployed-environment default. Overlays targeting a
+# different collector patch this ConfigMap rather than editing the base.
+#
+# Sampling is kept low because allocation is a hot path and full-rate tracing
+# would add overhead and span volume for little gain. Because sampling is
+# parent-based, a request that arrives already sampled is still recorded
+# end-to-end, so targeted debugging captures the whole span tree regardless.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ipam-tracing-config
+  namespace: ipam-system
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: tracing
+data:
+  tracing.yaml: |
+    apiVersion: apiserver.config.k8s.io/v1beta1
+    kind: TracingConfiguration
+    endpoint: opentelemetry-collector-collector.open-telemetry-system.svc.cluster.local:4317
+    samplingRatePerMillion: 50000
