@@ -52,6 +52,16 @@ tasks:
         echo "Binary built: {{.TOOL_DIR}}/ipam"
     silent: true
 
+  plugin:build:
+    desc: Build the milo-ipam CLI plugin
+    cmds:
+      - |
+        set -e
+        mkdir -p {{.TOOL_DIR}}
+        go build -o {{.TOOL_DIR}}/milo-ipam ./cmd/milo-ipam
+        echo "Plugin built: {{.TOOL_DIR}}/milo-ipam"
+    silent: true
+
   test:
     desc: Run Go unit tests
     cmd: go test -timeout 5m ./pkg/... ./internal/... -count=1
