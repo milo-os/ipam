@@ -53,13 +53,13 @@ tasks:
     silent: true
 
   plugin:build:
-    desc: Build the datumctl-ipam CLI plugin
+    desc: Build the milo-ipam CLI plugin
     cmds:
       - |
         set -e
         mkdir -p {{.TOOL_DIR}}
-        go build -o {{.TOOL_DIR}}/datumctl-ipam ./cmd/datumctl-ipam
-        echo "Plugin built: {{.TOOL_DIR}}/datumctl-ipam"
+        go build -o {{.TOOL_DIR}}/milo-ipam ./cmd/milo-ipam
+        echo "Plugin built: {{.TOOL_DIR}}/milo-ipam"
     silent: true
 
   test:

@@ -1,4 +1,4 @@
-# datumctl-ipam
+# milo-ipam
 
 The IPAM plugin for `datumctl`. It presents the `ipam.miloapis.com/v1alpha1`
 API as a small set of resource-oriented commands (pools and prefixes), turning
@@ -10,24 +10,24 @@ See the full enhancement at [`docs/enhancements/cli-plugin.md`](../../docs/enhan
 ## Build
 
 ```bash
-go build -o bin/datumctl-ipam ./cmd/datumctl-ipam
+go build -o bin/milo-ipam ./cmd/milo-ipam
 ```
 
 ## Command surface
 
 ```text
 # Pools (IPPool — cluster-scoped)
-datumctl-ipam pool create <name> --cidr 10.0.0.0/8 [--family ipv4]
-datumctl-ipam pool list [--selector k=v] [-o wide|json|yaml|name]
-datumctl-ipam pool show <name>
-datumctl-ipam pool tree [<name>] [--prefixes]
-datumctl-ipam pool release <name> [--cascade] [--yes] [--dry-run]
+milo-ipam pool create <name> --cidr 10.0.0.0/8 [--family ipv4]
+milo-ipam pool list [--selector k=v] [-o wide|json|yaml|name]
+milo-ipam pool show <name>
+milo-ipam pool tree [<name>] [--prefixes]
+milo-ipam pool release <name> [--cascade] [--yes] [--dry-run]
 
 # Prefixes (IPClaim / IPAllocation — namespaced)
-datumctl-ipam prefix claim --pool <name> --length <n> [--name <n>] [--dry-run]
-datumctl-ipam prefix list [--pool <name>] [-o wide|json|yaml|name]
-datumctl-ipam prefix show <cidr|name>
-datumctl-ipam prefix release <name> [--yes] [--dry-run]
+milo-ipam prefix claim --pool <name> --length <n> [--name <n>] [--dry-run]
+milo-ipam prefix list [--pool <name>] [-o wide|json|yaml|name]
+milo-ipam prefix show <cidr|name>
+milo-ipam prefix release <name> [--yes] [--dry-run]
 ```
 
 Aliases: `ls` → `list`, `rm` → `release`.
@@ -61,10 +61,10 @@ serves the aggregated API directly. With its kubeconfig active:
 # IPPool is cluster-scoped; claims live in a namespace (-n).
 export KUBECONFIG=$(task test-infra:kubeconfig-path)   # or your kubeconfig
 
-bin/datumctl-ipam pool create demo --cidr 10.128.0.0/20 --min-length 24 --max-length 28
-bin/datumctl-ipam pool list -o wide
-bin/datumctl-ipam prefix claim --pool demo --length 24 -n default
-bin/datumctl-ipam pool tree demo --prefixes -n default
+bin/milo-ipam pool create demo --cidr 10.128.0.0/20 --min-length 24 --max-length 28
+bin/milo-ipam pool list -o wide
+bin/milo-ipam prefix claim --pool demo --length 24 -n default
+bin/milo-ipam pool tree demo --prefixes -n default
 ```
 
 No `DATUM_*` variables are required for kubeconfig mode.
@@ -108,11 +108,11 @@ Exit codes are a contract:
 `datumctl` discovers the plugin via the manifest:
 
 ```bash
-bin/datumctl-ipam --plugin-manifest
+bin/milo-ipam --plugin-manifest
 ```
 
 ## Tests
 
 ```bash
-go test ./cmd/datumctl-ipam/...
+go test ./cmd/milo-ipam/...
 ```

@@ -199,7 +199,7 @@ func kubeconfigRestConfig(kubeconfigFlag string) (*rest.Config, string, error) {
 }
 
 func userAgent() string {
-	return fmt.Sprintf("datumctl-ipam/%s", pluginVersion)
+	return fmt.Sprintf("milo-ipam/%s", pluginVersion)
 }
 
 // newClientset builds the generated IPAM clientset from a rest.Config.

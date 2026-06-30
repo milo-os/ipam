@@ -1,4 +1,4 @@
-// Command datumctl-ipam is the IPAM plugin for datumctl. It presents the
+// Command milo-ipam is the IPAM plugin for datumctl. It presents the
 // ipam.miloapis.com/v1alpha1 API as a small set of resource-oriented commands
 // (pools and prefixes), reusing the user's datumctl identity/context in
 // production and a standard kubeconfig for dev/e2e clusters.

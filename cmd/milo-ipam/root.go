@@ -7,7 +7,7 @@ import (
 )
 
 // newRootCommand builds the full command tree. The plugin is dispatched by
-// datumctl as `datumctl-ipam <args>`, presenting to the user as `datumctl ipam`.
+// datumctl as `milo-ipam <args>`, presenting to the user as `datumctl ipam`.
 func newRootCommand(io IOStreams) *cobra.Command {
 	opts := &globalOptions{output: outputTable, color: "auto"}
 	a := newApp(io, opts)
@@ -109,7 +109,7 @@ func newVersionCommand(io IOStreams) *cobra.Command {
 		Short: "Print the plugin version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, _ = fmt.Fprintf(io.Out, "datumctl-ipam %s (IPAM API %s)\n", pluginVersion, minAPIVersion)
+			_, _ = fmt.Fprintf(io.Out, "milo-ipam %s (IPAM API %s)\n", pluginVersion, minAPIVersion)
 			return nil
 		},
 	}
