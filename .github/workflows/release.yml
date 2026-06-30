@@ -43,3 +43,36 @@ jobs:
       image-overlays: config/base
       image-name: ghcr.io/milo-os/ipam
     secrets: inherit
+
+  # Build and publish the milo-ipam datumctl plugin as per-platform archives +
+  # checksums.txt, attached as GitHub release assets. Only runs on version tags
+  # (vX.Y.Z); independent of the container/kustomize jobs above. The produced
+  # asset names are consumed by the datumctl plugin catalog entry in
+  # milo-os/cli-plugins (plugins/ipam.yaml).
+  publish-plugin:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Syft CLI
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,6 +1,9 @@
 # Compiled binary
 /ipam
 
+# GoReleaser build output
+/dist/
+
 # Local test infrastructure (kind cluster, kind managed by task test-infra:cluster-up)
 /.test-infra/
 
