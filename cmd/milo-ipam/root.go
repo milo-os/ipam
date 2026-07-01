@@ -12,8 +12,6 @@ func newRootCommand(io IOStreams) *cobra.Command {
 	opts := &globalOptions{output: outputTable, color: "auto"}
 	a := newApp(io, opts)
 
-	var showManifest bool
-
 	root := &cobra.Command{
 		Use:   "ipam",
 		Short: "Manage IP address space (pools and prefixes) on Datum",
@@ -34,17 +32,10 @@ scripts (data on stdout, diagnostics on stderr). Exit codes are documented and
 distinct per failure class (notably 7 = IPAM_POOL_EXHAUSTED).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		// Intercept --plugin-manifest before any subcommand dispatch.
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if showManifest {
-				return writeManifest(io.Out, defaultManifest())
-			}
 			return cmd.Help()
 		},
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if showManifest {
-				return nil
-			}
 			if !isValidOutput(opts.output) {
 				return usageErrorf("invalid -o %q: must be one of %v", opts.output, validOutputs())
 			}
@@ -66,8 +57,9 @@ distinct per failure class (notably 7 = IPAM_POOL_EXHAUSTED).`,
 		},
 	}
 
+	// Note: --plugin-manifest is handled by plugin.ServeManifest in main() before
+	// cobra runs, so it is intentionally not registered as a cobra flag here.
 	pf := root.PersistentFlags()
-	pf.BoolVar(&showManifest, "plugin-manifest", false, "Print the plugin manifest as JSON and exit")
 	pf.StringVar(&opts.kubeconfig, "kubeconfig", "", "Path to a kubeconfig (forces kubeconfig transport; for dev/e2e clusters)")
 	pf.StringVarP(&opts.namespace, "namespace", "n", "", "Namespace for namespaced resources (claims/allocations); defaults to the active context")
 	pf.StringVarP(&opts.output, "output", "o", outputTable, "Output format: table|wide|json|yaml|name")
@@ -109,7 +101,7 @@ func newVersionCommand(io IOStreams) *cobra.Command {
 		Short: "Print the plugin version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, _ = fmt.Fprintf(io.Out, "milo-ipam %s (IPAM API %s)\n", pluginVersion, minAPIVersion)
+			_, _ = fmt.Fprintf(io.Out, "milo-ipam %s (IPAM API %s)\n", pluginVersion, ipamAPIGroupVersion)
 			return nil
 		},
 	}

@@ -86,16 +86,20 @@ func TestEncodeJSONIsValidAndClean(t *testing.T) {
 	}
 }
 
-func TestManifestWriter(t *testing.T) {
-	var buf bytes.Buffer
-	if err := writeManifest(&buf, defaultManifest()); err != nil {
+func TestPluginManifest(t *testing.T) {
+	m := pluginManifest()
+	if m.Name != "ipam" || m.APIVersion != 1 || m.MinAPIVersion != 1 {
+		t.Fatalf("unexpected manifest: %+v", m)
+	}
+
+	// Guard the datumctl contract: api_version fields are integers. Emitting
+	// min_api_version as a JSON string is what broke `datumctl plugin install`
+	// (it unmarshals into an int field). Serialize and assert the numeric form.
+	b, err := json.Marshal(m)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var m pluginManifest
-	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
-		t.Fatalf("manifest is not valid JSON: %v", err)
-	}
-	if m.Name != "ipam" || m.APIVersion != 1 || m.MinAPIVersion == "" {
-		t.Fatalf("unexpected manifest: %+v", m)
+	if !strings.Contains(string(b), `"min_api_version":1`) {
+		t.Fatalf("min_api_version must serialize as an integer, got: %s", b)
 	}
 }
