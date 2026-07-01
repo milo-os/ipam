@@ -83,16 +83,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Mint a short-lived token for the cross-repo catalog PR. The built-in
-  # GITHUB_TOKEN only reaches this repo, so we exchange the milo-os GitHub App's
-  # credentials for an installation token scoped to the catalog repo. The App's
-  # ID and private key are stored as secrets (ideally org-level, shared by every
-  # milo plugin repo); the minted token is repo-scoped and expires in ~1 hour.
-  generate-index-token:
+  # After goreleaser attaches the archives + checksums.txt to the release, open
+  # a PR against the datumctl plugin catalog (milo-os/cli-plugins) bumping
+  # plugins/ipam.yaml to this release: new version, per-platform download URLs,
+  # and refreshed sha256s pulled from checksums.txt.
+  #
+  # One job: mint a short-lived, repo-scoped installation token from the milo-os
+  # GitHub App and hand it straight to the composite action in the same job. A
+  # GitHub App token minted in a separate job and passed via outputs is scrubbed
+  # to empty (masked values don't survive job-to-job hops), so mint + use must
+  # share a job. Gated on the release event (matching publish-plugin) so it runs
+  # once, and depends on publish-plugin so checksums.txt exists before it reads
+  # it. The App's ID and private key are stored as secrets (org-level, shared by
+  # every milo plugin repo); the minted token is repo-scoped and expires ~1h.
+  #
+  # NOTE: pinned to the datum-cloud/actions branch that introduces the composite
+  # action; switch to a version tag (e.g. @v1.18.0) once that release is cut.
+  update-plugin-index:
+    needs:
+      - publish-plugin
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.app-token.outputs.token }}
     steps:
       - name: Mint catalog token from the milo-os GitHub App
         id: app-token
@@ -103,26 +114,10 @@ jobs:
           owner: milo-os
           repositories: cli-plugins
 
-  # After goreleaser attaches the archives + checksums.txt to the release, open
-  # a PR against the datumctl plugin catalog (milo-os/cli-plugins) bumping
-  # plugins/ipam.yaml to this release: new version, per-platform download URLs,
-  # and refreshed sha256s pulled from checksums.txt. Gated on the release event
-  # (matching publish-plugin) so it runs exactly once, and depends on
-  # publish-plugin so checksums.txt exists before it reads it.
-  update-plugin-index:
-    needs:
-      - publish-plugin
-      - generate-index-token
-    if: github.event_name == 'release'
-    permissions:
-      contents: read
-    uses: datum-cloud/actions/.github/workflows/update-plugin-index.yaml@v1.17.0
-    with:
-      index-repo: milo-os/cli-plugins
-      plugin-name: ipam
-      version: ${{ github.event.release.tag_name }}
-    secrets:
-      # Cross-repo PR auth: a repo-scoped installation token minted above from
-      # the milo-os GitHub App. The built-in GITHUB_TOKEN cannot push to
-      # milo-os/cli-plugins, and this avoids a long-lived PAT.
-      PLUGIN_INDEX_TOKEN: ${{ needs.generate-index-token.outputs.token }}
+      - name: Open the catalog PR
+        uses: datum-cloud/actions/update-plugin-index@feat/update-plugin-index-composite
+        with:
+          index-repo: milo-os/cli-plugins
+          plugin-name: ipam
+          version: ${{ github.event.release.tag_name }}
+          token: ${{ steps.app-token.outputs.token }}
