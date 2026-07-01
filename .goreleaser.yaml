@@ -1,0 +1,66 @@
+# GoReleaser config for the milo-ipam datumctl plugin.
+#
+# Release a version by pushing a semver tag (vX.Y.Z). The Release workflow runs
+# goreleaser, which builds the plugin for each supported platform and publishes
+# per-platform archives + checksums.txt as GitHub release assets. The datumctl
+# plugin catalog entry (milo-os/cli-plugins, plugins/ipam.yaml) references these
+# exact asset names, so the archive name_template below must not change casually.
+#
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: milo-ipam
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: milo-ipam
+    main: ./cmd/milo-ipam
+    binary: milo-ipam
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Inject the release version (the git tag without its leading "v") so the
+    # published binary's --plugin-manifest and `milo-ipam --version` report the
+    # version it was released under, rather than the in-source default.
+    ldflags:
+      - -s -w
+      - -X main.pluginVersion={{ .Version }}
+
+archives:
+  - id: milo-ipam
+    # name template renders OS title-cased (Linux/Darwin/Windows) and amd64 as
+    # x86_64, matching goreleaser's common convention and the datumctl plugin
+    # catalog entry (milo-ipam_Darwin_arm64, milo-ipam_Linux_x86_64, ...).
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
