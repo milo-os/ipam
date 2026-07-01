@@ -83,6 +83,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Mint a short-lived token for the cross-repo catalog PR. The built-in
+  # GITHUB_TOKEN only reaches this repo, so we exchange the milo-os GitHub App's
+  # credentials for an installation token scoped to the catalog repo. The App's
+  # ID and private key are stored as secrets (ideally org-level, shared by every
+  # milo plugin repo); the minted token is repo-scoped and expires in ~1 hour.
+  generate-index-token:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.app-token.outputs.token }}
+    steps:
+      - name: Mint catalog token from the milo-os GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PLUGIN_INDEX_APP_ID }}
+          private-key: ${{ secrets.PLUGIN_INDEX_APP_PRIVATE_KEY }}
+          owner: milo-os
+          repositories: cli-plugins
+
   # After goreleaser attaches the archives + checksums.txt to the release, open
   # a PR against the datumctl plugin catalog (milo-os/cli-plugins) bumping
   # plugins/ipam.yaml to this release: new version, per-platform download URLs,
@@ -96,6 +116,7 @@ jobs:
   update-plugin-index:
     needs:
       - publish-plugin
+      - generate-index-token
     if: github.event_name == 'release'
     permissions:
       contents: read
@@ -105,7 +126,7 @@ jobs:
       plugin-name: ipam
       version: ${{ github.event.release.tag_name }}
     secrets:
-      # Cross-repo PR: the built-in GITHUB_TOKEN cannot push to milo-os/cli-plugins.
-      # PLUGIN_INDEX_TOKEN is a PAT / GitHub App token with contents:write +
-      # pull-requests:write on that repo, stored as a repo/org secret.
-      PLUGIN_INDEX_TOKEN: ${{ secrets.PLUGIN_INDEX_TOKEN }}
+      # Cross-repo PR auth: a repo-scoped installation token minted above from
+      # the milo-os GitHub App. The built-in GITHUB_TOKEN cannot push to
+      # milo-os/cli-plugins, and this avoids a long-lived PAT.
+      PLUGIN_INDEX_TOKEN: ${{ needs.generate-index-token.outputs.token }}
