@@ -45,12 +45,18 @@ jobs:
     secrets: inherit
 
   # Build and publish the milo-ipam datumctl plugin as per-platform archives +
-  # checksums.txt, attached as GitHub release assets. Only runs on version tags
-  # (vX.Y.Z); independent of the container/kustomize jobs above. The produced
-  # asset names are consumed by the datumctl plugin catalog entry in
-  # milo-os/cli-plugins (plugins/ipam.yaml).
+  # checksums.txt, attached as GitHub release assets. The produced asset names
+  # are consumed by the datumctl plugin catalog entry in milo-os/cli-plugins
+  # (plugins/ipam.yaml).
+  #
+  # Runs ONLY on `release: published`. Publishing a release via the GitHub UI
+  # creates the tag, which fires BOTH `push: tags` and `release: published`; if
+  # this job keyed off the tag ref it would run twice concurrently and two
+  # goreleaser processes would race to upload the same assets. Gating on the
+  # release event makes it run exactly once and gives us a real release for
+  # goreleaser to attach artifacts to.
   publish-plugin:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -76,3 +82,30 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # After goreleaser attaches the archives + checksums.txt to the release, open
+  # a PR against the datumctl plugin catalog (milo-os/cli-plugins) bumping
+  # plugins/ipam.yaml to this release: new version, per-platform download URLs,
+  # and refreshed sha256s pulled from checksums.txt. Gated on the release event
+  # (matching publish-plugin) so it runs exactly once, and depends on
+  # publish-plugin so checksums.txt exists before it reads it.
+  #
+  # NOTE: pinned to the datum-cloud/actions branch that introduces this workflow
+  # until it ships in a tagged release; switch this ref to a version tag (e.g.
+  # @v1.15.0) once that release is cut.
+  update-plugin-index:
+    needs:
+      - publish-plugin
+    if: github.event_name == 'release'
+    permissions:
+      contents: read
+    uses: datum-cloud/actions/.github/workflows/update-plugin-index.yaml@feat/update-plugin-index
+    with:
+      index-repo: milo-os/cli-plugins
+      plugin-name: ipam
+      version: ${{ github.event.release.tag_name }}
+    secrets:
+      # Cross-repo PR: the built-in GITHUB_TOKEN cannot push to milo-os/cli-plugins.
+      # PLUGIN_INDEX_TOKEN is a PAT / GitHub App token with contents:write +
+      # pull-requests:write on that repo, stored as a repo/org secret.
+      PLUGIN_INDEX_TOKEN: ${{ secrets.PLUGIN_INDEX_TOKEN }}
