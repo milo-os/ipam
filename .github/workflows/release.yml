@@ -109,10 +109,6 @@ jobs:
   # and refreshed sha256s pulled from checksums.txt. Gated on the release event
   # (matching publish-plugin) so it runs exactly once, and depends on
   # publish-plugin so checksums.txt exists before it reads it.
-  #
-  # NOTE: pinned to the datum-cloud/actions branch that introduces this workflow
-  # until it ships in a tagged release; switch this ref to a version tag (e.g.
-  # @v1.15.0) once that release is cut.
   update-plugin-index:
     needs:
       - publish-plugin
@@ -120,7 +116,7 @@ jobs:
     if: github.event_name == 'release'
     permissions:
       contents: read
-    uses: datum-cloud/actions/.github/workflows/update-plugin-index.yaml@feat/update-plugin-index
+    uses: datum-cloud/actions/.github/workflows/update-plugin-index.yaml@v1.17.0
     with:
       index-repo: milo-os/cli-plugins
       plugin-name: ipam
