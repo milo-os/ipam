@@ -9,9 +9,15 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"go.datum.net/datumctl/plugin"
 )
 
 func main() {
+	// Serve --plugin-manifest via the datumctl SDK before cobra runs, so the
+	// manifest is emitted even if flag parsing would otherwise fail. ServeManifest
+	// prints the JSON and exits 0 when the flag is present; otherwise it returns.
+	plugin.ServeManifest(pluginManifest())
+
 	io := stdStreams()
 	root := newRootCommand(io)
 
