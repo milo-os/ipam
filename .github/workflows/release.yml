@@ -96,9 +96,6 @@ jobs:
   # once, and depends on publish-plugin so checksums.txt exists before it reads
   # it. The App's ID and private key are stored as secrets (org-level, shared by
   # every milo plugin repo); the minted token is repo-scoped and expires ~1h.
-  #
-  # NOTE: pinned to the datum-cloud/actions branch that introduces the composite
-  # action; switch to a version tag (e.g. @v1.18.0) once that release is cut.
   update-plugin-index:
     needs:
       - publish-plugin
@@ -115,7 +112,7 @@ jobs:
           repositories: cli-plugins
 
       - name: Open the catalog PR
-        uses: datum-cloud/actions/update-plugin-index@feat/update-plugin-index-composite
+        uses: datum-cloud/actions/update-plugin-index@v1.18.0
         with:
           index-repo: milo-os/cli-plugins
           plugin-name: ipam
