@@ -28,14 +28,33 @@ never mixed. Dual-stack means two pools.
 
 ## Before you begin
 
-1. **Install the plugin** (once per machine):
+1. **Register the milo-os plugin catalog** (once per machine). The IPAM plugin
+   is published in the milo-os catalog, not the built-in `datum` one, so
+   datumctl needs to know about it before it can install or update `ipam` by
+   name:
 
    ```sh
-   datumctl plugin install milo-os/ipam
+   datumctl plugin index add milo-os milo-os/cli-plugins
+   ```
+
+   `milo-os/cli-plugins` is GitHub shorthand for the catalog's index on that
+   repo's main branch. datumctl treats third-party catalogs as untrusted and
+   asks you to confirm — accept the prompt (or pass `--yes`). You can review
+   what's registered with `datumctl plugin index list`.
+
+2. **Install the plugin** (once per machine):
+
+   ```sh
+   datumctl plugin install ipam
    datumctl ipam version
    ```
 
-2. **Make sure IPAM is enabled for your project.** IPAM is a provider-gated
+   > Prefer not to register a catalog? You can install straight from the GitHub
+   > release instead — `datumctl plugin install milo-os/ipam` — but you won't get
+   > catalog-managed discovery (`datumctl plugin search`) or `datumctl plugin
+   > upgrade` by name.
+
+3. **Make sure IPAM is enabled for your project.** IPAM is a provider-gated
    service. The first `datumctl ipam` command in a project runs an entitlement
    preflight; if the project isn't enabled yet, the CLI tells you and can submit
    a request:
@@ -47,7 +66,7 @@ never mixed. Dual-stack means two pools.
    Enabling requires provider approval, so there may be a wait before the
    commands below work.
 
-3. **Know your scope.** Pools are cluster-scoped and shared; claims and
+4. **Know your scope.** Pools are cluster-scoped and shared; claims and
    allocations live in your active project. The plugin uses your current
    `datumctl` context; override per-invocation with `--org` / `--project`, and
    target a specific namespace with `-n`.
