@@ -32,7 +32,7 @@ internal/
   allocation/       # Pure Go CIDR/ASN math library — ZERO non-stdlib imports
   allocator/        # Kubernetes-aware wrappers: PostgresPrefixAllocator, PostgresASNAllocator
   apiserver/        # Aggregated apiserver setup (follow quota pattern)
-  registry/ipam/    # Per-resource storage: ipprefix/, ipprefixclaim/, ipaddress/, ipaddressclaim/, asnpool/, asnclaim/
+  registry/ipam/    # Per-resource storage: ippool/, ipclaim/, ipallocation/
   storage/          # PostgreSQL RESTOptionsGetter implementation
   watch/            # LISTEN/NOTIFY changelog-based Watch
   metrics/          # Prometheus metrics
