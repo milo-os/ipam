@@ -63,6 +63,15 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
+	// The pool's address family is authoritative — derive it from the pool's
+	// CIDR. Reject a claim whose family disagrees rather than searching by
+	// prefix length alone, which could allocate a block from the wrong family
+	// and persist an allocation whose recorded family would not match its CIDR.
+	if poolFamily := effectivePoolFamily(pool); ipFamily != "" && poolFamily != "" && ipFamily != poolFamily {
+		return "", fmt.Errorf("claim address family %q does not match pool %q family %q: %w",
+			ipFamily, pool.Name, poolFamily, ErrFamilyMismatch)
+	}
+
 	existing, err := loadExistingAllocations(ctx, tx, poolKey)
 	if err != nil {
 		return "", err

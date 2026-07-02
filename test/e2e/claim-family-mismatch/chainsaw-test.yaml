@@ -1,0 +1,81 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: claim-family-mismatch
+spec:
+  description: |
+    A claim's address family must match the pool it targets. The pool's family
+    is authoritative (derived from its CIDR); a mismatched claim is rejected
+    with HTTP 400 rather than searching by prefix length alone — which would
+    otherwise return a misleading 507 or, worse, allocate a real block of the
+    wrong family and persist an allocation whose recorded family disagrees with
+    its CIDR. A matching-family claim must still succeed.
+  steps:
+    - name: create-pools
+      description: An IPv4 pool and an IPv6 pool; wait for both to be Ready.
+      try:
+        - create:
+            file: test-data/pool-v4.yaml
+        - create:
+            file: test-data/pool-v6.yaml
+        - script:
+            timeout: 60s
+            content: |
+              set -e
+              for p in test-fam-v4 test-fam-v6; do
+                for i in $(seq 1 30); do
+                  phase=$(kubectl get ippool "$p" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                  if [ "$phase" = "Ready" ]; then break; fi
+                  sleep 1
+                done
+                if [ "$phase" != "Ready" ]; then
+                  echo "FAIL: $p not Ready after 30s (phase=$phase)"; exit 1
+                fi
+              done
+            check:
+              ($error == null): true
+
+    - name: reject-ipv6-claim-on-ipv4-pool
+      description: |
+        IPv6-family claim against the IPv4 pool is rejected with a clear
+        family-mismatch error (400), not a 507 "exhausted".
+      try:
+        - create:
+            file: test-data/claim-v6-on-v4.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'address family') && contains($error, 'does not match')): true
+
+    - name: reject-ipv4-claim-on-ipv6-pool
+      description: IPv4-family claim against the IPv6 pool is likewise rejected.
+      try:
+        - create:
+            file: test-data/claim-v4-on-v6.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'address family') && contains($error, 'does not match')): true
+
+    - name: accept-matching-family-claim
+      description: |
+        A matching-family claim (IPv4 against the IPv4 pool) still succeeds and
+        binds — proving the guard does not over-reject.
+      try:
+        - create:
+            file: test-data/claim-v4-ok.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-v4-ok-bound.yaml
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" \
+                claim-v6-on-v4 claim-v4-on-v6 claim-v4-ok --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool test-fam-v4 test-fam-v6 --ignore-not-found >/dev/null 2>&1 || true
+              echo "claim-family-mismatch cleanup done"
+            check:
+              ($error == null): true

@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: claim-v6-on-v4
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv6
+  prefixLength: 64
+  poolRef:
+    name: test-fam-v4
+  reclaimPolicy: Delete

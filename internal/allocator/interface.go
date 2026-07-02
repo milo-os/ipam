@@ -28,6 +28,13 @@ var ErrPoolNotFound = errors.New("ipam: pool not found")
 // Storage) at the registry boundary.
 var ErrPoolExhausted = errors.New("ipam: pool exhausted")
 
+// ErrFamilyMismatch is returned when a claim's requested address family does
+// not match the pool's family (derived from the pool's CIDR). Without this
+// guard a mismatched claim would allocate a block by prefix length alone and
+// persist an allocation whose recorded family disagrees with its CIDR. Callers
+// should map this to HTTP 400 (Bad Request) at the registry boundary.
+var ErrFamilyMismatch = errors.New("ipam: claim address family does not match pool")
+
 // PrefixAllocator atomically reserves a sub-CIDR from an IPPrefix pool.
 //
 // ownerProject scopes the allocation to a single tenant project so per-project

@@ -1,0 +1,12 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: test-fam-v6
+spec:
+  cidr: fd00:fa11::/48
+  ipFamily: IPv6
+  visibility: consumer
+  allocation:
+    minPrefixLength: 56
+    maxPrefixLength: 64
+    strategy: FirstFit

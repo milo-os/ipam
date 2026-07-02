@@ -445,6 +445,8 @@ func allocationFailureReason(err error) string {
 		return "pool_exhausted"
 	case errors.Is(err, allocator.ErrPoolNotFound):
 		return "pool_not_found"
+	case errors.Is(err, allocator.ErrFamilyMismatch):
+		return "family_mismatch"
 	default:
 		return "tx_error"
 	}
@@ -656,6 +658,8 @@ func mapAllocationError(err error) error {
 		return registryerrors.NewInsufficientStorage("IPPool exhausted")
 	case errors.Is(err, allocator.ErrPoolNotFound):
 		return apierrors.NewBadRequest("IPPool not found")
+	case errors.Is(err, allocator.ErrFamilyMismatch):
+		return apierrors.NewBadRequest(err.Error())
 	default:
 		return apierrors.NewInternalError(err)
 	}
