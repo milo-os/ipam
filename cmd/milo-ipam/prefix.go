@@ -153,7 +153,10 @@ func runPrefixClaim(a *app, o *claimOptions) error {
 		}
 		pool = p
 		if family == "" {
-			family = p.Spec.IPFamily
+			// Use the pool's effective family: child pools carry no
+			// spec.ipFamily (it's derived from the carved CIDR), so the family
+			// lives in status.ipFamily. poolFamily() prefers status then spec.
+			family = poolFamily(p)
 		}
 	}
 	if family == "" {
@@ -166,7 +169,14 @@ func runPrefixClaim(a *app, o *claimOptions) error {
 		return usageErrorf("a claim needs a size: pass --length <n> or --cidr <cidr>")
 	}
 	if o.length > familyBits(family) {
-		return usageErrorf("--length /%d is out of range for %s (max /%d)", o.length, family, familyBits(family))
+		err := newCLIError(exitUsage, fmt.Sprintf("--length /%d is out of range for %s (max /%d)", o.length, family, familyBits(family)))
+		// If the family was assumed rather than stated, the pool may be IPv6
+		// with a length that only looks out of range because we defaulted to
+		// IPv4. Point the user at --family.
+		if o.family == "" && o.cidr == "" {
+			return err.withFix(fmt.Sprintf("address family was assumed %s; if the pool is IPv6, pass --family ipv6", family))
+		}
+		return err
 	}
 
 	// Idempotency: a named claim that already exists is returned as-is.
