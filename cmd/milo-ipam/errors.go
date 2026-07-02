@@ -127,9 +127,10 @@ func classifyError(err error) *cliError {
 	code := httpStatusCode(err)
 	switch code {
 	case 403:
-		return newCLIError(exitForbidden, fmt.Sprintf("not authorized: %s", apiMessage(err))).
-			withFix("verify the active org/project and your RBAC. A pool that exists but\n" +
-				"isn't shared into this project reports forbidden, not found.").
+		return newCLIError(exitForbidden, fmt.Sprintf("you don't have permission to do that: %s", apiMessage(err))).
+			withFix("check you're working in the right organization and project, and that\n" +
+				"you've been granted access. A pool that exists but isn't shared into this\n" +
+				"project shows as \"permission denied\" rather than \"not found\".").
 			withCause(err)
 	case 404:
 		return newCLIError(exitNotFound, apiMessage(err)).withCause(err)
@@ -150,7 +151,9 @@ func classifyError(err error) *cliError {
 				"that --kubeconfig / KUBECONFIG points at a reachable cluster.").
 			withCause(err)
 	}
-	return newCLIError(exitError, msg).withCause(err)
+	return newCLIError(exitError, fmt.Sprintf("something went wrong: %s", msg)).
+		withFix("re-run with --verbose to see more detail.").
+		withCause(err)
 }
 
 func isConnectionError(msg string) bool {

@@ -75,16 +75,18 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	case ipFamily == "":
 		ipFamily = poolFamily
 	case poolFamily != "" && ipFamily != poolFamily:
-		return "", "", fmt.Errorf("claim address family %q does not match pool %q family %q: %w",
-			ipFamily, pool.Name, poolFamily, ErrFamilyMismatch)
+		return "", "", familyMismatchError(fmt.Sprintf(
+			"this claim asks for an %s address, but pool %q hands out %s addresses. Leave the address family unset to use the pool's, or set it to %s.",
+			ipFamily, pool.Name, poolFamily, poolFamily))
 	}
 
 	// Guard the prefix length against the (now-resolved) family. This matters
 	// mostly when the family was derived: a length valid for one family (e.g.
 	// /40) is out of range for the other.
 	if bits := familyBits(ipFamily); bits > 0 && (prefixLen < 0 || prefixLen > bits) {
-		return "", "", fmt.Errorf("prefixLength /%d is out of range for %s (max /%d): %w",
-			prefixLen, ipFamily, bits, ErrPrefixLengthOutOfRange)
+		return "", "", prefixLengthError(fmt.Sprintf(
+			"a prefix length of /%d can't be allocated from an %s pool; choose a length between /0 and /%d.",
+			prefixLen, ipFamily, bits))
 	}
 
 	existing, err := loadExistingAllocations(ctx, tx, poolKey)

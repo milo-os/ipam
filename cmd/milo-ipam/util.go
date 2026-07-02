@@ -201,7 +201,9 @@ func humanDuration(t metav1.Time) string {
 func validateCIDR(cidr string) (netip.Prefix, ipamv1alpha1.IPFamily, error) {
 	p, err := netip.ParsePrefix(cidr)
 	if err != nil {
-		return netip.Prefix{}, "", usageErrorf("invalid CIDR %q: %v", cidr, err)
+		return netip.Prefix{}, "", usageErrorf("%q is not a valid CIDR.", cidr).
+			withFix("use address/prefix form, e.g. 10.0.0.0/8 or 2001:db8::/32.").
+			withCause(err)
 	}
 	fam := ipamv1alpha1.IPv4
 	if p.Addr().Is6() {

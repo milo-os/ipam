@@ -206,7 +206,9 @@ func userAgent() string {
 func newClientset(cfg *rest.Config) (clientset.Interface, error) {
 	cs, err := clientset.NewForConfig(cfg)
 	if err != nil {
-		return nil, newCLIError(exitUnavailable, fmt.Sprintf("failed to build IPAM client: %v", err)).withCause(err)
+		return nil, newCLIError(exitUnavailable, fmt.Sprintf("couldn't set up the connection to IPAM: %v", err)).
+			withFix("confirm you're logged in (datumctl login) and your context or --kubeconfig points at a reachable cluster.").
+			withCause(err)
 	}
 	return cs, nil
 }

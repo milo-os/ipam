@@ -20,8 +20,11 @@ import (
 // pool's family from its CIDR and returns ErrFamilyMismatch; the registry must
 // map that to a client error explaining the mismatch.
 func TestCreate_FamilyMismatchIsBadRequest(t *testing.T) {
-	mismatch := fmt.Errorf("claim address family %q does not match pool %q family %q: %w",
-		"IPv4", "region-v6", "IPv6", allocator.ErrFamilyMismatch)
+	// Inject an allocator family-mismatch (message shaped like the real,
+	// user-facing one) and assert the registry maps it to a 400 that carries
+	// the explanation through to the client.
+	mismatch := fmt.Errorf("this claim asks for an IPv4 address, but pool %q hands out IPv6 addresses: %w",
+		"region-v6", allocator.ErrFamilyMismatch)
 	r, _ := newTracingREST(mismatch, nil)
 
 	_, err := r.Create(projectContext("proj-a"), newClaim(), nil, &metav1.CreateOptions{})
@@ -31,8 +34,8 @@ func TestCreate_FamilyMismatchIsBadRequest(t *testing.T) {
 	if !apierrors.IsBadRequest(err) {
 		t.Fatalf("expected BadRequest (400), got %#v", err)
 	}
-	if !strings.Contains(err.Error(), "does not match pool") {
-		t.Errorf("error should explain the family mismatch, got: %v", err)
+	if !strings.Contains(err.Error(), "region-v6") {
+		t.Errorf("error should name the pool and explain the mismatch, got: %v", err)
 	}
 }
 

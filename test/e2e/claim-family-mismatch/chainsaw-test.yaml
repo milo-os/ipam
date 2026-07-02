@@ -45,7 +45,7 @@ spec:
             expect:
               - check:
                   ($error != null): true
-                  (contains($error, 'address family') && contains($error, 'does not match')): true
+                  (contains($error, 'hands out') && contains($error, 'address')): true
 
     - name: reject-ipv4-claim-on-ipv6-pool
       description: IPv4-family claim against the IPv6 pool is likewise rejected.
@@ -55,7 +55,7 @@ spec:
             expect:
               - check:
                   ($error != null): true
-                  (contains($error, 'address family') && contains($error, 'does not match')): true
+                  (contains($error, 'hands out') && contains($error, 'address')): true
 
     - name: accept-matching-family-claim
       description: |

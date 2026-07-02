@@ -40,6 +40,30 @@ var ErrFamilyMismatch = errors.New("ipam: claim address family does not match po
 // Callers should map this to HTTP 400 (Bad Request) at the registry boundary.
 var ErrPrefixLengthOutOfRange = errors.New("ipam: prefix length out of range for pool family")
 
+// userError carries a sentinel (so callers can match it with errors.Is at the
+// registry boundary) while its Error() returns only a plain, user-facing
+// message. This keeps fmt.Errorf's %w from appending the internal "ipam: ..."
+// sentinel text to the message shown to API clients.
+type userError struct {
+	msg      string
+	sentinel error
+}
+
+func (e *userError) Error() string { return e.msg }
+func (e *userError) Unwrap() error { return e.sentinel }
+
+// familyMismatchError builds a user-facing error that still matches
+// ErrFamilyMismatch via errors.Is.
+func familyMismatchError(msg string) error {
+	return &userError{msg: msg, sentinel: ErrFamilyMismatch}
+}
+
+// prefixLengthError builds a user-facing error that still matches
+// ErrPrefixLengthOutOfRange via errors.Is.
+func prefixLengthError(msg string) error {
+	return &userError{msg: msg, sentinel: ErrPrefixLengthOutOfRange}
+}
+
 // PrefixAllocator atomically reserves a sub-CIDR from an IPPrefix pool.
 //
 // ownerProject scopes the allocation to a single tenant project so per-project
