@@ -25,6 +25,7 @@ import (
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipallocation"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipclaim"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipclass"
 	"go.miloapis.com/ipam/internal/registry/ipam/ippool"
 	"go.miloapis.com/ipam/pkg/apis/ipam/install"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -188,6 +189,18 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	}
 	v1alpha1Storage["ipclaims"] = ipClaimStore
 	v1alpha1Storage["ipclaims/status"] = ipClaimStatusStore
+
+	// IPClass — cluster-scoped allocation policy (StorageClass analog). Plain
+	// CRUD with no allocator/db; the IPClaim handler reads a class to place an
+	// allocation and pools opt in via spec.classNames.
+	ipClassStore, err := ipclass.NewIPClassStorage(
+		Scheme,
+		c.GenericConfig.RESTOptionsGetter,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create IPClass storage: %w", err)
+	}
+	v1alpha1Storage["ipclasses"] = ipClassStore
 
 	apiGroupInfo.VersionedResourcesStorageMap["v1alpha1"] = v1alpha1Storage
 

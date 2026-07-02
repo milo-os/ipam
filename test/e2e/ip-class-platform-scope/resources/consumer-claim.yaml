@@ -1,0 +1,16 @@
+---
+# Claimed by a CONSUMER project (project-alpha, via impersonation) naming a
+# PLATFORM-owned class. The consumer never names a pool. Class resolution
+# searches the caller's own (project-alpha) scope PLUS the platform scope and
+# falls back to the platform class + platform pool. ipFamily is omitted — it
+# comes from the class.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipc-consumer-claim
+  namespace: ($namespace)
+  labels:
+    ipc-suite: "true"
+spec:
+  className: ipc-platform-egress
+  prefixLength: 26

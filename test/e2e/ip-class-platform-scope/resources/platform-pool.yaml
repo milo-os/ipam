@@ -1,0 +1,16 @@
+---
+# A PLATFORM-owned pool backing the platform class. Created under the
+# tenant-platform (unimpersonated) context, so it lives in the platform scope.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ipc-platform-pool
+spec:
+  cidr: 10.150.0.0/20
+  ipFamily: IPv4
+  visibility: platform
+  classNames: [ipc-platform-egress]
+  allocation:
+    minPrefixLength: 24
+    maxPrefixLength: 28
+    strategy: FirstFit

@@ -1,0 +1,13 @@
+---
+# Claimed by class e2e-public-egress (/26). Must bind synchronously with a
+# /26 drawn from the class's only backing pool (ipclass-pool-egress,
+# 10.140.0.0/20).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-egress-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (boundAllocationRef.name != null): true
+  (regex_match('^10\.140\.\d+\.\d+/26$', allocatedCIDR)): true

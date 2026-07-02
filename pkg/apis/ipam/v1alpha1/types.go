@@ -94,6 +94,16 @@ const (
 	VisibilityShared   string = "shared"
 )
 
+// NativeProvisioner is the built-in allocator that satisfies claims from the
+// platform's own pools. It is the only provisioner shipped today and the
+// default for any IPClass that omits spec.provisioner.
+const NativeProvisioner = "ipam.miloapis.com/native"
+
+// IsDefaultClassAnnotation, when set to "true" on an IPClass, marks that class
+// as the default used by claims that name neither a class nor a pool. At most
+// one IPClass may carry this annotation.
+const IsDefaultClassAnnotation = "ipam.miloapis.com/is-default-class"
+
 // ObjectRef is an opaque cross-API reference.
 type ObjectRef struct {
 	APIGroup  string `json:"apiGroup"`
@@ -163,6 +173,11 @@ type IPPoolSpec struct {
 	// +optional
 	// +kubebuilder:validation:Enum=platform;consumer;shared
 	Visibility string `json:"visibility,omitempty"`
+	// classNames is the set of IPClass names this pool offers its capacity to.
+	// A claim naming one of these classes may be satisfied from this pool.
+	// +optional
+	// +listType=set
+	ClassNames []string `json:"classNames,omitempty"`
 }
 
 type IPPoolStatus struct {
@@ -233,6 +248,11 @@ type IPAllocation struct {
 type IPAllocationSpec struct {
 	IPFamily IPFamily `json:"ipFamily"`
 	PoolRef  LocalRef `json:"poolRef"`
+	// className records the IPClass a claim used to reach this allocation,
+	// empty when the claim named a pool or selector directly. Provenance only;
+	// it does not affect the allocation itself.
+	// +optional
+	ClassName string `json:"className,omitempty"`
 }
 
 type IPAllocationStatus struct {
@@ -285,6 +305,11 @@ type IPClaimSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=128
 	PrefixLength int `json:"prefixLength"`
+	// className selects an IPClass to satisfy this claim. Mutually exclusive
+	// with poolSelector and poolRef; when all three are empty the default
+	// class is used. Immutable after creation.
+	// +optional
+	ClassName string `json:"className,omitempty"`
 	// +optional
 	PoolSelector *PoolSelector `json:"poolSelector,omitempty"`
 	// +optional
@@ -314,4 +339,79 @@ type IPClaimList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []IPClaim `json:"items"`
+}
+
+// ----------------------------------------------------------------------------
+// IPClass — cluster-scoped allocation policy, the analog of a StorageClass.
+// ----------------------------------------------------------------------------
+
+// PrefixLengthRange bounds the prefix sizes a class will hand out, inclusive.
+type PrefixLengthRange struct {
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=128
+	Min int `json:"min"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=128
+	Max int `json:"max"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster,shortName=ipclass
+// +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.spec.ipFamily`
+// +kubebuilder:printcolumn:name="Provisioner",type=string,JSONPath=`.spec.provisioner`
+// +kubebuilder:printcolumn:name="Reclaim",type=string,JSONPath=`.spec.reclaimPolicy`
+// +kubebuilder:printcolumn:name="Default",type=string,JSONPath=`.metadata.annotations.ipam\.miloapis\.com/is-default-class`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +genclient
+// +genclient:nonNamespaced
+
+// IPClass names a kind of address space and the policy for allocating it. It
+// carries no CIDRs — only rules and a pointer to the provisioner that
+// satisfies claims of the class.
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type IPClass struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec IPClassSpec `json:"spec,omitempty"`
+}
+
+type IPClassSpec struct {
+	// provisioner is the allocator that satisfies claims of this class.
+	// Defaults to the native provisioner (ipam.miloapis.com/native).
+	// +optional
+	Provisioner string `json:"provisioner,omitempty"`
+	// parameters are opaque, provisioner-specific settings.
+	// +optional
+	Parameters map[string]string `json:"parameters,omitempty"`
+	// ipFamily is the single address family this class hands out.
+	// +optional
+	IPFamily IPFamily `json:"ipFamily,omitempty"`
+	// strategy selects how a free block is chosen from a backing pool.
+	// +optional
+	Strategy Strategy `json:"strategy,omitempty"`
+	// allowedPrefixLengths bounds the sizes a claim of this class may request.
+	// +optional
+	AllowedPrefixLengths PrefixLengthRange `json:"allowedPrefixLengths,omitempty"`
+	// defaultPrefixLength is used when a claim omits its prefix length.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=128
+	DefaultPrefixLength int `json:"defaultPrefixLength,omitempty"`
+	// reclaimPolicy controls disposition of the allocation on claim deletion.
+	// +optional
+	// +kubebuilder:validation:Enum=Delete;Retain
+	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
+	// visibility reuses the pool sharing model: platform | consumer | shared.
+	// +optional
+	// +kubebuilder:validation:Enum=platform;consumer;shared
+	Visibility string `json:"visibility,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type IPClassList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []IPClass `json:"items"`
 }

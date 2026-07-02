@@ -1,0 +1,26 @@
+---
+# A platform-owned IPClass names a *kind* of address space and the policy for
+# handing it out. It carries no CIDRs and no pool names — only policy and a
+# pointer to the provisioner that satisfies it — which is what keeps consumer
+# manifests portable across environments.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: public-egress
+spec:
+  # The allocator that satisfies claims of this class. Only the platform's
+  # native allocator ships today, and it is the default.
+  provisioner: ipam.miloapis.com/native
+
+  # Allocation policy, lifted off the pool and the claim:
+  ipFamily: IPv4
+  strategy: LeastUtilized
+  allowedPrefixLengths:
+    min: 24
+    max: 28
+  defaultPrefixLength: 26
+  reclaimPolicy: Retain
+
+  # Who may consume this class, reusing the platform's existing sharing model:
+  # platform | consumer | shared.
+  visibility: shared

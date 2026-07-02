@@ -1,0 +1,12 @@
+---
+# Bare claim resolved via the default class (e2e-internal-ipv4) → its backing
+# pool ipclass-pool-default (10.141.0.0/20).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-default-class-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (boundAllocationRef.name != null): true
+  (regex_match('^10\.141\.\d+\.\d+/26$', allocatedCIDR)): true

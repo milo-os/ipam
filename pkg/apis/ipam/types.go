@@ -28,6 +28,16 @@ const (
 	ReclaimRetain ReclaimPolicy = "Retain"
 )
 
+// NativeProvisioner is the built-in allocator that satisfies claims from the
+// platform's own pools. It is the only provisioner shipped today and the
+// default for any IPClass that omits spec.provisioner.
+const NativeProvisioner = "ipam.miloapis.com/native"
+
+// IsDefaultClassAnnotation, when set to "true" on an IPClass, marks that class
+// as the default used by claims that name neither a class nor a pool. At most
+// one IPClass may carry this annotation.
+const IsDefaultClassAnnotation = "ipam.miloapis.com/is-default-class"
+
 // ClaimPhase is the high-level lifecycle phase of a claim.
 type ClaimPhase string
 
@@ -128,6 +138,9 @@ type IPPoolSpec struct {
 	PrefixLength  int
 	Allocation    AllocationSpec
 	Visibility    string
+	// ClassNames is the set of IPClass names this pool offers its capacity to.
+	// A claim naming one of these classes may be satisfied from this pool.
+	ClassNames []string
 }
 
 type IPPoolStatus struct {
@@ -177,6 +190,10 @@ type IPAllocation struct {
 type IPAllocationSpec struct {
 	IPFamily IPFamily
 	PoolRef  LocalRef
+	// ClassName records the IPClass a claim used to reach this allocation,
+	// empty when the claim named a pool or selector directly. Provenance only;
+	// it does not affect the allocation itself.
+	ClassName string
 }
 
 type IPAllocationStatus struct {
@@ -209,8 +226,12 @@ type IPClaim struct {
 }
 
 type IPClaimSpec struct {
-	IPFamily      IPFamily
-	PrefixLength  int
+	IPFamily     IPFamily
+	PrefixLength int
+	// ClassName selects an IPClass to satisfy this claim. Mutually exclusive
+	// with PoolSelector and PoolRef; when all three are empty the default
+	// class is used. Immutable after creation.
+	ClassName     string
 	PoolSelector  *PoolSelector
 	PoolRef       *NamespacedRef
 	ReclaimPolicy ReclaimPolicy
@@ -230,4 +251,56 @@ type IPClaimList struct {
 	metav1.TypeMeta
 	metav1.ListMeta
 	Items []IPClaim
+}
+
+// ----------------------------------------------------------------------------
+// IPClass — cluster-scoped allocation policy, the analog of a StorageClass.
+// ----------------------------------------------------------------------------
+
+// PrefixLengthRange bounds the prefix sizes a class will hand out, inclusive.
+type PrefixLengthRange struct {
+	Min int
+	Max int
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +genclient
+// +genclient:nonNamespaced
+
+// IPClass names a kind of address space and the policy for allocating it. It
+// carries no CIDRs — only rules and a pointer to the provisioner that
+// satisfies claims of the class.
+type IPClass struct {
+	metav1.TypeMeta
+	metav1.ObjectMeta
+
+	Spec IPClassSpec
+}
+
+type IPClassSpec struct {
+	// Provisioner is the allocator that satisfies claims of this class.
+	// Defaults to the native provisioner (ipam.miloapis.com/native).
+	Provisioner string
+	// Parameters are opaque, provisioner-specific settings.
+	Parameters map[string]string
+	// IPFamily is the single address family this class hands out.
+	IPFamily IPFamily
+	// Strategy selects how a free block is chosen from a backing pool.
+	Strategy Strategy
+	// AllowedPrefixLengths bounds the sizes a claim of this class may request.
+	AllowedPrefixLengths PrefixLengthRange
+	// DefaultPrefixLength is used when a claim omits its prefix length.
+	DefaultPrefixLength int
+	// ReclaimPolicy controls disposition of the allocation on claim deletion.
+	ReclaimPolicy ReclaimPolicy
+	// Visibility reuses the pool sharing model: platform | consumer | shared.
+	Visibility string
+}
+
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+
+type IPClassList struct {
+	metav1.TypeMeta
+	metav1.ListMeta
+	Items []IPClass
 }

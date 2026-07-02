@@ -1,0 +1,12 @@
+---
+# Backward-compat: poolSelector resolved onto the labelled legacy pool
+# (ipclass-pool-legacy, 10.142.0.0/20).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-legacy-selector-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (boundAllocationRef.name != null): true
+  (starts_with(allocatedCIDR, '10.142.')): true

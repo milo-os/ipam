@@ -1,0 +1,301 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ip-class
+spec:
+  description: |
+    IPClass policy-layer e2e suite (docs/enhancements/ip-class.md):
+    - Create IPClass objects; back them with IPPools via spec.classNames.
+    - Claim by spec.className → CIDR returned synchronously from a backing
+      pool; IPAllocation records the class (provenance).
+    - Class default prefix length applies when the claim omits prefixLength.
+    - Default-class path: a claim with no className/poolRef/poolSelector is
+      satisfied from the annotated default class.
+    - Error paths: class-not-found, no-pool-for-class, prefixLength outside
+      the class's allowedPrefixLengths, and className+poolRef being mutually
+      exclusive.
+    - spec.className is immutable after creation.
+    - Backward compat: the deprecated poolSelector path still resolves.
+
+    SCOPE: className resolution this milestone spans the caller's own scope
+    PLUS the platform scope (a consumer project may claim from a platform-owned
+    class). This suite runs in the platform scope (no impersonation), so the
+    classes and pools here are platform-owned and every claim resolves against
+    them. Explicit cross-project shared-class claiming (projectRef + a
+    cross-project SAR) is DEFERRED to a follow-up milestone and is intentionally
+    not covered here.
+
+    NOTE: field names follow the enhancement doc and match the generated types;
+    the default-class marker is the ipam.miloapis.com/is-default-class
+    annotation. Error strings are still being finalized, so the error-path
+    assertions use OR-alternatives that tolerate the final wording.
+
+  steps:
+    - name: setup-classes-and-pools
+      description: Create the IPClasses and their backing IPPools; wait pools Ready
+      try:
+        - create:
+            file: test-data/classes.yaml
+        - create:
+            file: test-data/pools.yaml
+        - script:
+            timeout: 60s
+            content: |
+              set -e
+              for pool in ipclass-pool-egress ipclass-pool-default ipclass-pool-legacy; do
+                for i in $(seq 1 30); do
+                  phase=$(kubectl get ippool "$pool" \
+                    -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                  if [ "$phase" = "Ready" ]; then break; fi
+                  sleep 1
+                done
+                if [ "$phase" != "Ready" ]; then
+                  echo "FAIL: $pool not Ready after 30s (phase=$phase)"
+                  exit 1
+                fi
+              done
+              echo "OK all ip-class pools Ready"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK all ip-class pools Ready')): true
+
+    - name: claim-by-class-name
+      description: |
+        Claim naming spec.className=e2e-public-egress binds synchronously to a
+        /26 from that class's backing pool (10.140.0.0/20). The generated
+        IPAllocation must record the class it was drawn from (provenance).
+      try:
+        - create:
+            file: test-data/claim-by-class.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" ipclass-egress-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: ipclass-egress-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-egress-claim-bound.yaml
+        - script:
+            timeout: 30s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              # Provenance: the IPAllocation the claim bound to records the
+              # class name it was allocated from.
+              ref=$(kubectl get ipclaim -n "$NAMESPACE" ipclass-egress-claim -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$ref" ]; then
+                echo "FAIL: empty boundAllocationRef.name"
+                exit 1
+              fi
+              class=$(kubectl get ipallocation -n "$NAMESPACE" "$ref" -o jsonpath='{.spec.className}' 2>/dev/null || echo "")
+              if [ "$class" != "e2e-public-egress" ]; then
+                echo "FAIL: IPAllocation $ref spec.className=$class (expected e2e-public-egress)"
+                exit 1
+              fi
+              echo "OK IPAllocation $ref records className=e2e-public-egress"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK IPAllocation ')): true
+
+    - name: class-default-prefix-length
+      description: |
+        Claim by class with prefixLength omitted → the class's
+        defaultPrefixLength (/26) is applied.
+      try:
+        - create:
+            file: test-data/claim-default-prefixlen.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" ipclass-default-len-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: ipclass-default-len-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-default-len-claim-bound.yaml
+
+    - name: default-class-path
+      description: |
+        A claim with no className, poolRef, or poolSelector is satisfied from
+        the annotated default class (e2e-internal-ipv4), drawing from its
+        backing pool (10.141.0.0/20).
+      try:
+        - create:
+            file: test-data/claim-default-class.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" ipclass-default-class-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: ipclass-default-class-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-default-class-claim-bound.yaml
+
+    - name: class-not-found
+      description: Claim naming a nonexistent class is rejected
+      try:
+        - create:
+            file: test-data/claim-class-not-found.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'not found') || contains($error, 'IPClass') || contains($error, 'e2e-does-not-exist') || contains($error, 'no such class')): true
+
+    - name: no-pool-for-class
+      description: |
+        Claim naming a real class that no pool backs fails with a specific
+        "no pool backs class" error (distinct from 507 exhaustion).
+      try:
+        - create:
+            file: test-data/claim-no-pool-for-class.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'no pool') || contains($error, 'no IPPool') || contains($error, 'backs class') || contains($error, 'e2e-orphan-class')): true
+
+    - name: prefix-length-outside-class-bounds
+      description: |
+        Claim requesting /30 against a class whose allowedPrefixLengths is
+        24–28 is rejected by class-bounds validation.
+      try:
+        - create:
+            file: test-data/claim-class-bad-length.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'prefixLength') || contains($error, 'allowed') || contains($error, 'allowedPrefixLengths') || contains($error, 'exceeds') || contains($error, '400')): true
+
+    - name: classname-poolref-mutually-exclusive
+      description: Setting both className and poolRef is rejected
+      try:
+        - create:
+            file: test-data/claim-class-and-pool.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'mutually exclusive') || contains($error, 'at most one') || contains($error, 'className') || contains($error, '400')): true
+
+    - name: classname-immutable
+      description: |
+        Bind a claim by class, then patch spec.className → rejected as
+        immutable.
+      try:
+        - create:
+            file: test-data/claim-immutable.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" ipclass-immutable-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: ipclass-immutable-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-immutable-claim-bound.yaml
+        - patch:
+            file: test-data/patch-claim-classname.yaml
+            expect:
+              - check:
+                  ($error != null): true
+                  (contains($error, 'immutable') && contains($error, 'className')): true
+
+    - name: legacy-selector-backward-compat
+      description: |
+        The deprecated poolSelector path still resolves — a claim with no
+        className but a matching label selector binds to the labelled pool.
+      try:
+        - create:
+            file: test-data/claim-by-selector.yaml
+        - script:
+            timeout: 45s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              for i in $(seq 1 30); do
+                phase=$(kubectl get ipclaim -n "$NAMESPACE" ipclass-legacy-selector-claim \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                if [ "$phase" = "Bound" ]; then break; fi
+                sleep 1
+              done
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: ipclass-legacy-selector-claim not Bound after 30s (phase=$phase)"
+                exit 1
+              fi
+            check:
+              ($error == null): true
+        - assert:
+            file: assertions/assert-legacy-selector-claim-bound.yaml
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" \
+                ipclass-egress-claim ipclass-default-len-claim ipclass-default-class-claim \
+                ipclass-immutable-claim ipclass-legacy-selector-claim \
+                ipclass-notfound-claim ipclass-nopool-claim ipclass-badlen-claim ipclass-conflict-claim \
+                --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool \
+                ipclass-pool-egress ipclass-pool-default ipclass-pool-legacy \
+                --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipclass \
+                e2e-internal-ipv4 e2e-public-egress e2e-orphan-class \
+                --ignore-not-found >/dev/null 2>&1 || true
+              echo "ip-class cleanup done"
+            check:
+              ($error == null): true

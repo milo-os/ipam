@@ -82,6 +82,9 @@ func (ipClaimStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	if n.Spec.IPFamily != o.Spec.IPFamily {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "ipFamily"), "ipFamily is immutable"))
 	}
+	if n.Spec.ClassName != o.Spec.ClassName {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "className"), "className is immutable"))
+	}
 	if n.Spec.PrefixLength != o.Spec.PrefixLength {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "prefixLength"), "prefixLength is immutable"))
 	}
@@ -117,11 +120,28 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 	if c.Spec.PrefixLength > maxLen {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), c.Spec.PrefixLength, fmt.Sprintf("prefixLength must not exceed %d for %s", maxLen, c.Spec.IPFamily)))
 	}
-	if c.Spec.PoolRef == nil && c.Spec.PoolSelector == nil {
-		allErrs = append(allErrs, field.Required(specPath, "exactly one of poolRef or poolSelector must be specified"))
+	// A claim selects its pool by exactly one of: className (the standard
+	// path), poolRef (advanced escape hatch), or poolSelector (deprecated).
+	// The class-based Create resolves and defaults spec.className (writing the
+	// default class name in when the claim named none) before validation runs,
+	// so by this point a class-satisfiable claim carries a non-empty className.
+	selectors := 0
+	if c.Spec.ClassName != "" {
+		selectors++
 	}
-	if c.Spec.PoolRef != nil && c.Spec.PoolSelector != nil {
-		allErrs = append(allErrs, field.Forbidden(specPath, "poolRef and poolSelector are mutually exclusive"))
+	if c.Spec.PoolRef != nil {
+		selectors++
+	}
+	if c.Spec.PoolSelector != nil {
+		selectors++
+	}
+	switch {
+	case selectors == 0:
+		allErrs = append(allErrs, field.Required(specPath,
+			"one of className, poolRef, or poolSelector must be specified"))
+	case selectors > 1:
+		allErrs = append(allErrs, field.Forbidden(specPath,
+			"className, poolRef, and poolSelector are mutually exclusive"))
 	}
 	return allErrs
 }

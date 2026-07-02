@@ -135,6 +135,11 @@ export function asnPoolClassPath(name) {
   return name ? `/asnpoolclasses/${name}` : '/asnpoolclasses';
 }
 
+// IPClass is cluster-scoped (the platform-owned allocation policy object).
+export function ipClassPath(name) {
+  return name ? `/ipclasses/${name}` : '/ipclasses';
+}
+
 // --- Resource builders ---
 
 // ipPool builds an IPPool body. visibility defaults to 'consumer'. Set
@@ -145,17 +150,74 @@ export function ipPool(name, cidr, {
   minLen = 20,
   maxLen = 28,
   strategy = 'FirstFit',
+  classNames = null,
 } = {}) {
+  const spec = {
+    cidr,
+    ipFamily,
+    visibility,
+    allocation: { minPrefixLength: minLen, maxPrefixLength: maxLen, strategy },
+  };
+  // classNames lists the IPClasses this pool offers its capacity to. Only
+  // emitted when supplied so pools that predate IPClass stay byte-identical.
+  if (classNames && classNames.length) {
+    spec.classNames = classNames;
+  }
   return {
     apiVersion: `${API_GROUP}/${API_VERSION}`,
     kind: 'IPPool',
     metadata: { name },
+    spec,
+  };
+}
+
+// ipClass builds an IPClass body — the platform-owned allocation policy that
+// pools offer capacity to and claims select by name. Mirrors the shape in
+// docs/enhancements/ip-class.md: policy + provisioner only, no CIDRs.
+export function ipClass(name, {
+  provisioner = 'ipam.miloapis.com/native',
+  ipFamily = 'IPv4',
+  strategy = 'FirstFit',
+  minLen = 20,
+  maxLen = 28,
+  defaultPrefixLength = 28,
+  reclaimPolicy = 'Delete',
+  visibility = 'consumer',
+  isDefault = false,
+} = {}) {
+  const metadata = { name };
+  if (isDefault) {
+    metadata.annotations = { 'ipam.miloapis.com/is-default-class': 'true' };
+  }
+  return {
+    apiVersion: `${API_GROUP}/${API_VERSION}`,
+    kind: 'IPClass',
+    metadata,
     spec: {
-      cidr,
+      provisioner,
       ipFamily,
+      strategy,
+      allowedPrefixLengths: { min: minLen, max: maxLen },
+      defaultPrefixLength,
+      reclaimPolicy,
       visibility,
-      allocation: { minPrefixLength: minLen, maxPrefixLength: maxLen, strategy },
     },
+  };
+}
+
+// ipClaimWithClass builds an IPClaim that selects an IPClass by name. The
+// server derives the address family and (when prefixLength is omitted) the
+// size from the class, so neither is set here beyond the requested length.
+export function ipClaimWithClass(ns, name, className, prefixLength, { reclaimPolicy = 'Delete' } = {}) {
+  const spec = { className, reclaimPolicy };
+  if (prefixLength) {
+    spec.prefixLength = prefixLength;
+  }
+  return {
+    apiVersion: `${API_GROUP}/${API_VERSION}`,
+    kind: 'IPClaim',
+    metadata: { name, namespace: ns },
+    spec,
   };
 }
 
@@ -383,6 +445,33 @@ export function buildIPClaimRequest(ns, name, poolName, prefixLength, projectID,
 export function deleteIPClaimForProject(ns, name, projectID) {
   const params = withProjectTagged(projectID, 'ipclaim_delete');
   return http.del(`${API_BASE}${ipClaimPath(ns, name)}`, null, params);
+}
+
+// --- IPClass helpers ---
+
+export function createIPClass(name, opts) {
+  return ipamPost(ipClassPath(), ipClass(name, opts), 'ipclass_create');
+}
+
+export function getIPClass(name) {
+  return ipamGet(ipClassPath(name), 'ipclass_get');
+}
+
+export function listIPClasses() {
+  return ipamList(ipClassPath(), 'ipclass_list');
+}
+
+export function deleteIPClass(name) {
+  return ipamDelete(ipClassPath(name), 'ipclass_delete');
+}
+
+// createIPClaimWithClassForProject posts a class-selected IPClaim with the
+// tenant headers for projectID. The pool is chosen server-side from the pools
+// that back the class and are visible to the project.
+export function createIPClaimWithClassForProject(ns, name, className, prefixLength, projectID, opts = {}) {
+  const body = ipClaimWithClass(ns, name, className, prefixLength, opts);
+  const params = withProjectTagged(projectID, 'ipclaim_create');
+  return http.post(`${API_BASE}${ipClaimPath(ns)}`, JSON.stringify(body), params);
 }
 
 export function getIPClaimForProject(ns, name, projectID) {

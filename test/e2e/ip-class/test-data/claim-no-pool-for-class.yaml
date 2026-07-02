@@ -1,0 +1,12 @@
+---
+# Names a real class (e2e-orphan-class) that no pool backs. Must fail with a
+# specific "no pool backs class" error — the misconfiguration signal, distinct
+# from pool exhaustion (507).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-nopool-claim
+  namespace: ($namespace)
+spec:
+  className: e2e-orphan-class
+  prefixLength: 26

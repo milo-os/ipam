@@ -26,6 +26,9 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1alpha1.IPClaimList{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_IPClaimList(ref),
 		v1alpha1.IPClaimSpec{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref),
 		v1alpha1.IPClaimStatus{}.OpenAPIModelName():       schema_pkg_apis_ipam_v1alpha1_IPClaimStatus(ref),
+		v1alpha1.IPClass{}.OpenAPIModelName():             schema_pkg_apis_ipam_v1alpha1_IPClass(ref),
+		v1alpha1.IPClassList{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_IPClassList(ref),
+		v1alpha1.IPClassSpec{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref),
 		v1alpha1.IPPool{}.OpenAPIModelName():              schema_pkg_apis_ipam_v1alpha1_IPPool(ref),
 		v1alpha1.IPPoolList{}.OpenAPIModelName():          schema_pkg_apis_ipam_v1alpha1_IPPoolList(ref),
 		v1alpha1.IPPoolSpec{}.OpenAPIModelName():          schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref),
@@ -35,6 +38,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1alpha1.ObjectRef{}.OpenAPIModelName():           schema_pkg_apis_ipam_v1alpha1_ObjectRef(ref),
 		v1alpha1.PoolCapacity{}.OpenAPIModelName():        schema_pkg_apis_ipam_v1alpha1_PoolCapacity(ref),
 		v1alpha1.PoolSelector{}.OpenAPIModelName():        schema_pkg_apis_ipam_v1alpha1_PoolSelector(ref),
+		v1alpha1.PrefixLengthRange{}.OpenAPIModelName():   schema_pkg_apis_ipam_v1alpha1_PrefixLengthRange(ref),
 		resource.Quantity{}.OpenAPIModelName():            schema_apimachinery_pkg_api_resource_Quantity(ref),
 		v1.APIGroup{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_APIGroup(ref),
 		v1.APIGroupList{}.OpenAPIModelName():              schema_pkg_apis_meta_v1_APIGroupList(ref),
@@ -237,6 +241,13 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationSpec(ref common.ReferenceCallback
 							Ref:     ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
 						},
 					},
+					"className": {
+						SchemaProps: spec.SchemaProps{
+							Description: "className records the IPClass a claim used to reach this allocation, empty when the claim named a pool or selector directly. Provenance only; it does not affect the allocation itself.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"ipFamily", "poolRef"},
 			},
@@ -408,6 +419,13 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) com
 							Format:      "int32",
 						},
 					},
+					"className": {
+						SchemaProps: spec.SchemaProps{
+							Description: "className selects an IPClass to satisfy this claim. Mutually exclusive with poolSelector and poolRef; when all three are empty the default class is used. Immutable after creation.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"poolSelector": {
 						SchemaProps: spec.SchemaProps{
 							Ref: ref(v1alpha1.PoolSelector{}.OpenAPIModelName()),
@@ -487,6 +505,174 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimStatus(ref common.ReferenceCallback) c
 		},
 		Dependencies: []string{
 			v1alpha1.LocalRef{}.OpenAPIModelName(), v1.Condition{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClass(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "IPClass names a kind of address space and the policy for allocating it. It carries no CIDRs — only rules and a pointer to the provisioner that satisfies claims of the class.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1alpha1.IPClassSpec{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v1alpha1.IPClassSpec{}.OpenAPIModelName(), v1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClassList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1alpha1.IPClass{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v1alpha1.IPClass{}.OpenAPIModelName(), v1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"provisioner": {
+						SchemaProps: spec.SchemaProps{
+							Description: "provisioner is the allocator that satisfies claims of this class. Defaults to the native provisioner (ipam.miloapis.com/native).",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"parameters": {
+						SchemaProps: spec.SchemaProps{
+							Description: "parameters are opaque, provisioner-specific settings.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"ipFamily": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ipFamily is the single address family this class hands out.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"strategy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "strategy selects how a free block is chosen from a backing pool.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"allowedPrefixLengths": {
+						SchemaProps: spec.SchemaProps{
+							Description: "allowedPrefixLengths bounds the sizes a claim of this class may request.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v1alpha1.PrefixLengthRange{}.OpenAPIModelName()),
+						},
+					},
+					"defaultPrefixLength": {
+						SchemaProps: spec.SchemaProps{
+							Description: "defaultPrefixLength is used when a claim omits its prefix length.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"reclaimPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "reclaimPolicy controls disposition of the allocation on claim deletion.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"visibility": {
+						SchemaProps: spec.SchemaProps{
+							Description: "visibility reuses the pool sharing model: platform | consumer | shared.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v1alpha1.PrefixLengthRange{}.OpenAPIModelName()},
 	}
 }
 
@@ -624,6 +810,26 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) comm
 						SchemaProps: spec.SchemaProps{
 							Type:   []string{"string"},
 							Format: "",
+						},
+					},
+					"classNames": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "classNames is the set of IPClass names this pool offers its capacity to. A claim naming one of these classes may be satisfied from this pool.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
 						},
 					},
 				},
@@ -887,6 +1093,34 @@ func schema_pkg_apis_ipam_v1alpha1_PoolSelector(ref common.ReferenceCallback) co
 		},
 		Dependencies: []string{
 			v1alpha1.LocalRef{}.OpenAPIModelName(), v1.LabelSelectorRequirement{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_PrefixLengthRange(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "PrefixLengthRange bounds the prefix sizes a class will hand out, inclusive.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"min": {
+						SchemaProps: spec.SchemaProps{
+							Default: 0,
+							Type:    []string{"integer"},
+							Format:  "int32",
+						},
+					},
+					"max": {
+						SchemaProps: spec.SchemaProps{
+							Default: 0,
+							Type:    []string{"integer"},
+							Format:  "int32",
+						},
+					},
+				},
+				Required: []string{"min", "max"},
+			},
+		},
 	}
 }
 

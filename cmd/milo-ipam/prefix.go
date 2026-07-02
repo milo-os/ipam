@@ -50,6 +50,7 @@ IPAllocation; -o yaml shows the real resource.`,
 // ---------------------------------------------------------------------------
 
 type claimOptions struct {
+	class         string
 	pool          string
 	length        int
 	cidr          string
@@ -72,26 +73,30 @@ func newPrefixClaimCommand(a *app) *cobra.Command {
 Allocation is not idempotent: each claim consumes space. Pass a stable --name to
 make retries safe — a retried claim with the same name returns the existing
 allocation instead of consuming a second block.`,
-		Example: `  # Claim a /24 by size
+		Example: `  # Claim a /26 from a class (recommended — portable across environments)
+  datumctl ipam prefix claim --class public-egress --length 26
+
+  # Claim a /24 from a specific pool (advanced escape hatch)
   datumctl ipam prefix claim --pool prod-backbone --length 24
 
   # Idempotent claim (safe to retry)
-  datumctl ipam prefix claim --pool prod-backbone --length 24 --name app-net-3
+  datumctl ipam prefix claim --class public-egress --length 26 --name app-net-3
 
   # Preview without consuming space
-  datumctl ipam prefix claim --pool prod-backbone --length 14 --dry-run`,
+  datumctl ipam prefix claim --class public-egress --length 26 --dry-run`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runPrefixClaim(a, o)
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&o.pool, "pool", "", "Pool to claim from (by name)")
-	f.IntVar(&o.length, "length", 0, "Requested prefix length in bits (e.g. 24)")
+	f.StringVar(&o.class, "class", "", "Class to claim from (by name) — the recommended, portable path")
+	f.StringVar(&o.pool, "pool", "", "Pool to claim from by name (advanced; prefer --class)")
+	f.IntVar(&o.length, "length", 0, "Requested prefix length in bits (e.g. 24); defaults to the class default when --class is used")
 	f.StringVar(&o.cidr, "cidr", "", "Request a specific block; sets length and family from the CIDR")
-	f.StringVar(&o.family, "family", "", "Address family: ipv4|ipv6 (inferred from the pool or --cidr)")
+	f.StringVar(&o.family, "family", "", "Address family: ipv4|ipv6 (inferred from the class, pool, or --cidr)")
 	f.StringVar(&o.name, "name", "", "Stable claim name; reusing it makes retries idempotent")
-	f.StringVarP(&o.selector, "selector", "l", "", "Select the pool by label instead of --pool")
+	f.StringVarP(&o.selector, "selector", "l", "", "Select the pool by label (deprecated; prefer --class)")
 	f.StringVar(&o.childPool, "child-pool", "", "Also stand up a child pool over the claimed block (childPrefixTemplate)")
 	f.StringVar(&o.strategy, "strategy", "", "Allocation strategy override: FirstFit|BestFit|LeastUtilized")
 	f.StringVar(&o.reclaimPolicy, "reclaim-policy", "", "Reclaim policy: Delete|Retain")
@@ -100,12 +105,28 @@ allocation instead of consuming a second block.`,
 }
 
 func runPrefixClaim(a *app, o *claimOptions) error {
-	if o.pool == "" && o.selector == "" {
-		return usageErrorf("a claim needs a pool: pass --pool <name> or --selector <labels>")
+	// A claim targets exactly one of: --class (recommended, portable), --pool
+	// (advanced escape hatch), or --selector (deprecated in favor of --class).
+	targets := 0
+	if o.class != "" {
+		targets++
 	}
-	if o.pool != "" && o.selector != "" {
-		return usageErrorf("--pool and --selector are mutually exclusive")
+	if o.pool != "" {
+		targets++
 	}
+	if o.selector != "" {
+		targets++
+	}
+	switch {
+	case targets == 0:
+		return usageErrorf("a claim needs a target: pass --class <name> (recommended), --pool <name>, or --selector <labels>")
+	case targets > 1:
+		return usageErrorf("--class, --pool, and --selector are mutually exclusive")
+	}
+	if o.selector != "" {
+		a.vlogf("note: --selector is deprecated; prefer --class <name>")
+	}
+	usingClass := o.class != ""
 	if o.childPool != "" {
 		// The current IPAM API (IPClaimSpec) does not expose childPrefixTemplate.
 		// Fail loudly rather than silently dropping the user's intent.
@@ -156,17 +177,26 @@ func runPrefixClaim(a *app, o *claimOptions) error {
 			family = p.Spec.IPFamily
 		}
 	}
-	if family == "" {
-		if o.selector != "" {
-			return usageErrorf("could not infer address family from a selector; pass --family ipv4|ipv6")
+	if usingClass {
+		// Class path: the server derives family and applies the class's default
+		// prefix length, so both are optional here. Only range-check when the
+		// caller supplied both a family and a length.
+		if o.length > 0 && family != "" && o.length > familyBits(family) {
+			return usageErrorf("--length /%d is out of range for %s (max /%d)", o.length, family, familyBits(family))
 		}
-		family = ipamv1alpha1.IPv4
-	}
-	if o.length <= 0 {
-		return usageErrorf("a claim needs a size: pass --length <n> or --cidr <cidr>")
-	}
-	if o.length > familyBits(family) {
-		return usageErrorf("--length /%d is out of range for %s (max /%d)", o.length, family, familyBits(family))
+	} else {
+		if family == "" {
+			if o.selector != "" {
+				return usageErrorf("could not infer address family from a selector; pass --family ipv4|ipv6")
+			}
+			family = ipamv1alpha1.IPv4
+		}
+		if o.length <= 0 {
+			return usageErrorf("a claim needs a size: pass --length <n> or --cidr <cidr>")
+		}
+		if o.length > familyBits(family) {
+			return usageErrorf("--length /%d is out of range for %s (max /%d)", o.length, family, familyBits(family))
+		}
 	}
 
 	// Idempotency: a named claim that already exists is returned as-is.
@@ -219,6 +249,9 @@ func buildClaim(o *claimOptions, ns string, family ipamv1alpha1.IPFamily) *ipamv
 	} else {
 		claim.Name = generateResourceName("prefix")
 	}
+	if o.class != "" {
+		claim.Spec.ClassName = o.class
+	}
 	if o.pool != "" {
 		claim.Spec.PoolRef = &ipamv1alpha1.NamespacedRef{Name: o.pool}
 	}
@@ -248,9 +281,23 @@ func (a *app) renderClaimResult(claim *ipamv1alpha1.IPClaim, poolBefore *ipamv1a
 		return nil
 	}
 
+	// Resolve the pool that actually satisfied the claim. A --pool claim names
+	// it directly; a --class or --selector claim leaves spec.poolRef empty, so
+	// the chosen pool lives on the bound IPAllocation — fetch it so the success
+	// line can always echo which pool served the block (the transparency the
+	// class layer would otherwise hide).
 	poolName := "—"
 	if claim.Spec.PoolRef != nil {
 		poolName = claim.Spec.PoolRef.Name
+	} else if claim.Status.BoundAllocationRef != nil {
+		if alloc, err := cs.IpamV1alpha1().IPAllocations(claim.Namespace).Get(context.Background(), claim.Status.BoundAllocationRef.Name, metav1.GetOptions{}); err == nil {
+			poolName = alloc.Spec.PoolRef.Name
+			if poolBefore == nil && poolName != "" {
+				if p, perr := cs.IpamV1alpha1().IPPools().Get(context.Background(), poolName, metav1.GetOptions{}); perr == nil {
+					poolBefore = p
+				}
+			}
+		}
 	}
 
 	utilNote := ""
@@ -267,7 +314,13 @@ func (a *app) renderClaimResult(claim *ipamv1alpha1.IPClaim, poolBefore *ipamv1a
 	if idempotent {
 		verb = "Reused existing claim for"
 	}
-	_, _ = fmt.Fprintf(a.io.Out, "%s %s %s from pool %q%s\n", successPrefix(a.color), verb, orDash(cidr), poolName, utilNote)
+	// Class-based claims name the class in the headline (that is what the
+	// consumer asked for) and still show the resolved pool below.
+	if claim.Spec.ClassName != "" {
+		_, _ = fmt.Fprintf(a.io.Out, "%s %s %s from class %q%s\n", successPrefix(a.color), verb, orDash(cidr), claim.Spec.ClassName, utilNote)
+	} else {
+		_, _ = fmt.Fprintf(a.io.Out, "%s %s %s from pool %q%s\n", successPrefix(a.color), verb, orDash(cidr), poolName, utilNote)
+	}
 	_, _ = fmt.Fprintf(a.io.Out, "  prefix:      %s\n", claim.Name)
 	if claim.Status.BoundAllocationRef != nil {
 		_, _ = fmt.Fprintf(a.io.Out, "  allocation:  %s\n", claim.Status.BoundAllocationRef.Name)
@@ -278,6 +331,11 @@ func (a *app) renderClaimResult(claim *ipamv1alpha1.IPClaim, poolBefore *ipamv1a
 			poolCIDR = poolBefore.Spec.CIDR
 		}
 		_, _ = fmt.Fprintf(a.io.Out, "  pool:        %s (%s, %s)\n", poolName, orDash(poolCIDR), orDash(string(claim.Spec.IPFamily)))
+	} else if poolName != "" && poolName != "—" {
+		// The backing pool couldn't be fetched (e.g. class-resolved, not
+		// directly visible), but we still know its name from the allocation —
+		// echo it for transparency.
+		_, _ = fmt.Fprintf(a.io.Out, "  pool:        %s\n", poolName)
 	}
 	_, _ = fmt.Fprintf(a.io.Out, "  org/project: %s\n", a.scopeLine(claim.Namespace))
 	return nil
@@ -309,10 +367,14 @@ func (a *app) renderClaimDryRun(o *claimOptions, pool *ipamv1alpha1.IPPool, fami
 }
 
 func poolDisplay(o *claimOptions) string {
-	if o.pool != "" {
+	switch {
+	case o.class != "":
+		return "(class " + o.class + ")"
+	case o.pool != "":
 		return o.pool
+	default:
+		return "(selector " + o.selector + ")"
 	}
-	return "(selector " + o.selector + ")"
 }
 
 // claimCreateError turns a failed claim Create into an IPAM-aware error. The

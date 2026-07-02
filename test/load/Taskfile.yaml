@@ -78,15 +78,15 @@ tasks:
           | KUBECONFIG={{.KUBECONFIG}} kubectl apply -n ipam-system -f -
 
   k6:run:
-    desc: 'Trigger a single TestRun. Vars: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput'
+    desc: 'Trigger a single TestRun. Vars: TEST=setup|throughput|class-throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput'
     silent: true
     cmds:
       - |
         set -e
         TEST="{{.TEST | default "throughput"}}"
         case "$TEST" in
-          setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput) ;;
-          *) echo "ERROR: TEST must be one of: setup, throughput, asn-throughput, exhaustion, reads, scale, address-concurrent, mixed-load, concurrent, cross-project-throughput, watch-latency, ipv6-throughput" >&2; exit 1 ;;
+          setup|throughput|class-throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput) ;;
+          *) echo "ERROR: TEST must be one of: setup, throughput, class-throughput, asn-throughput, exhaustion, reads, scale, address-concurrent, mixed-load, concurrent, cross-project-throughput, watch-latency, ipv6-throughput" >&2; exit 1 ;;
         esac
         KUBECONFIG={{.KUBECONFIG}} kubectl delete testrun.k6.io/ipam-perf-${TEST} -n ipam-system --ignore-not-found
         KUBECONFIG={{.KUBECONFIG}} kubectl apply -f {{.ROOT_DIR}}/config/components/k6-performance-tests/testruns/${TEST}.yaml
@@ -96,7 +96,7 @@ tasks:
         echo "  kubectl logs -n ipam-system -l k6_cr=ipam-perf-${TEST} -f"
 
   k6:logs:
-    desc: 'Tail logs from a TestRun. Vars: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput'
+    desc: 'Tail logs from a TestRun. Vars: TEST=setup|throughput|class-throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput'
     silent: true
     cmds:
       - |
@@ -165,6 +165,21 @@ tasks:
           -e DURATION={{.DURATION | default "2m"}} \
           --summary-export={{.RESULTS_DIR}}/prefix-throughput.json \
           {{.K6_SRC_DIR}}/prefix-claim-throughput.js
+
+  class-throughput:
+    desc: 'Measure class-based (spec.className) prefix-claim throughput. Vars: VUS, DURATION, PROJECT_COUNT, NAMESPACE_COUNT'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          -e VUS={{.VUS | default "10"}} \
+          -e DURATION={{.DURATION | default "2m"}} \
+          --summary-export={{.RESULTS_DIR}}/class-throughput.json \
+          {{.K6_SRC_DIR}}/class-claim-throughput.js
 
   asn-throughput:
     desc: 'Measure ASN-claim creation throughput via classRef. Vars: VUS, DURATION'
@@ -370,5 +385,11 @@ tasks:
         KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-classref-pool --ignore-not-found || true
         KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpoolclass.ipam.miloapis.com perf-asn-classref --ignore-not-found || true
         KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-host-claim-pool --ignore-not-found || true
+
+        echo "Deleting IPClass backing pools + class (class-claim-throughput.js setup leaks)..."
+        for n in $(seq 0 ${LAST}); do
+          KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-class-pool-${n} --ignore-not-found || true
+        done
+        KUBECONFIG={{.KUBECONFIG}} kubectl delete ipclass.ipam.miloapis.com perf-class --ignore-not-found || true
 
         echo "Cleanup complete."

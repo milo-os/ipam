@@ -19,3 +19,11 @@ spec:
     # "use" authorises consumers of a shared pool; providers grant it on the
     # pools they want to admit cross-project allocation from.
     - ipam.miloapis.com/ippools.use
+    # Classes are platform-owned allocation policy; providers author and manage
+    # them alongside the pools that back them. "use" admits cross-project
+    # consumption of a class whose visibility is shared.
+    - ipam.miloapis.com/ipclasses.create
+    - ipam.miloapis.com/ipclasses.update
+    - ipam.miloapis.com/ipclasses.patch
+    - ipam.miloapis.com/ipclasses.delete
+    - ipam.miloapis.com/ipclasses.use

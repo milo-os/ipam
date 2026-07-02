@@ -1,0 +1,19 @@
+---
+# A PLATFORM-owned class (created under the unimpersonated tenant-platform
+# context). visibility: shared expresses "offered to consumer projects".
+# Visibility is intent/metadata this milestone — resolution does NOT gate on
+# it — so this suite must not assert any visibility-based denial.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ipc-platform-egress
+spec:
+  provisioner: ipam.miloapis.com/native
+  ipFamily: IPv4
+  strategy: FirstFit
+  allowedPrefixLengths:
+    min: 24
+    max: 28
+  defaultPrefixLength: 26
+  reclaimPolicy: Delete
+  visibility: shared

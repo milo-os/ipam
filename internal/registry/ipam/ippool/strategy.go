@@ -35,6 +35,13 @@ var FieldIndexes = []fieldindex.FieldIndex{
 		IndexName:  "idx_ipam_ippool_parent_pool_ref_name",
 		Expression: `((ipam_data_to_jsonb(data) -> 'spec' -> 'parentPoolRef' ->> 'name')) WHERE kind = 'IPPool'`,
 	},
+	{
+		// classNames is a JSON array, so membership ("does this pool back class
+		// X?") is a containment query. A GIN index over the array supports the
+		// jsonb @> operator used when filtering pools by the class they back.
+		IndexName:  "idx_ipam_ippool_class_names",
+		Expression: `USING GIN ((ipam_data_to_jsonb(data) -> 'spec' -> 'classNames')) WHERE kind = 'IPPool'`,
+	},
 }
 
 type ipPoolStrategy struct {

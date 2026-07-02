@@ -1,0 +1,11 @@
+---
+# The simplest possible claim: no className, no poolRef, no poolSelector. It
+# must be satisfied from the default class (e2e-internal-ipv4), drawing from
+# that class's backing pool (ipclass-pool-default, 10.141.0.0/20).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-default-class-claim
+  namespace: ($namespace)
+spec:
+  prefixLength: 26

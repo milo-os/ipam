@@ -1,0 +1,10 @@
+---
+# Attempts to switch the bound claim to a different class. spec.className is
+# fixed at creation, so the server rejects this as immutable.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-immutable-claim
+  namespace: ($namespace)
+spec:
+  className: e2e-internal-ipv4

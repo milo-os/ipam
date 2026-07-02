@@ -186,6 +186,11 @@ tasks:
     cmds:
       - task: load:throughput
 
+  test/load:class-throughput:
+    desc: Run class-based (spec.className) prefix-claim throughput load test
+    cmds:
+      - task: load:class-throughput
+
   test/load:asn-throughput:
     desc: Run ASN-claim throughput load test
     cmds:

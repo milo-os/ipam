@@ -18,14 +18,15 @@ func newRootCommand(io IOStreams) *cobra.Command {
 		Long: `Manage IP address space on Datum.
 
 The ipam plugin presents the IPAM service as a small set of resource-oriented
-commands. The two nouns that matter most:
+commands. The nouns that matter most:
 
+  class    a named address-space policy you claim from (IPClass)
   pool     an allocatable block of address space (IPPool)
-  prefix   a sub-block claimed from a pool (IPClaim / IPAllocation)
+  prefix   a sub-block claimed from a class or pool (IPClaim / IPAllocation)
 
 Claiming a prefix returns the allocated CIDR synchronously:
 
-  datumctl ipam prefix claim --pool prod-backbone --length 24
+  datumctl ipam prefix claim --class public-egress --length 26
 
 Output is a human table by default; -o json|yaml is a stable contract for
 scripts (data on stdout, diagnostics on stderr). Exit codes are documented and
@@ -71,6 +72,7 @@ distinct per failure class (notably 7 = IPAM_POOL_EXHAUSTED).`,
 	pf.StringVar(&opts.org, "org", "", "Override the active organization for this invocation")
 	pf.StringVar(&opts.project, "project", "", "Override the active project for this invocation")
 
+	root.AddCommand(newClassCommand(a))
 	root.AddCommand(newPoolCommand(a))
 	root.AddCommand(newPrefixCommand(a))
 	root.AddCommand(newVersionCommand(io))

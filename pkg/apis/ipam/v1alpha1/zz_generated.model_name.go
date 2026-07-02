@@ -51,6 +51,21 @@ func (in IPClaimStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IPClass) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPClass"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IPClassList) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPClassList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IPClassSpec) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPClassSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in IPPool) OpenAPIModelName() string {
 	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPPool"
 }
@@ -93,4 +108,9 @@ func (in PoolCapacity) OpenAPIModelName() string {
 // OpenAPIModelName returns the OpenAPI model name for this type.
 func (in PoolSelector) OpenAPIModelName() string {
 	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.PoolSelector"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in PrefixLengthRange) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.PrefixLengthRange"
 }

@@ -34,6 +34,7 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&IPPool{}, &IPPoolList{},
 		&IPAllocation{}, &IPAllocationList{},
 		&IPClaim{}, &IPClaimList{},
+		&IPClass{}, &IPClassList{},
 	)
 	return nil
 }
