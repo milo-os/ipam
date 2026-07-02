@@ -135,7 +135,9 @@ func classifyError(err error) *cliError {
 	case 404:
 		return newCLIError(exitNotFound, apiMessage(err)).withCause(err)
 	case 409:
-		return newCLIError(exitConflict, fmt.Sprintf("conflict: %s", apiMessage(err))).withCause(err)
+		return newCLIError(exitConflict, fmt.Sprintf("that conflicts with the current state: %s", apiMessage(err))).
+			withFix("something with that name may already exist, or it changed since you read it — check with a list/show and try again.").
+			withCause(err)
 	case 400, 422:
 		return newCLIError(exitInvalid, fmt.Sprintf("invalid request: %s", apiMessage(err))).withCause(err)
 	case 507:
@@ -187,7 +189,7 @@ func apiMessage(err error) string {
 // zero-valued if the pool could not be re-fetched) supplies utilization.
 func exhaustionError(poolName string, family string, requested int, util float64, largestFree int, cause error) *cliError {
 	var b strings.Builder
-	fmt.Fprintf(&b, "pool %q has no free /%d block (requested length %d).", poolName, requested, requested)
+	fmt.Fprintf(&b, "pool %q has no free /%d block available.", poolName, requested)
 	if largestFree > 0 {
 		fmt.Fprintf(&b, "\n       Largest available block is /%d", largestFree)
 		if util > 0 {

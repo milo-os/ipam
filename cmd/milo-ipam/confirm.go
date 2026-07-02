@@ -48,15 +48,16 @@ func (a *app) confirmTyped(name, prompt string) (bool, error) {
 	}
 	if a.nonInteractive() {
 		return false, newCLIError(exitAborted,
-			"refusing to perform a destructive action non-interactively without confirmation").
-			withFix("re-run with --yes to confirm releasing " + name + ".")
+			"releasing "+name+" is destructive and needs confirmation, but there is no interactive terminal to confirm in.").
+			withFix("re-run with --yes to confirm, or run the command in an interactive terminal.")
 	}
 	_, _ = fmt.Fprintln(a.io.ErrOut, prompt)
 	_, _ = fmt.Fprintf(a.io.ErrOut, "Type the name %q to confirm: ", name)
 	reader := bufio.NewReader(a.io.In)
 	line, _ := reader.ReadString('\n')
 	if strings.TrimSpace(line) != name {
-		return false, newCLIError(exitAborted, "confirmation did not match; aborted")
+		return false, newCLIError(exitAborted, "that didn't match the name, so nothing was released.").
+			withFix("re-run and type the name exactly to confirm, or pass --yes to skip the prompt.")
 	}
 	return true, nil
 }

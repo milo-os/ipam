@@ -109,7 +109,9 @@ func runPrefixClaim(a *app, o *claimOptions) error {
 	if o.childPool != "" {
 		// The current IPAM API (IPClaimSpec) does not expose childPrefixTemplate.
 		// Fail loudly rather than silently dropping the user's intent.
-		return usageErrorf("--child-pool is not supported by the current IPAM API on this cluster")
+		return usageErrorf("--child-pool isn't supported by the IPAM API on this cluster.").
+			withFix("claim the prefix without --child-pool, then create the child pool separately:\n" +
+				"       datumctl ipam pool create <name> --parent <pool> --prefix-length <n>")
 	}
 
 	var family ipamv1alpha1.IPFamily
@@ -568,7 +570,7 @@ func newPrefixReleaseCommand(a *app) *cobra.Command {
 
 			prompt := fmt.Sprintf("Release prefix %q (%s)?", name, orDash(claim.Status.AllocatedCIDR))
 			if !a.confirmYesNo(prompt) {
-				return newCLIError(exitAborted, "aborted")
+				return newCLIError(exitAborted, "cancelled — the prefix was not released.")
 			}
 			if err := cs.IpamV1alpha1().IPClaims(ns).Delete(context.Background(), name, metav1.DeleteOptions{}); err != nil {
 				return classifyError(err)
