@@ -1,0 +1,72 @@
+# Impersonation + tenant-user RBAC for the consumer→platform IPClass suite.
+#
+# Uniquely named (ipc-*) so this suite's cluster-scoped RBAC never collides
+# with the multi-tenant suite's mt-* RBAC when the two run in parallel. Both
+# grant the SAME impersonated identity (e2e-tenant-tester); the grants are
+# additive.
+#
+# This suite exercises the caller-scope→platform-scope FALLBACK: a consumer
+# project (project-alpha) claims a PLATFORM-owned IPClass backed by a
+# PLATFORM-owned IPPool. Per the milestone decision there is NO `use`/SAR gate
+# on that fallback, so no cross-project grant is set up here — the tenant user
+# just needs ordinary ipam access.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ipc-tenant-impersonator
+rules:
+  # Impersonate the tenant user identity.
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+    resourceNames: ["e2e-tenant-tester"]
+  # Impersonate the iam.miloapis.com/parent-* userextras that carry the tenant
+  # scope into UserInfo.Extra. project-alpha needs no extra group.
+  - apiGroups: ["authentication.k8s.io"]
+    resources:
+      - "userextras/iam.miloapis.com/parent-name"
+      - "userextras/iam.miloapis.com/parent-type"
+      - "userextras/iam.miloapis.com/parent-api-group"
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipc-tenant-impersonator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ipc-tenant-impersonator
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:masters
+---
+# Ordinary ipam access for the impersonated tenant user. Includes read on
+# ipclasses so class resolution has no RBAC surprises; NOT cluster admin and
+# WITHOUT the `use` verb (the platform-scope fallback needs neither).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ipc-tenant-ipam-user
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipclaims", "ipclaims/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ippools", "ippools/status", "ipclasses", "ipallocations", "ipallocations/status"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipc-tenant-ipam-user-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ipc-tenant-ipam-user
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-tester

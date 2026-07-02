@@ -1,0 +1,13 @@
+---
+# Read back under the SAME project-alpha scope the claim was created in. The
+# consumer bound to the platform pool: a /26 inside 10.150.0.0/20 (third octet
+# 0..15, /26 boundary in the fourth octet: 0, 64, 128, or 192).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipc-consumer-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (boundAllocationRef != null): true
+  (regex_match('^10\.150\.([0-9]|1[0-5])\.(0|64|128|192)/26$', allocatedCIDR)): true

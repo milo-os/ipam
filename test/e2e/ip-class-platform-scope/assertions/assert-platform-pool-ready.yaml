@@ -1,0 +1,8 @@
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ipc-platform-pool
+status:
+  phase: Ready
+  (allocatedCIDR): "10.150.0.0/20"

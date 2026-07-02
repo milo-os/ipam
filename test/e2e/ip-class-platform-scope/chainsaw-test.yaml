@@ -1,0 +1,152 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ip-class-platform-scope
+spec:
+  # Tenant-scoped objects (the consumer claim) live in IPAM's postgres under a
+  # project prefix, not kube etcd; chainsaw's auto-cleanup runs on the platform
+  # cluster and cannot see them. Skip auto-cleanup and rely on the explicit
+  # finally deletes under the owning contexts.
+  skipDelete: true
+  description: |
+    Consumer→platform IPClass resolution (the primary IPClass use case).
+
+    Validates core's caller-scope + platform-scope resolution end to end: a
+    CONSUMER project (project-alpha, via Kubernetes impersonation) claims a
+    PLATFORM-owned IPClass backed by a PLATFORM-owned IPPool, WITHOUT naming a
+    pool and WITHOUT any cross-project `use` grant. Class resolution searches
+    the caller's own scope PLUS the platform scope and falls back to the
+    platform class + platform pool.
+
+    Impersonation mirrors the multi-tenant suite: the tenant-platform context
+    is unimpersonated (platform scope); tenant-project-alpha carries the
+    iam.miloapis.com/parent-* userextras that land in UserInfo.Extra, scoping
+    the claim to project-alpha. See test/e2e/lib/gen-impersonation-kubeconfig.sh.
+
+    MILESTONE SCOPE:
+      * NO `use`/SAR gate on the platform-scope fallback — no grant is set up.
+      * visibility is intent/metadata only this milestone; resolution does NOT
+        gate on it, so this suite asserts a successful BIND and never a
+        visibility-based denial.
+      * Explicit foreign-project claiming (projectRef + cross-project SAR) is
+        deferred and is covered by neither this suite nor multi-tenant.
+
+    Cluster-scoped RBAC here is uniquely named (ipc-*) so it never collides
+    with the multi-tenant suite's mt-* RBAC under parallel runs.
+
+  clusters:
+    tenant-platform:
+      kubeconfig: ../.tenant-impersonation-ipc.kubeconfig
+      context: tenant-platform
+    project-alpha:
+      kubeconfig: ../.tenant-impersonation-ipc.kubeconfig
+      context: tenant-project-alpha
+
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 90s
+
+  steps:
+    - name: seed-rbac
+      description: |
+        Generate the impersonation kubeconfig this suite's clusters block
+        references, then create the impersonation + tenant-user RBAC. Done
+        in-suite (not only via `task e2e`) so `chainsaw test test/e2e/` works
+        standalone. chainsaw runs scripts with cwd = this suite dir, so cd to
+        the repo root where the source KUBECONFIG and lib paths resolve. The
+        per-suite output filename avoids a parallel-run write race.
+      try:
+        - script:
+            content: |
+              cd ../../..
+              sh test/e2e/lib/gen-impersonation-kubeconfig.sh test/e2e/.tenant-impersonation-ipc.kubeconfig
+            check:
+              ($error == null): true
+        - create:
+            file: resources/impersonation-rbac.yaml
+
+    - name: seed-platform-class-and-pool
+      description: |
+        Create the platform-owned IPClass and its backing IPPool under the
+        unimpersonated tenant-platform context (platform scope). Wait for the
+        pool to be Ready.
+      try:
+        - create:
+            cluster: tenant-platform
+            file: resources/platform-class.yaml
+        - create:
+            cluster: tenant-platform
+            file: resources/platform-pool.yaml
+        - assert:
+            cluster: tenant-platform
+            file: assertions/assert-platform-pool-ready.yaml
+
+    - name: consumer-claims-platform-class
+      description: |
+        project-alpha claims the platform class by name and binds to the
+        platform pool (a /26 in 10.150.0.0/20), read back under the same
+        project-alpha scope. The bound IPAllocation records the class name
+        (provenance).
+      try:
+        - create:
+            cluster: project-alpha
+            file: resources/consumer-claim.yaml
+        - assert:
+            cluster: project-alpha
+            file: assertions/assert-consumer-claim-bound.yaml
+        - script:
+            timeout: 30s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+              - name: KCFG
+                value: ../.tenant-impersonation-ipc.kubeconfig
+            content: |
+              set -e
+              # Read the bound allocation under the SAME project-alpha scope and
+              # confirm it records the platform class it was drawn from.
+              ref=$(kubectl --kubeconfig "$KCFG" --context tenant-project-alpha \
+                get ipclaim -n "$NAMESPACE" ipc-consumer-claim \
+                -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$ref" ]; then
+                echo "FAIL: empty boundAllocationRef.name on ipc-consumer-claim"
+                exit 1
+              fi
+              # Read without swallowing errors: a Forbidden/NotFound here must
+              # fail loudly (set -e), not masquerade as an empty className.
+              class=$(kubectl --kubeconfig "$KCFG" --context tenant-project-alpha \
+                get ipallocation -n "$NAMESPACE" "$ref" \
+                -o jsonpath='{.spec.className}')
+              if [ "$class" != "ipc-platform-egress" ]; then
+                echo "FAIL: IPAllocation $ref spec.className=$class (expected ipc-platform-egress)"
+                exit 1
+              fi
+              echo "OK IPAllocation $ref records className=ipc-platform-egress"
+            check:
+              ($error == null): true
+              (contains($stdout, 'OK IPAllocation ')): true
+      finally:
+        - delete:
+            cluster: project-alpha
+            ref:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              namespace: ($namespace)
+              name: ipc-consumer-claim
+        - script:
+            env:
+              - name: KCFG
+                value: ../.tenant-impersonation-ipc.kubeconfig
+            content: |
+              kubectl --kubeconfig "$KCFG" --context tenant-platform \
+                delete ippool ipc-platform-pool --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$KCFG" --context tenant-platform \
+                delete ipclass ipc-platform-egress --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$KCFG" --context tenant-platform \
+                delete clusterrolebinding ipc-tenant-impersonator-binding ipc-tenant-ipam-user-binding --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig "$KCFG" --context tenant-platform \
+                delete clusterrole ipc-tenant-impersonator ipc-tenant-ipam-user --ignore-not-found >/dev/null 2>&1 || true
+              echo "ip-class-platform-scope cleanup done"
+            check:
+              ($error == null): true
