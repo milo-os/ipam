@@ -4,10 +4,10 @@ Task-oriented guides for people *using* the IPAM service — provisioning addres
 space, claiming prefixes, and automating it. These complement the reference and
 design docs one level up:
 
-- [`../api.md`](../api.md) — the `ipam.miloapis.com/v1alpha1` API reference (kinds, fields, errors)
-- [`../integration-guide.md`](../integration-guide.md) — integrating with the API directly (client-go / kubectl)
-- [`../architecture/`](../architecture) — how the service is built
-- [`../runbooks/`](../runbooks) — operating the service (on-call)
+- [API reference](../api.md) — the `ipam.miloapis.com/v1alpha1` kinds, fields, and errors
+- [Integrating with the API directly](../integration-guide.md) — client-go / kubectl
+- [Architecture](../architecture) — how the service is built
+- [Operational runbooks](../runbooks) — on-call procedures
 
 ## Available guides
 

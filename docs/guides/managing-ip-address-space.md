@@ -6,7 +6,8 @@ utilization, and releasing space.
 
 > The plugin is a thin, task-oriented front end over the `ipam.miloapis.com`
 > API. Everything here maps to real resources; add `-o yaml` to any read command
-> to see them. For the full field-level reference, see [`../api.md`](../api.md).
+> to see them. For the full field-level reference, see the
+> [API reference](../api.md).
 
 ## The resource model
 
