@@ -180,7 +180,7 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 
 	span.SetAttributes(attribute.String(tracing.AttrClaimIPFamily, ipFamily))
 
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, ipFamily, childKey, "")
+	cidr, _, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, ipFamily, childKey, "")
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		switch {

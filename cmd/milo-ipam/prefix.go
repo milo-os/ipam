@@ -159,24 +159,17 @@ func runPrefixClaim(a *app, o *claimOptions) error {
 			family = poolFamily(p)
 		}
 	}
-	if family == "" {
-		if o.selector != "" {
-			return usageErrorf("could not infer address family from a selector; pass --family ipv4|ipv6")
-		}
-		family = ipamv1alpha1.IPv4
-	}
+	// family may still be empty here — e.g. a claim by --selector, where the
+	// pool is resolved server-side. That's fine: spec.ipFamily is optional and
+	// the server derives it from the resolved pool's CIDR. Leave it unset
+	// rather than guessing IPv4.
 	if o.length <= 0 {
 		return usageErrorf("a claim needs a size: pass --length <n> or --cidr <cidr>")
 	}
-	if o.length > familyBits(family) {
-		err := newCLIError(exitUsage, fmt.Sprintf("--length /%d is out of range for %s (max /%d)", o.length, family, familyBits(family)))
-		// If the family was assumed rather than stated, the pool may be IPv6
-		// with a length that only looks out of range because we defaulted to
-		// IPv4. Point the user at --family.
-		if o.family == "" && o.cidr == "" {
-			return err.withFix(fmt.Sprintf("address family was assumed %s; if the pool is IPv6, pass --family ipv6", family))
-		}
-		return err
+	// Range-check the length client-side only when the family is known; the
+	// server validates against the resolved pool's family otherwise.
+	if family != "" && o.length > familyBits(family) {
+		return usageErrorf("--length /%d is out of range for %s (max /%d)", o.length, family, familyBits(family))
 	}
 
 	// Idempotency: a named claim that already exists is returned as-is.

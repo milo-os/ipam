@@ -326,7 +326,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		}
 	}
 
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, claim.Spec.PrefixLength, string(claim.Spec.IPFamily), claimKey, id.Name)
+	cidr, effectiveFamily, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, claim.Spec.PrefixLength, string(claim.Spec.IPFamily), claimKey, id.Name)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
@@ -342,6 +342,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		}
 		return nil, mapAllocationError(err)
 	}
+
+	// The pool determines the address family. Default it onto the claim so the
+	// persisted claim and its IPAllocation always report the resolved family,
+	// even when the client omitted spec.ipFamily (it is optional).
+	claim.Spec.IPFamily = ipam.IPFamily(effectiveFamily)
 
 	// Build the IPAllocation object that records this binding. It lives in
 	// the claim's namespace; its name is a stable hash of the claim
@@ -447,6 +452,8 @@ func allocationFailureReason(err error) string {
 		return "pool_not_found"
 	case errors.Is(err, allocator.ErrFamilyMismatch):
 		return "family_mismatch"
+	case errors.Is(err, allocator.ErrPrefixLengthOutOfRange):
+		return "prefix_length_out_of_range"
 	default:
 		return "tx_error"
 	}
@@ -659,6 +666,8 @@ func mapAllocationError(err error) error {
 	case errors.Is(err, allocator.ErrPoolNotFound):
 		return apierrors.NewBadRequest("IPPool not found")
 	case errors.Is(err, allocator.ErrFamilyMismatch):
+		return apierrors.NewBadRequest(err.Error())
+	case errors.Is(err, allocator.ErrPrefixLengthOutOfRange):
 		return apierrors.NewBadRequest(err.Error())
 	default:
 		return apierrors.NewInternalError(err)

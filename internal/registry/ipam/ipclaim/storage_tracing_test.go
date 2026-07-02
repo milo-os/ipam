@@ -51,7 +51,7 @@ type tracingAllocator struct {
 	err error
 }
 
-func (a *tracingAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, error) {
+func (a *tracingAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, string, error) {
 	_, fbSpan := tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
 	fbSpan.SetAttributes(attribute.String(tracing.AttrStrategy, "first-fit"))
 	if a.err != nil {
@@ -60,7 +60,7 @@ func (a *tracingAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKe
 		}
 		fbSpan.SetStatus(codes.Error, a.err.Error())
 		fbSpan.End()
-		return "", a.err
+		return "", "", a.err
 	}
 	fbSpan.End()
 	return a.fakeAllocator.AllocatePrefix(ctx, tx, poolKey, prefixLen, ipFamily, claimKey, ownerProject)

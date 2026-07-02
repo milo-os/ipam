@@ -79,7 +79,10 @@ func (ipClaimStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	o := old.(*ipam.IPClaim)
 	allErrs := validateIPClaim(n)
 
-	if n.Spec.IPFamily != o.Spec.IPFamily {
+	// ipFamily is optional: an omitted value on update means "unchanged" (the
+	// server already defaulted it from the pool at create time). Only a
+	// non-empty, differing value is a forbidden mutation.
+	if n.Spec.IPFamily != "" && n.Spec.IPFamily != o.Spec.IPFamily {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "ipFamily"), "ipFamily is immutable"))
 	}
 	if n.Spec.PrefixLength != o.Spec.PrefixLength {
@@ -102,17 +105,20 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	if c.Spec.IPFamily == "" {
-		allErrs = append(allErrs, field.Required(specPath.Child("ipFamily"), "ipFamily is required"))
-	} else if c.Spec.IPFamily != ipam.IPv4 && c.Spec.IPFamily != ipam.IPv6 {
+	// ipFamily is optional. When omitted, the server derives it from the target
+	// pool's CIDR at allocation time. When provided, it must be a known family.
+	if c.Spec.IPFamily != "" && c.Spec.IPFamily != ipam.IPv4 && c.Spec.IPFamily != ipam.IPv6 {
 		allErrs = append(allErrs, field.NotSupported(specPath.Child("ipFamily"), c.Spec.IPFamily, []string{string(ipam.IPv4), string(ipam.IPv6)}))
 	}
 	if c.Spec.PrefixLength <= 0 {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), c.Spec.PrefixLength, "prefixLength must be greater than 0"))
 	}
-	maxLen := 32
-	if c.Spec.IPFamily == ipam.IPv6 {
-		maxLen = 128
+	// With ipFamily omitted the pool decides, so bound the length against the
+	// widest family (IPv6); a concrete family narrows it. The allocator makes
+	// the final check against the resolved family.
+	maxLen := 128
+	if c.Spec.IPFamily == ipam.IPv4 {
+		maxLen = 32
 	}
 	if c.Spec.PrefixLength > maxLen {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), c.Spec.PrefixLength, fmt.Sprintf("prefixLength must not exceed %d for %s", maxLen, c.Spec.IPFamily)))

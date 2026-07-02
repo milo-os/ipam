@@ -67,6 +67,18 @@ spec:
         - assert:
             timeout: 30s
             file: assertions/assert-v4-ok-bound.yaml
+
+    - name: accept-omitted-family-claim
+      description: |
+        A claim that omits spec.ipFamily is accepted; the server derives the
+        family from the target pool (IPv6 here) and defaults it onto the claim,
+        which binds. Consumers need not specify a family the pool determines.
+      try:
+        - create:
+            file: test-data/claim-no-family.yaml
+        - assert:
+            timeout: 30s
+            file: assertions/assert-no-family-bound.yaml
       finally:
         - script:
             env:
@@ -74,7 +86,7 @@ spec:
                 value: ($namespace)
             content: |
               kubectl delete ipclaim -n "$NAMESPACE" \
-                claim-v6-on-v4 claim-v4-on-v6 claim-v4-ok --ignore-not-found >/dev/null 2>&1 || true
+                claim-v6-on-v4 claim-v4-on-v6 claim-v4-ok claim-no-family --ignore-not-found >/dev/null 2>&1 || true
               kubectl delete ippool test-fam-v4 test-fam-v6 --ignore-not-found >/dev/null 2>&1 || true
               echo "claim-family-mismatch cleanup done"
             check:

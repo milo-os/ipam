@@ -35,15 +35,24 @@ var ErrPoolExhausted = errors.New("ipam: pool exhausted")
 // should map this to HTTP 400 (Bad Request) at the registry boundary.
 var ErrFamilyMismatch = errors.New("ipam: claim address family does not match pool")
 
+// ErrPrefixLengthOutOfRange is returned when the requested prefix length is out
+// of range for the pool's address family (e.g. a /40 against an IPv4 pool).
+// Callers should map this to HTTP 400 (Bad Request) at the registry boundary.
+var ErrPrefixLengthOutOfRange = errors.New("ipam: prefix length out of range for pool family")
+
 // PrefixAllocator atomically reserves a sub-CIDR from an IPPrefix pool.
 //
 // ownerProject scopes the allocation to a single tenant project so per-project
 // capacity queries (used by the quota integration) can sum allocations
 // belonging to a given project. Pass "" for platform-scoped allocations.
 type PrefixAllocator interface {
-	// AllocatePrefix reserves a sub-prefix of prefixLen bits within the
-	// pool identified by poolKey and returns its CIDR string.
-	AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, error)
+	// AllocatePrefix reserves a sub-prefix of prefixLen bits within the pool
+	// identified by poolKey and returns its CIDR string and the effective
+	// address family. The pool's family (derived from its CIDR) is
+	// authoritative: pass ipFamily="" to let the pool decide, or a concrete
+	// family to be validated against the pool (mismatch → ErrFamilyMismatch).
+	// The returned family is what was actually used, so callers can record it.
+	AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (cidr string, family string, err error)
 
 	// InsertObject writes a generic API object row into ipam_objects inside
 	// the supplied transaction and returns the assigned resource_version.

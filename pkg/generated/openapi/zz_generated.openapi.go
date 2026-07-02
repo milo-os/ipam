@@ -395,9 +395,9 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) com
 				Properties: map[string]spec.Schema{
 					"ipFamily": {
 						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
+							Description: "IPFamily is the address family to allocate. Optional: when omitted, the server derives it from the target pool's CIDR (the pool is authoritative). When set, it must match the pool's family or the claim is rejected.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"prefixLength": {
@@ -430,7 +430,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) com
 						},
 					},
 				},
-				Required: []string{"ipFamily", "prefixLength"},
+				Required: []string{"prefixLength"},
 			},
 		},
 		Dependencies: []string{
