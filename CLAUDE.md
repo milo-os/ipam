@@ -1,6 +1,6 @@
 # IPAM Service
 
-A standalone, Kubernetes-native IP Address Management service implemented as an aggregated API server backed by PostgreSQL. Manages IP prefixes, individual IP addresses, and AS numbers across the platform — from infrastructure backbone to consumer workloads.
+A standalone, Kubernetes-native IP Address Management service implemented as an aggregated API server backed by PostgreSQL. Manages IP address pools and the prefixes and addresses allocated from them across the platform — from infrastructure backbone to consumer workloads.
 
 ## Reference Repositories
 
@@ -12,7 +12,7 @@ A standalone, Kubernetes-native IP Address Management service implemented as an 
 ## Why Aggregated Apiserver (not CRD operator)
 
 - **Atomic allocation** — no eventual-consistency conflict window under concurrent claims
-- **Synchronous status** — caller gets the allocated CIDR/ASN in the CREATE response body, no polling
+- **Synchronous status** — caller gets the allocated CIDR in the CREATE response body, no polling
 - **Proven pattern** — quota service benchmarks show 37+ claims/s stable under `SELECT ... FOR UPDATE`
 
 ## Hard Constraints
@@ -29,8 +29,8 @@ A standalone, Kubernetes-native IP Address Management service implemented as an 
 cmd/ipam/           # main.go + serve.go (subcommand pattern)
 pkg/apis/ipam/      # internal types + v1alpha1/ versioned types + generated clients
 internal/
-  allocation/       # Pure Go CIDR/ASN math library — ZERO non-stdlib imports
-  allocator/        # Kubernetes-aware wrappers: PostgresPrefixAllocator, PostgresASNAllocator
+  allocation/       # Pure Go CIDR math library — ZERO non-stdlib imports
+  allocator/        # Kubernetes-aware wrapper: PostgresPrefixAllocator
   apiserver/        # Aggregated apiserver setup (follow quota pattern)
   registry/ipam/    # Per-resource storage: ippool/, ipclaim/, ipallocation/
   storage/          # PostgreSQL RESTOptionsGetter implementation
@@ -48,7 +48,7 @@ test/load/          # k6 performance scripts (see performance-testing agent)
 
 ## Allocation Transaction Sequence (CIDR)
 
-The registry's Create method for IPPrefixClaim executes atomically:
+The registry's Create method for IPClaim executes atomically:
 
 ```
 BEGIN
@@ -57,9 +57,6 @@ BEGIN
   -- FindFirstAvailableBlock(parents, existing, claimPrefixLen, strategy) in Go
   -- Returns error → HTTP 507 Insufficient Storage if pool is full
   INSERT INTO ipam_prefix_allocations (pool_key, allocated_cidr, claim_key, ...)
-  IF childPrefixTemplate != nil:
-    INSERT INTO ipam_objects (key, kind='IPPrefix', data=childPrefixJSON, ...)
-    INSERT INTO ipam_changelog (key, event_type='ADDED', ...)
   UPDATE ipam_objects SET data=$claimWithStatus WHERE key=$claimKey
   INSERT INTO ipam_changelog (key, event_type='ADDED', ...)
   UPDATE ipam_objects SET data=$updatedPoolStatus WHERE key=$poolKey
@@ -71,7 +68,7 @@ COMMIT
 
 ## AllocatingREST Pattern
 
-`internal/registry/ipam/ipprefixclaim/storage.go` — replicate for `ipaddressclaim` and `asnclaim`:
+`internal/registry/ipam/ipclaim/storage.go`:
 
 ```go
 type REST struct {
@@ -101,12 +98,12 @@ Follow `internal/apiserver/apiserver.go` from quota service exactly. Key additio
 ```go
 type ExtraConfig struct {
     PrefixAllocator allocator.PrefixAllocator  // required
-    ASNAllocator    allocator.ASNAllocator     // required
     AllocatorPool   *pgxpool.Pool              // required
+    PoolChecker     access.PoolAccessChecker   // optional: cross-project claim authz
 }
 ```
 
-All claim REST constructors receive the allocator and the pool; both are
+The claim REST constructor receives the allocator and the pool; both are
 required (postgres is the only backend).
 
 ## Storage Backend (`cmd/ipam/serve.go`)
@@ -129,8 +126,7 @@ dual-write mode.
 3. **Pool-level `SELECT ... FOR UPDATE`.** O(1) lock regardless of pool utilization.
 4. **CIDR arithmetic in Go, not SQL.** GiST index on `(pool_key, allocated_cidr)` is a secondary overlap check, not the primary mechanism.
 5. **PostgreSQL is the only backend.** Synchronous allocation in the request path is the whole point of the service; no etcd or dual-write mode.
-6. **Atomic child prefix creation.** A non-nil `childPrefixTemplate` inserts the child IPPrefix in the same transaction as the claim.
-7. **Single address family per resource.** IPv4 and IPv6 are never mixed; dual-stack = two resources.
+6. **Single address family per resource.** IPv4 and IPv6 are never mixed; dual-stack = two resources.
 
 ## Multi-Agent Teams
 
@@ -211,10 +207,9 @@ The Taskfile includes the test-infra remote Taskfile (`datum-cloud/test-infra v0
 - `go test ./internal/allocation/...` passes (pure Go, no external deps)
 - `go vet ./...` clean; no forbidden milo/quota imports (only `go.miloapis.com/milo/pkg/quota/...`, `.../pkg/apis/quota/v1alpha1`, `.../pkg/request` are allowed — see constraint #3 grep)
 - Binary starts with `--postgres-dsn=...` and serves discovery for `ipam.miloapis.com/v1alpha1`
-- IPPrefixClaim CREATE returns allocated CIDR in status synchronously
-- Concurrent IPPrefixClaim CREATEs produce non-overlapping CIDRs under load
-- IPPrefixClaim against exhausted pool returns HTTP 507
-- `childPrefixTemplate` set creates the child IPPrefix atomically in the same transaction
+- IPClaim CREATE returns allocated CIDR in status synchronously
+- Concurrent IPClaim CREATEs produce non-overlapping CIDRs under load
+- IPClaim against exhausted pool returns HTTP 507
 - `kustomize build config/overlays/dev/` renders valid manifests
 - `chainsaw test test/e2e/` passes all suites
 - k6 `prefix-claim-throughput.js`: p95 < 500ms, success rate > 0.95
