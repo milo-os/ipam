@@ -1,0 +1,10 @@
+---
+# Bound first, then patched to change spec.className — which is immutable.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-immutable-claim
+  namespace: ($namespace)
+spec:
+  className: e2e-public-egress
+  prefixLength: 26

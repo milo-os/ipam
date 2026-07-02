@@ -1,0 +1,56 @@
+---
+# The default class. Marked via the ipam.miloapis.com/is-default-class
+# annotation (IsDefaultClassAnnotation), mirroring Kubernetes'
+# storageclass.kubernetes.io/is-default-class convention. A claim that names
+# no className, poolRef, or poolSelector is satisfied from this class.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-internal-ipv4
+  annotations:
+    ipam.miloapis.com/is-default-class: "true"
+spec:
+  provisioner: ipam.miloapis.com/native
+  ipFamily: IPv4
+  strategy: FirstFit
+  allowedPrefixLengths:
+    min: 24
+    max: 28
+  defaultPrefixLength: 26
+  reclaimPolicy: Delete
+  visibility: consumer
+---
+# A second, non-default class with a distinct reclaim policy. Backed by its
+# own pool (ipclass-pool-egress) so class-scoped pool resolution has exactly
+# one candidate.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-public-egress
+spec:
+  provisioner: ipam.miloapis.com/native
+  ipFamily: IPv4
+  strategy: FirstFit
+  allowedPrefixLengths:
+    min: 24
+    max: 28
+  defaultPrefixLength: 26
+  reclaimPolicy: Retain
+  visibility: consumer
+---
+# A class no pool backs. Claims of this class must fail with a specific,
+# actionable "no pool backs class" error rather than a generic exhaustion.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: e2e-orphan-class
+spec:
+  provisioner: ipam.miloapis.com/native
+  ipFamily: IPv4
+  strategy: FirstFit
+  allowedPrefixLengths:
+    min: 24
+    max: 28
+  defaultPrefixLength: 26
+  reclaimPolicy: Delete
+  visibility: consumer

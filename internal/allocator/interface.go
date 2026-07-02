@@ -28,6 +28,14 @@ var ErrPoolNotFound = errors.New("ipam: pool not found")
 // Storage) at the registry boundary.
 var ErrPoolExhausted = errors.New("ipam: pool exhausted")
 
+// ErrClassNotFound is returned when a named IPClass, or the requested default
+// class, does not exist in the caller's scope.
+var ErrClassNotFound = errors.New("ipam: class not found")
+
+// ErrNoPoolForClass is returned when a class exists but no pool in the caller's
+// scope backs it for the required address family.
+var ErrNoPoolForClass = errors.New("ipam: no pool backs class")
+
 // PrefixAllocator atomically reserves a sub-CIDR from an IPPrefix pool.
 //
 // ownerProject scopes the allocation to a single tenant project so per-project

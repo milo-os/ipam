@@ -1,0 +1,14 @@
+---
+# The consumer names a class and (optionally) a size. Everything else — which
+# pool, how the block is placed, the address family, what happens on release —
+# comes from the class. ipFamily is omitted here: the server derives it from
+# the resolved pool. The allocated CIDR is returned synchronously in the claim
+# status, exactly as a pool- or selector-based claim.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: my-service-egress
+  namespace: default
+spec:
+  className: public-egress
+  prefixLength: 26        # optional; the class defaultPrefixLength applies if omitted

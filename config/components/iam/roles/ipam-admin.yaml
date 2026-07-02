@@ -22,3 +22,4 @@ spec:
     - ipam.miloapis.com/ippools.updateStatus
     - ipam.miloapis.com/ipclaims.updateStatus
     - ipam.miloapis.com/ipallocations.updateStatus
+    - ipam.miloapis.com/ipclasses.updateStatus

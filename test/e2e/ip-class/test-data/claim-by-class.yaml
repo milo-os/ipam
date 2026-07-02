@@ -1,0 +1,12 @@
+---
+# Claim by class name. The consumer names WHAT it wants (a public-egress /26)
+# and never the pool. ipFamily is intentionally omitted — it comes from the
+# class. The CIDR is returned synchronously in status on the create response.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-egress-claim
+  namespace: ($namespace)
+spec:
+  className: e2e-public-egress
+  prefixLength: 26

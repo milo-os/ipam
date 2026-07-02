@@ -4,6 +4,7 @@ import (
 	"go.miloapis.com/ipam/internal/fieldindex"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipallocation"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipclaim"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipclass"
 	"go.miloapis.com/ipam/internal/registry/ipam/ippool"
 )
 
@@ -14,5 +15,6 @@ func AllFieldIndexes() []fieldindex.FieldIndex {
 	all = append(all, ipclaim.FieldIndexes...)
 	all = append(all, ipallocation.FieldIndexes...)
 	all = append(all, ippool.FieldIndexes...)
+	all = append(all, ipclass.FieldIndexes...)
 	return all
 }

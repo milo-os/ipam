@@ -1,0 +1,26 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: ipam.miloapis.com-ipclass
+spec:
+  serviceRef:
+    name: "ipam.miloapis.com"
+  kind: IPClass
+  plural: ipclasses
+  singular: ipclass
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+    - updateStatus
+    # "use" mirrors the verb on IPPool: it is checked when a consumer claims
+    # from a class whose visibility admits cross-project use. Granting it on a
+    # class authorises consumers in other projects to allocate through it.
+    - use
+  parentResources:
+    - apiGroup: resourcemanager.miloapis.com
+      kind: Project

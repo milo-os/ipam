@@ -58,8 +58,11 @@ var (
 		// org:       parent-name when Kind=="Organization", else "" for now
 		//            (project-scoped requests do not carry the owning org id
 		//            in extras yet; see internal/tenant/tenant.go).
+		// class:     the IPClass name a class-based claim resolved through, or
+		//            "none" for direct poolRef/poolSelector claims. Bounded by
+		//            the operator-defined class catalog (low cardinality).
 		// Cardinality bound: see top-of-block comment for project / org.
-		[]string{"resource", "result", "ip_family", "project", "org"},
+		[]string{"resource", "result", "ip_family", "project", "org", "class"},
 	)
 
 	// AllocationAttempts counts allocation attempts by resource type. Paired
@@ -78,8 +81,9 @@ var (
 		// ip_family: "IPv4" | "IPv6" | "ASN" — sourced from the same handler
 		//            value used for ObserveAllocationDuration so attempts,
 		//            failures, and the latency histogram split identically.
+		// class:     resolved IPClass name or "none"; see AllocationDuration.
 		// project, org: see AllocationDuration for label semantics + cardinality.
-		[]string{"resource", "ip_family", "project", "org"},
+		[]string{"resource", "ip_family", "project", "org", "class"},
 	)
 
 	// AllocationFailures counts allocation failures by reason.
@@ -91,12 +95,13 @@ var (
 			StabilityLevel: metrics.ALPHA,
 		},
 		// resource:  "ipclaims" | "asnclaims"
-		// reason:    "pool_exhausted" | "pool_not_found" | "verification_required" | "tx_error" | "internal"
+		// reason:    "pool_exhausted" | "pool_not_found" | "no_pool_for_class" | "verification_required" | "tx_error" | "internal"
 		// ip_family: "IPv4" | "IPv6" | "ASN" — mirrors AllocationAttempts so
 		//            success-ratio = 1 - (failures / attempts) can be computed
 		//            per address family.
+		// class:     resolved IPClass name or "none"; see AllocationDuration.
 		// project, org: see AllocationDuration for label semantics + cardinality.
-		[]string{"resource", "reason", "ip_family", "project", "org"},
+		[]string{"resource", "reason", "ip_family", "project", "org", "class"},
 	)
 
 	// PoolUtilization tracks per-pool utilization as a ratio in [0, 1].
@@ -437,8 +442,8 @@ func ObservePgxpoolStat(stat PgxpoolStatLike) {
 // the family-tagged successes. `project` and `org` come from the tenant
 // identity helpers (Identity.Project() / Identity.Org()); both are "" for
 // platform-scoped requests.
-func ObserveAllocationDuration(resource, result, ipFamily, project, org string, start time.Time) {
-	AllocationDuration.WithLabelValues(resource, result, ipFamily, project, org).Observe(time.Since(start).Seconds())
+func ObserveAllocationDuration(resource, result, ipFamily, project, org, class string, start time.Time) {
+	AllocationDuration.WithLabelValues(resource, result, ipFamily, project, org, class).Observe(time.Since(start).Seconds())
 }
 
 // RecordAllocationFailure increments the failures counter for (resource,
@@ -447,14 +452,15 @@ func ObserveAllocationDuration(resource, result, ipFamily, project, org string, 
 // success-ratio = 1 - (failures / attempts) without depending on the
 // AllocationDuration histogram count.
 //
-// Allowed reasons: "pool_exhausted" | "pool_not_found" |
+// Allowed reasons: "pool_exhausted" | "pool_not_found" | "no_pool_for_class" |
 // "verification_required" | "tx_error" | "internal".
 // ipFamily mirrors the value passed to ObserveAllocationDuration ("IPv4" |
 // "IPv6" | "ASN", or "" for failures that fire before the claim spec is
 // readable).
 // `project` and `org` are the tenant labels (or "" for platform requests).
-func RecordAllocationFailure(resource, reason, ipFamily, project, org string) {
-	AllocationFailures.WithLabelValues(resource, reason, ipFamily, project, org).Inc()
+// `class` is the resolved IPClass name, or "none" for direct pool claims.
+func RecordAllocationFailure(resource, reason, ipFamily, project, org, class string) {
+	AllocationFailures.WithLabelValues(resource, reason, ipFamily, project, org, class).Inc()
 }
 
 // SetPoolUtilization publishes the current allocated/total ratio for a pool.

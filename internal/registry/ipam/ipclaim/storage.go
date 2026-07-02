@@ -163,6 +163,31 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	project := id.Project()
 	org := id.Org()
 
+	// Resolve the claim's IPClass — an explicit spec.className, or the default
+	// class when the claim names no class, pool, or selector — and fold its
+	// policy (family, prefix bounds/default, reclaim policy) into the claim
+	// before anything downstream reads those fields. Direct poolRef/poolSelector
+	// claims resolve no class. Done outside the allocation transaction so a
+	// class lookup failure never opens one. The metric `class` label carries the
+	// resolved class name, or "none" for direct pool claims.
+	resolvedClass, cerr := r.resolveClass(ctx, id, claim)
+	if cerr != nil {
+		reason, apiErr := classResolutionError(cerr, claim)
+		metrics.RecordAllocationFailure("ipclaim", reason, string(claim.Spec.IPFamily), project, org, requestedClassLabel(claim))
+		return nil, apiErr
+	}
+	if resolvedClass != nil {
+		// Record the resolved class on the claim so provenance and the
+		// className-immutability rule have a concrete value even when the claim
+		// arrived naming only the default.
+		claim.Spec.ClassName = resolvedClass.Name
+		applyClassPolicy(claim, resolvedClass)
+	}
+	class := "none"
+	if claim.Spec.ClassName != "" {
+		class = claim.Spec.ClassName
+	}
+
 	ipFamily := string(claim.Spec.IPFamily)
 
 	// Root span for the whole allocation; every downstream span (tenant resolve,
@@ -196,38 +221,47 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		attribute.Bool(tracing.AttrDryRun, dryRun),
 	)
 
-	metrics.AllocationAttempts.WithLabelValues("ipclaim", ipFamily, project, org).Inc()
+	metrics.AllocationAttempts.WithLabelValues("ipclaim", ipFamily, project, org, class).Inc()
 	allocStart := time.Now()
 	result := "error"
 	defer func() {
-		metrics.ObserveAllocationDuration("ipclaim", result, ipFamily, project, org, allocStart)
+		metrics.ObserveAllocationDuration("ipclaim", result, ipFamily, project, org, class, allocStart)
 	}()
 
 	objectMeta, err := meta.Accessor(claim)
 	if err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 		return nil, fmt.Errorf("get object metadata: %w", err)
 	}
 	rest.FillObjectMetaSystemFields(objectMeta)
 
 	if err := rest.BeforeCreate(r.strategy, ctx, claim); err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 		return nil, err
 	}
 	if createValidation != nil {
 		if err := createValidation(ctx, claim.DeepCopyObject()); err != nil {
-			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 			return nil, err
 		}
 	}
 
-	if claim.Spec.PoolRef == nil && claim.Spec.PoolSelector == nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, apierrors.NewBadRequest("synchronous allocation requires spec.poolRef or spec.poolSelector")
+	usingClass := resolvedClass != nil
+	if !usingClass && claim.Spec.PoolRef == nil && claim.Spec.PoolSelector == nil {
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
+		return nil, apierrors.NewBadRequest("synchronous allocation requires spec.className, spec.poolRef, or spec.poolSelector")
 	}
 	if claim.Spec.PoolRef != nil && claim.Spec.PoolSelector != nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 		return nil, apierrors.NewBadRequest("spec.poolRef and spec.poolSelector are mutually exclusive")
+	}
+	// With the class default folded in, enforce the class's allowed prefix
+	// bounds before consuming any capacity.
+	if usingClass {
+		if err := prefixWithinClass(claim.Spec.PrefixLength, resolvedClass); err != nil {
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
+			return nil, err
+		}
 	}
 
 	if !id.IsPlatform() {
@@ -242,7 +276,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org, class)
 		failSpan(tracing.ReasonTxError)
 		return nil, fmt.Errorf("begin allocation transaction: %w", err)
 	}
@@ -255,7 +289,28 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// project's tenant identity.
 	isCrossProject := false
 	var poolKey, poolName string
-	if claim.Spec.PoolRef != nil {
+	if usingClass {
+		// Class path: pick a pool in the caller's own project whose
+		// spec.classNames offers this class and whose family matches, using
+		// the class's placement strategy. Cross-project sharing via class
+		// visibility is a future concern, so this stays project-local.
+		resolved, rerr := allocator.ResolveIPPoolForClass(ctx, tx, resolvedClass.Name, id.Name, string(claim.Spec.IPFamily), string(resolvedClass.Spec.Strategy))
+		if rerr != nil {
+			_ = tx.Rollback(ctx)
+			if errors.Is(rerr, allocator.ErrNoPoolForClass) {
+				metrics.RecordAllocationFailure("ipclaim", "no_pool_for_class", ipFamily, project, org, class)
+				failSpan(tracing.ReasonPoolNotFound)
+				return nil, apierrors.NewBadRequest(fmt.Sprintf(
+					"no IPPool backs IPClass %q for address family %s in this project; attach a pool to the class via spec.classNames",
+					resolvedClass.Name, claim.Spec.IPFamily))
+			}
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
+			failSpan(tracing.ReasonTxError)
+			return nil, fmt.Errorf("resolve IPPool for class: %w", rerr)
+		}
+		poolKey = resolved
+		poolName = poolKey[strings.LastIndex(poolKey, "/")+1:]
+	} else if claim.Spec.PoolRef != nil {
 		poolName = claim.Spec.PoolRef.Name
 		isCrossProject = !id.IsPlatform() &&
 			claim.Spec.PoolRef.ProjectRef != nil &&
@@ -283,11 +338,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		if rerr != nil {
 			_ = tx.Rollback(ctx)
 			if errors.Is(rerr, allocator.ErrPoolNotFound) {
-				metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+				metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org, class)
 				failSpan(tracing.ReasonPoolNotFound)
 				return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
 			}
-			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 			failSpan(tracing.ReasonTxError)
 			return nil, fmt.Errorf("resolve IPPool: %w", rerr)
 		}
@@ -308,11 +363,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 				// lookups can return Forbidden because the caller already
 				// named the pool by hand.
 				if claim.Spec.PoolSelector != nil {
-					metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+					metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org, class)
 					failSpan(tracing.ReasonCrossProjectDenied)
 					return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
 				}
-				metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+				metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 				failSpan(tracing.ReasonCrossProjectDenied)
 				return nil, apierrors.NewForbidden(
 					v1alpha1.Resource("ippools"),
@@ -320,7 +375,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 					fmt.Errorf("cross-project pool not accessible"),
 				)
 			}
-			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 			failSpan(tracing.ReasonTxError)
 			return nil, err
 		}
@@ -330,7 +385,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
-		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org, class)
 		switch reason {
 		case "pool_exhausted":
 			result = "exhausted"
@@ -373,8 +428,9 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			Namespace: claim.Namespace,
 		},
 		Spec: ipam.IPAllocationSpec{
-			IPFamily: claim.Spec.IPFamily,
-			PoolRef:  ipam.LocalRef{Name: poolName},
+			IPFamily:  claim.Spec.IPFamily,
+			PoolRef:   ipam.LocalRef{Name: poolName},
+			ClassName: claim.Spec.ClassName,
 		},
 		Status: ipam.IPAllocationStatus{
 			Phase:         ipam.AllocationReady,
@@ -384,12 +440,12 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	allocData, err := runtime.Encode(r.codec, alloc)
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 		return nil, fmt.Errorf("encode IPAllocation: %w", err)
 	}
 	if _, err := r.allocator.InsertObject(ctx, tx, allocationKey, "IPAllocation", claim.Namespace, allocationName, allocData); err != nil {
 		_ = tx.Rollback(ctx)
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org, class)
 		return nil, fmt.Errorf("persist IPAllocation: %w", err)
 	}
 
@@ -400,24 +456,24 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	claimData, err := runtime.Encode(r.codec, claim)
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 		return nil, fmt.Errorf("encode claim: %w", err)
 	}
 	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org, class)
 		return nil, fmt.Errorf("persist claim: %w", err)
 	}
 	versioner := storage.APIObjectVersioner{}
 	if err := versioner.UpdateObject(claim, uint64(rv)); err != nil {
 		_ = tx.Rollback(ctx)
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org, class)
 		return nil, fmt.Errorf("set resource version: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org, class)
 		return nil, fmt.Errorf("commit allocation transaction: %w", err)
 	}
 
@@ -659,6 +715,111 @@ func mapAllocationError(err error) error {
 	default:
 		return apierrors.NewInternalError(err)
 	}
+}
+
+// resolveClass determines the IPClass a claim allocates through: an explicit
+// spec.className, or the default class when the claim names no class, pool, or
+// selector. A direct poolRef/poolSelector claim resolves no class (returns
+// nil, nil). The lookup runs in its own short read transaction so it never
+// leaves an allocation transaction open on failure.
+func (r *AllocatingREST) resolveClass(ctx context.Context, id tenant.Identity, claim *ipam.IPClaim) (*v1alpha1.IPClass, error) {
+	hasPool := claim.Spec.PoolRef != nil || claim.Spec.PoolSelector != nil
+	switch {
+	case claim.Spec.ClassName != "":
+		// Explicit class. If a pool is also named, validation's
+		// mutual-exclusion rule rejects the claim; resolve the class regardless
+		// so that error surfaces with policy already applied.
+		return r.loadClass(ctx, id, claim.Spec.ClassName)
+	case !hasPool:
+		// No class, pool, or selector — fall back to the default class.
+		return r.loadDefaultClass(ctx, id)
+	default:
+		return nil, nil
+	}
+}
+
+// loadClass loads a named class from the caller's own project scope, falling
+// back to the platform scope — consumer projects usually own no classes, so a
+// class typically lives platform-owned.
+func (r *AllocatingREST) loadClass(ctx context.Context, id tenant.Identity, name string) (*v1alpha1.IPClass, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin class lookup transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	class, err := allocator.LoadIPClass(ctx, tx, id.Name, name)
+	if errors.Is(err, allocator.ErrClassNotFound) && id.Name != "" {
+		return allocator.LoadIPClass(ctx, tx, "", name)
+	}
+	return class, err
+}
+
+// loadDefaultClass finds the default class in the caller's own project scope,
+// falling back to the platform scope.
+func (r *AllocatingREST) loadDefaultClass(ctx context.Context, id tenant.Identity) (*v1alpha1.IPClass, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin default-class lookup transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	class, err := allocator.FindDefaultIPClass(ctx, tx, id.Name)
+	if errors.Is(err, allocator.ErrClassNotFound) && id.Name != "" {
+		return allocator.FindDefaultIPClass(ctx, tx, "")
+	}
+	return class, err
+}
+
+// classResolutionError maps a class-lookup failure onto a metric reason and the
+// client-facing API error. A missing named class or a missing default class are
+// both actionable bad requests; anything else is internal.
+func classResolutionError(err error, claim *ipam.IPClaim) (string, error) {
+	if errors.Is(err, allocator.ErrClassNotFound) {
+		if claim.Spec.ClassName != "" {
+			return "class_not_found", apierrors.NewBadRequest(fmt.Sprintf("IPClass %q not found", claim.Spec.ClassName))
+		}
+		return "class_not_found", apierrors.NewBadRequest(
+			"no IPClass specified and no default IPClass is configured; set spec.className, spec.poolRef, or spec.poolSelector")
+	}
+	return "internal", apierrors.NewInternalError(err)
+}
+
+// requestedClassLabel is the metric `class` label to use when class resolution
+// fails, before the resolved-class label is known.
+func requestedClassLabel(claim *ipam.IPClaim) string {
+	if claim.Spec.ClassName != "" {
+		return claim.Spec.ClassName
+	}
+	return "none"
+}
+
+// applyClassPolicy folds a resolved class's policy into a claim, filling only
+// the fields the claim left empty so an explicit claim value always wins.
+func applyClassPolicy(claim *ipam.IPClaim, class *v1alpha1.IPClass) {
+	if claim.Spec.IPFamily == "" {
+		claim.Spec.IPFamily = ipam.IPFamily(class.Spec.IPFamily)
+	}
+	if claim.Spec.PrefixLength == 0 {
+		claim.Spec.PrefixLength = class.Spec.DefaultPrefixLength
+	}
+	if claim.Spec.ReclaimPolicy == "" {
+		claim.Spec.ReclaimPolicy = ipam.ReclaimPolicy(class.Spec.ReclaimPolicy)
+	}
+}
+
+// prefixWithinClass enforces the class's allowed prefix bounds against the
+// (already defaulted) requested prefix length. A zero bound means "unbounded".
+func prefixWithinClass(prefixLen int, class *v1alpha1.IPClass) error {
+	lo := class.Spec.AllowedPrefixLengths.Min
+	hi := class.Spec.AllowedPrefixLengths.Max
+	if lo > 0 && prefixLen < lo {
+		return apierrors.NewBadRequest(fmt.Sprintf(
+			"prefixLength %d is below IPClass %q minimum of %d", prefixLen, class.Name, lo))
+	}
+	if hi > 0 && prefixLen > hi {
+		return apierrors.NewBadRequest(fmt.Sprintf(
+			"prefixLength %d exceeds IPClass %q maximum of %d", prefixLen, class.Name, hi))
+	}
+	return nil
 }
 
 // Compile-time interface assertions.

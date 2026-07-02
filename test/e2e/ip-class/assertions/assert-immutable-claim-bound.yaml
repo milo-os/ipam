@@ -1,0 +1,10 @@
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-immutable-claim
+  namespace: ($namespace)
+status:
+  phase: Bound
+  (boundAllocationRef.name != null): true
+  (regex_match('^10\.140\.\d+\.\d+/26$', allocatedCIDR)): true

@@ -1,0 +1,10 @@
+---
+# Claim by class name with prefixLength omitted. The class's
+# spec.defaultPrefixLength (/26) must be applied, so this binds to a /26.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-default-len-claim
+  namespace: ($namespace)
+spec:
+  className: e2e-public-egress

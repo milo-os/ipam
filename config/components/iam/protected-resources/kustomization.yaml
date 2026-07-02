@@ -9,3 +9,4 @@ resources:
   - ippool.yaml
   - ipallocation.yaml
   - ipclaim.yaml
+  - ipclass.yaml

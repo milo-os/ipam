@@ -41,6 +41,8 @@ func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPAllocations().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("ipclaims"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPClaims().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("ipclasses"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPClasses().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("ippools"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Ipam().V1alpha1().IPPools().Informer()}, nil
 

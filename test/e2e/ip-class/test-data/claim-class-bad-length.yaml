@@ -1,0 +1,11 @@
+---
+# Requests a /30, outside the class's allowedPrefixLengths (24–28). Must be
+# rejected by class-bounds validation.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-badlen-claim
+  namespace: ($namespace)
+spec:
+  className: e2e-public-egress
+  prefixLength: 30

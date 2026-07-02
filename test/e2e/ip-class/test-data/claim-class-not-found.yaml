@@ -1,0 +1,11 @@
+---
+# Names a class that does not exist. Must be rejected with a class-not-found
+# error, not a silent fallback to the default class.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-notfound-claim
+  namespace: ($namespace)
+spec:
+  className: e2e-does-not-exist
+  prefixLength: 26

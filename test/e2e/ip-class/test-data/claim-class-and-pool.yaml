@@ -1,0 +1,13 @@
+---
+# Sets both className and poolRef. At most one selection mechanism
+# (className / poolRef / poolSelector) is allowed, so this is rejected.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ipclass-conflict-claim
+  namespace: ($namespace)
+spec:
+  className: e2e-public-egress
+  prefixLength: 26
+  poolRef:
+    name: ipclass-pool-egress
