@@ -4,6 +4,7 @@ This guide shows how to manage IP address space on Datum from the command line
 using the `datumctl ipam` plugin — creating pools, claiming prefixes, inspecting
 utilization, and releasing space.
 
+> [!NOTE]
 > The plugin is a thin, task-oriented front end over the `ipam.miloapis.com`
 > API. Everything here maps to real resources; add `-o yaml` to any read command
 > to see them. For the full field-level reference, see the
@@ -50,6 +51,7 @@ never mixed. Dual-stack means two pools.
    datumctl ipam version
    ```
 
+   > [!TIP]
    > Prefer not to register a catalog? You can install straight from the GitHub
    > release instead — `datumctl plugin install milo-os/ipam` — but you won't get
    > catalog-managed discovery (`datumctl plugin search`) or `datumctl plugin
