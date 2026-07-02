@@ -278,7 +278,11 @@ type IPClaim struct {
 }
 
 type IPClaimSpec struct {
-	IPFamily IPFamily `json:"ipFamily"`
+	// IPFamily is the address family to allocate. Optional: when omitted, the
+	// server derives it from the target pool's CIDR (the pool is authoritative).
+	// When set, it must match the pool's family or the claim is rejected.
+	// +optional
+	IPFamily IPFamily `json:"ipFamily,omitempty"`
 	// PrefixLength is the requested sub-prefix size in bits. Must be a
 	// valid mask length for the chosen ipFamily (0-32 for IPv4, 0-128
 	// for IPv6).

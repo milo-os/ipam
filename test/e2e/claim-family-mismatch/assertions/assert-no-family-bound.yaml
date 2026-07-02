@@ -1,0 +1,9 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: claim-no-family
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv6
+status:
+  phase: Bound

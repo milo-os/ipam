@@ -160,7 +160,7 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 	// immutable, so reading it outside the transaction is safe.
 	parentObj, err := r.Get(ctx, parentName, &metav1.GetOptions{})
 	if err != nil {
-		return nil, apierrors.NewBadRequest("parent IPPool not found")
+		return nil, apierrors.NewBadRequest("the parent pool named in spec.parentPoolRef doesn't exist or isn't visible in this project. Check the name.")
 	}
 	parentPool, ok := parentObj.(*ipam.IPPool)
 	if !ok {
@@ -180,7 +180,7 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 
 	span.SetAttributes(attribute.String(tracing.AttrClaimIPFamily, ipFamily))
 
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, ipFamily, childKey, "")
+	cidr, _, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, ipFamily, childKey, "")
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		switch {
@@ -376,9 +376,9 @@ func effectiveIPFamily(pool *ipam.IPPool) (string, error) {
 func mapAllocationError(err error) error {
 	switch {
 	case errors.Is(err, allocator.ErrPoolExhausted):
-		return registryerrors.NewInsufficientStorage("parent pool exhausted")
+		return registryerrors.NewInsufficientStorage("the parent pool has no free block large enough for this child pool. Free space in the parent, or make the child smaller (a longer prefix length).")
 	case errors.Is(err, allocator.ErrPoolNotFound):
-		return apierrors.NewBadRequest("parent IPPool not found")
+		return apierrors.NewBadRequest("the parent pool named in spec.parentPoolRef doesn't exist or isn't visible in this project. Check the name.")
 	default:
 		return apierrors.NewInternalError(err)
 	}

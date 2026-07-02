@@ -52,20 +52,46 @@ func NewPostgresPrefixAllocator() *PostgresPrefixAllocator {
 }
 
 // AllocatePrefix implements PrefixAllocator.AllocatePrefix.
-func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, error) {
+func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, string, error) {
 	pool, err := lockAndDecodeIPPool(ctx, tx, poolKey)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	parents, err := parsePoolCIDR(pool)
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+
+	// The pool's address family (derived from its CIDR) is authoritative.
+	// An empty ipFamily means "let the pool decide" — derive it. A concrete
+	// ipFamily is validated against the pool and rejected on mismatch, rather
+	// than searching by prefix length alone (which could allocate a block from
+	// the wrong family and persist an allocation whose recorded family would
+	// not match its CIDR). The derived family is returned so the caller can
+	// record it on the claim and allocation.
+	poolFamily := effectivePoolFamily(pool)
+	switch {
+	case ipFamily == "":
+		ipFamily = poolFamily
+	case poolFamily != "" && ipFamily != poolFamily:
+		return "", "", familyMismatchError(fmt.Sprintf(
+			"this claim asks for an %s address, but pool %q hands out %s addresses. Leave the address family unset to use the pool's, or set it to %s.",
+			ipFamily, pool.Name, poolFamily, poolFamily))
+	}
+
+	// Guard the prefix length against the (now-resolved) family. This matters
+	// mostly when the family was derived: a length valid for one family (e.g.
+	// /40) is out of range for the other.
+	if bits := familyBits(ipFamily); bits > 0 && (prefixLen < 0 || prefixLen > bits) {
+		return "", "", prefixLengthError(fmt.Sprintf(
+			"a prefix length of /%d can't be allocated from an %s pool; choose a length between /0 and /%d.",
+			prefixLen, ipFamily, bits))
 	}
 
 	existing, err := loadExistingAllocations(ctx, tx, poolKey)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Trace the block search here, around the call, because the allocation
@@ -84,17 +110,17 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 			fbSpan.SetAttributes(attribute.Bool(tracing.AttrExhausted, true))
 			fbSpan.SetStatus(codes.Error, "pool exhausted")
 			fbSpan.End()
-			return "", ErrPoolExhausted
+			return "", "", ErrPoolExhausted
 		}
 		fbSpan.SetStatus(codes.Error, err.Error())
 		fbSpan.End()
-		return "", fmt.Errorf("compute next prefix: %w", err)
+		return "", "", fmt.Errorf("compute next prefix: %w", err)
 	}
 	fbSpan.SetAttributes(attribute.String(tracing.AttrResultCIDR, cidr.String()))
 	fbSpan.End()
 
 	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, ownerProject); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Pool capacity hasn't changed and the new allocation joins the existing
@@ -102,12 +128,25 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	// already in scope without an extra DB round-trip.
 	updated := append(append([]net.IPNet(nil), existing...), *cidr)
 	if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, updated); err != nil {
-		return "", fmt.Errorf("update pool capacity after allocation: %w", err)
+		return "", "", fmt.Errorf("update pool capacity after allocation: %w", err)
 	}
 	publishPrefixUtilization(poolKey, ipFamily, parents, updated)
 
 	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", claimKey, "ownerProject", ownerProject)
-	return cidr.String(), nil
+	return cidr.String(), ipFamily, nil
+}
+
+// familyBits returns the address width in bits for an address-family string,
+// or 0 when the family is unknown/empty.
+func familyBits(family string) int {
+	switch ipamv1alpha1.IPFamily(family) {
+	case ipamv1alpha1.IPv4:
+		return 32
+	case ipamv1alpha1.IPv6:
+		return 128
+	default:
+		return 0
+	}
 }
 
 // InsertObject implements PrefixAllocator.InsertObject.

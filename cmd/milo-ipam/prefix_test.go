@@ -255,3 +255,44 @@ func TestPrefixListJSON(t *testing.T) {
 		t.Errorf("json output missing CIDR:\n%s", ta.out.String())
 	}
 }
+
+// TestPrefixClaimInfersIPv6FromChildPoolStatus is a regression test: a child
+// pool carries no spec.ipFamily (its family is derived from the carved CIDR and
+// lives in status.ipFamily). Claiming from it without --family must infer IPv6
+// from the pool's effective family, not default to IPv4 and reject a /64.
+func TestPrefixClaimInfersIPv6FromChildPoolStatus(t *testing.T) {
+	child := &ipamv1alpha1.IPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "region-v6"},
+		Spec: ipamv1alpha1.IPPoolSpec{
+			ParentPoolRef: &ipamv1alpha1.LocalRef{Name: "root-v6"},
+			PrefixLength:  56,
+			// spec.IPFamily intentionally empty — the bug was reading this.
+		},
+		Status: ipamv1alpha1.IPPoolStatus{
+			Phase:         ipamv1alpha1.PoolReady,
+			AllocatedCIDR: "fe00::/56",
+			IPFamily:      ipamv1alpha1.IPv6,
+		},
+	}
+	cs := newFakeClientset(child)
+	var submittedFamily ipamv1alpha1.IPFamily
+	cs.PrependReactor("create", "ipclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		claim := action.(k8stesting.CreateAction).GetObject().(*ipamv1alpha1.IPClaim)
+		submittedFamily = claim.Spec.IPFamily
+		claim.Name = "region-v6-a"
+		claim.Status.Phase = ipamv1alpha1.ClaimBound
+		claim.Status.AllocatedCIDR = "fe00::/64"
+		return true, claim, nil
+	})
+
+	ta := newTestApp(cs, nil)
+	if err := runPrefixClaim(ta.app, &claimOptions{pool: "region-v6", length: 64}); err != nil {
+		t.Fatalf("claim from IPv6 child pool failed (family should be inferred from status): %v", err)
+	}
+	if submittedFamily != ipamv1alpha1.IPv6 {
+		t.Errorf("expected claim family IPv6 inferred from pool status, got %q", submittedFamily)
+	}
+	if out := ta.out.String(); !strings.Contains(out, "fe00::/64") {
+		t.Errorf("expected allocated CIDR in output:\n%s", out)
+	}
+}

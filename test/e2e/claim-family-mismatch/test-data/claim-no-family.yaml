@@ -1,0 +1,11 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: claim-no-family
+  namespace: ($namespace)
+spec:
+  # ipFamily intentionally omitted — the server derives it from the pool.
+  prefixLength: 64
+  poolRef:
+    name: test-fam-v6
+  reclaimPolicy: Delete

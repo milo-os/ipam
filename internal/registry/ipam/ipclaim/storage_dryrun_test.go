@@ -50,11 +50,14 @@ type fakeAllocator struct {
 	gotInsertKeys   []string
 }
 
-func (a *fakeAllocator) AllocatePrefix(_ context.Context, _ pgx.Tx, poolKey string, _ int, _ string, _ string, ownerProject string) (string, error) {
+func (a *fakeAllocator) AllocatePrefix(_ context.Context, _ pgx.Tx, poolKey string, _ int, ipFamily string, _ string, ownerProject string) (string, string, error) {
 	a.allocateN++
 	a.gotPoolKey = poolKey
 	a.gotOwnerProject = ownerProject
-	return a.cidr, nil
+	if ipFamily == "" {
+		ipFamily = "IPv4"
+	}
+	return a.cidr, ipFamily, nil
 }
 
 func (a *fakeAllocator) InsertObject(_ context.Context, _ pgx.Tx, key, _, _, _ string, _ []byte) (int64, error) {

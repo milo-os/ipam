@@ -223,11 +223,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 
 	if claim.Spec.PoolRef == nil && claim.Spec.PoolSelector == nil {
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, apierrors.NewBadRequest("synchronous allocation requires spec.poolRef or spec.poolSelector")
+		return nil, apierrors.NewBadRequest("this claim doesn't say which pool to allocate from. Set spec.poolRef to a pool name, or spec.poolSelector to labels that match one.")
 	}
 	if claim.Spec.PoolRef != nil && claim.Spec.PoolSelector != nil {
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, apierrors.NewBadRequest("spec.poolRef and spec.poolSelector are mutually exclusive")
+		return nil, apierrors.NewBadRequest("this claim sets both spec.poolRef and spec.poolSelector. Use only one to pick the pool.")
 	}
 
 	if !id.IsPlatform() {
@@ -285,7 +285,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			if errors.Is(rerr, allocator.ErrPoolNotFound) {
 				metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
 				failSpan(tracing.ReasonPoolNotFound)
-				return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
+				return nil, apierrors.NewBadRequest("no pool matches the labels in spec.poolSelector. Check the labels, or confirm a matching pool exists and is shared to this project.")
 			}
 			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 			failSpan(tracing.ReasonTxError)
@@ -310,7 +310,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 				if claim.Spec.PoolSelector != nil {
 					metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
 					failSpan(tracing.ReasonCrossProjectDenied)
-					return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
+					return nil, apierrors.NewBadRequest("no pool matches the labels in spec.poolSelector. Check the labels, or confirm a matching pool exists and is shared to this project.")
 				}
 				metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 				failSpan(tracing.ReasonCrossProjectDenied)
@@ -326,7 +326,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		}
 	}
 
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, claim.Spec.PrefixLength, string(claim.Spec.IPFamily), claimKey, id.Name)
+	cidr, effectiveFamily, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, claim.Spec.PrefixLength, string(claim.Spec.IPFamily), claimKey, id.Name)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
@@ -342,6 +342,11 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		}
 		return nil, mapAllocationError(err)
 	}
+
+	// The pool determines the address family. Default it onto the claim so the
+	// persisted claim and its IPAllocation always report the resolved family,
+	// even when the client omitted spec.ipFamily (it is optional).
+	claim.Spec.IPFamily = ipam.IPFamily(effectiveFamily)
 
 	// Build the IPAllocation object that records this binding. It lives in
 	// the claim's namespace; its name is a stable hash of the claim
@@ -445,6 +450,10 @@ func allocationFailureReason(err error) string {
 		return "pool_exhausted"
 	case errors.Is(err, allocator.ErrPoolNotFound):
 		return "pool_not_found"
+	case errors.Is(err, allocator.ErrFamilyMismatch):
+		return "family_mismatch"
+	case errors.Is(err, allocator.ErrPrefixLengthOutOfRange):
+		return "prefix_length_out_of_range"
 	default:
 		return "tx_error"
 	}
@@ -653,9 +662,13 @@ func (r *AllocatingREST) authorizeCrossProject(ctx context.Context, tx pgx.Tx, p
 func mapAllocationError(err error) error {
 	switch {
 	case errors.Is(err, allocator.ErrPoolExhausted):
-		return registryerrors.NewInsufficientStorage("IPPool exhausted")
+		return registryerrors.NewInsufficientStorage("the pool has no free block of the requested size. Release prefixes to free space, or request a smaller block (a longer prefix length).")
 	case errors.Is(err, allocator.ErrPoolNotFound):
-		return apierrors.NewBadRequest("IPPool not found")
+		return apierrors.NewBadRequest("the requested pool doesn't exist or isn't visible in this project. Check the pool name in spec.poolRef.")
+	case errors.Is(err, allocator.ErrFamilyMismatch):
+		return apierrors.NewBadRequest(err.Error())
+	case errors.Is(err, allocator.ErrPrefixLengthOutOfRange):
+		return apierrors.NewBadRequest(err.Error())
 	default:
 		return apierrors.NewInternalError(err)
 	}

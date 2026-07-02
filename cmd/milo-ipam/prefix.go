@@ -109,7 +109,9 @@ func runPrefixClaim(a *app, o *claimOptions) error {
 	if o.childPool != "" {
 		// The current IPAM API (IPClaimSpec) does not expose childPrefixTemplate.
 		// Fail loudly rather than silently dropping the user's intent.
-		return usageErrorf("--child-pool is not supported by the current IPAM API on this cluster")
+		return usageErrorf("--child-pool isn't supported by the IPAM API on this cluster.").
+			withFix("claim the prefix without --child-pool, then create the child pool separately:\n" +
+				"       datumctl ipam pool create <name> --parent <pool> --prefix-length <n>")
 	}
 
 	var family ipamv1alpha1.IPFamily
@@ -153,19 +155,22 @@ func runPrefixClaim(a *app, o *claimOptions) error {
 		}
 		pool = p
 		if family == "" {
-			family = p.Spec.IPFamily
+			// Use the pool's effective family: child pools carry no
+			// spec.ipFamily (it's derived from the carved CIDR), so the family
+			// lives in status.ipFamily. poolFamily() prefers status then spec.
+			family = poolFamily(p)
 		}
 	}
-	if family == "" {
-		if o.selector != "" {
-			return usageErrorf("could not infer address family from a selector; pass --family ipv4|ipv6")
-		}
-		family = ipamv1alpha1.IPv4
-	}
+	// family may still be empty here — e.g. a claim by --selector, where the
+	// pool is resolved server-side. That's fine: spec.ipFamily is optional and
+	// the server derives it from the resolved pool's CIDR. Leave it unset
+	// rather than guessing IPv4.
 	if o.length <= 0 {
 		return usageErrorf("a claim needs a size: pass --length <n> or --cidr <cidr>")
 	}
-	if o.length > familyBits(family) {
+	// Range-check the length client-side only when the family is known; the
+	// server validates against the resolved pool's family otherwise.
+	if family != "" && o.length > familyBits(family) {
 		return usageErrorf("--length /%d is out of range for %s (max /%d)", o.length, family, familyBits(family))
 	}
 
@@ -565,7 +570,7 @@ func newPrefixReleaseCommand(a *app) *cobra.Command {
 
 			prompt := fmt.Sprintf("Release prefix %q (%s)?", name, orDash(claim.Status.AllocatedCIDR))
 			if !a.confirmYesNo(prompt) {
-				return newCLIError(exitAborted, "aborted")
+				return newCLIError(exitAborted, "cancelled — the prefix was not released.")
 			}
 			if err := cs.IpamV1alpha1().IPClaims(ns).Delete(context.Background(), name, metav1.DeleteOptions{}); err != nil {
 				return classifyError(err)

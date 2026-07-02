@@ -1,0 +1,9 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: claim-v4-ok
+  namespace: ($namespace)
+spec:
+  ipFamily: IPv4
+status:
+  phase: Bound
