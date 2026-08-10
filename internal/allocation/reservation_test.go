@@ -38,10 +38,6 @@ func equalStrs(a, b []string) bool {
 	return true
 }
 
-// ----------------------------------------------------------------------------
-// ReservedBlocks
-// ----------------------------------------------------------------------------
-
 func TestReservedBlocks_Table(t *testing.T) {
 	type tc struct {
 		name     string
@@ -339,10 +335,6 @@ func TestReservedBlocks_MatchAllocatorOutput(t *testing.T) {
 	}
 }
 
-// ----------------------------------------------------------------------------
-// IsBlockAvailable
-// ----------------------------------------------------------------------------
-
 func TestIsBlockAvailable_Table(t *testing.T) {
 	type tc struct {
 		name     string
@@ -414,10 +406,6 @@ func TestIsBlockAvailable_RefusesReservedPositions(t *testing.T) {
 		t.Fatal("expected 10.0.0.128/26 to be available")
 	}
 }
-
-// ----------------------------------------------------------------------------
-// FindFirstAvailableBlockWithReservations
-// ----------------------------------------------------------------------------
 
 func TestFindFirstAvailableBlockWithReservations_Table(t *testing.T) {
 	type tc struct {
@@ -663,15 +651,10 @@ func TestReservation_IsZero(t *testing.T) {
 	}
 }
 
-// ----------------------------------------------------------------------------
-// Multi-parent behaviour of the underlying search, which the reservation math
-// has to agree with.
-// ----------------------------------------------------------------------------
-
 // FirstFit scans parents in the order the caller supplies them, not in address
 // order. Reservations are computed in address order, so the two agree only for
-// an ascending slice — this test pins the behaviour so the requirement on
-// callers cannot silently change.
+// an ascending slice. This test pins that behaviour, because the reservation
+// math depends on it and the requirement on callers must not change silently.
 func TestFindFirstAvailableBlock_MultiParent(t *testing.T) {
 	t.Run("firstfit_follows_slice_order_not_address_order", func(t *testing.T) {
 		parents := mustCIDRs(t, []string{"10.0.2.0/24", "10.0.0.0/24"})

@@ -9,10 +9,6 @@ import (
 	"testing"
 )
 
-// ----------------------------------------------------------------------------
-// FindFirstAvailableBlock — comprehensive table cases
-// ----------------------------------------------------------------------------
-
 func TestFindFirstAvailableBlock_Table(t *testing.T) {
 	type tc struct {
 		name     string
@@ -143,10 +139,6 @@ func TestFindFirstAvailableBlock_Table(t *testing.T) {
 	}
 }
 
-// ----------------------------------------------------------------------------
-// Overlap / containment table
-// ----------------------------------------------------------------------------
-
 func TestCIDRsOverlap_Table(t *testing.T) {
 	cases := []struct {
 		name string
@@ -174,10 +166,6 @@ func TestCIDRsOverlap_Table(t *testing.T) {
 	}
 }
 
-// ----------------------------------------------------------------------------
-// CountAddresses — including the int64-saturation branch
-// ----------------------------------------------------------------------------
-
 func TestCountAddresses_Table(t *testing.T) {
 	cases := []struct {
 		name string
@@ -202,10 +190,6 @@ func TestCountAddresses_Table(t *testing.T) {
 		})
 	}
 }
-
-// ----------------------------------------------------------------------------
-// SubtractCIDR — directly exercises splitRegionIntoAlignedCIDRs
-// ----------------------------------------------------------------------------
 
 func TestSubtractCIDR_Table(t *testing.T) {
 	cases := []struct {
@@ -272,10 +256,6 @@ func TestSubtractCIDR_Table(t *testing.T) {
 		})
 	}
 }
-
-// ----------------------------------------------------------------------------
-// CIDRPool — wrapper API + Largest/Fragmentation
-// ----------------------------------------------------------------------------
 
 func TestCIDRPool_Allocate_DelegatesToFinder(t *testing.T) {
 	cases := []struct {
@@ -384,10 +364,6 @@ func TestCIDRPool_FragmentationPct_Table(t *testing.T) {
 		})
 	}
 }
-
-// ----------------------------------------------------------------------------
-// Helpers used only by this file
-// ----------------------------------------------------------------------------
 
 func parseCIDRs(t *testing.T, ss []string) []net.IPNet {
 	t.Helper()

@@ -174,10 +174,6 @@ func FindFirstAvailableBlockWithReservations(parents, existing []net.IPNet, pref
 	return FindFirstAvailableBlock(parents, blocked, prefixLen, s)
 }
 
-// ----------------------------------------------------------------------------
-// Internal: the shared traversal
-// ----------------------------------------------------------------------------
-
 // parentView is one parent range and the free regions remaining inside it.
 type parentView struct {
 	parent  net.IPNet

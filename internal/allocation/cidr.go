@@ -189,10 +189,6 @@ func UtilizationPercent(parents, existing []net.IPNet) int {
 	}
 }
 
-// ----------------------------------------------------------------------------
-// Internal helpers
-// ----------------------------------------------------------------------------
-
 type ipRange struct {
 	start *big.Int
 	end   *big.Int // inclusive
@@ -374,25 +370,19 @@ func splitRegionIntoAlignedCIDRs(start, end *big.Int, totalBits int) []net.IPNet
 	return out
 }
 
-// ---------------------------------------------------------------------------
-// KEPT ONLY FOR THE PRE-CLASS-MODEL ALLOCATOR, AND GOING AWAY WITH IT.
-//
-// Nothing in the new engine above calls these. They survive because the
-// allocator on main still calls them.
-//
-// This change is deliberately additive. It adds the engine the class model
-// will use without altering a line of the behaviour shipping today.
-//
-// Finding the largest free aligned block costs a walk of every free region, and
-// a pool with N scattered allocations has ~N of them. Measure() above therefore
-// does NOT compute it — measured at 4,096 allocations, including it cost
-// 1,321us against 312us without, on a path every successful claim takes. The
-// follow-up that rewires the allocator deletes these with their last caller.
-// ---------------------------------------------------------------------------
-
 // LargestFreeBlock returns the biggest free contiguous CIDR (smallest prefix
-// length) currently available within the pool. Returns ErrPoolExhausted if
-// the pool is fully allocated.
+// length) currently available within the pool. Returns ErrPoolExhausted if the
+// pool is fully allocated.
+//
+// KEPT ONLY FOR THE PRE-CLASS-MODEL ALLOCATOR, along with LargestFreePrefixLen.
+// Nothing in the engine above calls either one; they survive because the
+// allocator shipping today does, and the follow-up that rewires it deletes both
+// with their last caller.
+//
+// Measure deliberately does not compute this. Finding the largest free aligned
+// block walks every free region, and a pool with N scattered allocations has
+// roughly N of them: at 4,096 allocations that cost 1,321us against 312us
+// without, on the path every successful claim takes.
 func (p *CIDRPool) LargestFreeBlock() (*net.IPNet, error) {
 	var best *net.IPNet
 	var bestSize *big.Int

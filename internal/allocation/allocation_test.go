@@ -43,10 +43,6 @@ func itoa(i int) string {
 	return string(buf[pos:])
 }
 
-// ----------------------------------------------------------------------------
-// CIDR — FirstFit / BestFit
-// ----------------------------------------------------------------------------
-
 func TestFindFirstAvailable_FirstFit_EmptyPool(t *testing.T) {
 	parent := mustCIDR(t, "10.0.0.0/16")
 	got, err := FindFirstAvailableBlock([]net.IPNet{parent}, nil, 24, FirstFit)
@@ -195,10 +191,6 @@ func TestFindFirstAvailable_IPv6_Single128(t *testing.T) {
 		t.Fatalf("expected 2001:db8::2/128, got %s", cidrStr(*got))
 	}
 }
-
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
 
 func TestCIDRsOverlap(t *testing.T) {
 	tests := []struct {

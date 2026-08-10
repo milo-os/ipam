@@ -243,10 +243,6 @@ func TestAllocate_UtilizationIgnoresDuplicateRows(t *testing.T) {
 	}
 }
 
-// ----------------------------------------------------------------------------
-// Measure
-// ----------------------------------------------------------------------------
-
 // The case from #41: a /28 where eight networks each legitimately hold the same
 // address. One address is consumed, not eight. The summing implementation
 // reports eight times the real occupancy, which is why Measure
