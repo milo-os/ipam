@@ -800,26 +800,6 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 							Format:      "",
 						},
 					},
-					"backingProjects": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "set",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "BackingProjects names the projects whose pools may back this class, in addition to the platform project — which may always back it and need not be listed.\n\nThis is the class *consenting* to be backed, and it is the half that IPPool.spec.classNames cannot supply. That field is a pool volunteering itself, written by the pool's owner; without a matching statement from the class side, any tenant able to create an IPPool in their own project could list a popular class name on it and start receiving other tenants' claims. They would learn that each claim happened, choose the address it received, and hold the range it came from. Consent has to come from the class because the class is the thing being consumed.\n\nEmpty — the default — means the platform project alone, which is fail-closed and is exactly the behaviour every existing class had when discovery searched only platform-authored pools.\n\nEnforced in two places on purpose. IPPool writes are rejected when the pool's project is not listed, so an operator gets an error naming the field rather than a pool that silently serves nobody. Discovery applies the same rule at read time, which is the authoritative one: consent is revocable, and a write-time check alone would let every pool that passed validation once keep serving forever after the project was removed here.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-									},
-								},
-							},
-						},
-					},
 					"provisioner": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Provisioner names the component responsible for realising allocations of this class, for classes whose addresses require action beyond bookkeeping. Empty means the IPAM service itself.",
@@ -1062,7 +1042,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) comm
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "ClassNames are the classes this pool offers itself to. A claim naming one of these classes may draw from this pool, subject to family and scope agreement. Operator-authored pools set this; it is how capacity is published to consumers without naming them.",
+							Description: "ClassNames are the classes this pool offers itself to. A claim naming one of these classes may draw from this pool, subject to family and scope agreement. Operator-authored pools set this; it is how capacity is published to consumers without naming them.\n\nA pool backs a class only when the two are in the same project. This field is a pool volunteering itself, written by the pool's owner, so on its own it is not consent: without the same-project rule, any tenant able to create an IPPool in their own project could list a popular class name here and start receiving other tenants' claims — learning that each claim happened, choosing the address it received, and holding the range it came from. Naming a class in another project is rejected at write time, and discovery applies the same rule at read time.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

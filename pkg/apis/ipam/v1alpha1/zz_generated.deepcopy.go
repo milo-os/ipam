@@ -361,11 +361,6 @@ func (in *IPClassSpec) DeepCopyInto(out *IPClassSpec) {
 		*out = new(v1.Duration)
 		**out = **in
 	}
-	if in.BackingProjects != nil {
-		in, out := &in.BackingProjects, &out.BackingProjects
-		*out = make([]string, len(*in))
-		copy(*out, *in)
-	}
 	if in.Parameters != nil {
 		in, out := &in.Parameters, &out.Parameters
 		*out = make(map[string]string, len(*in))

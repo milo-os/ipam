@@ -206,7 +206,6 @@ func convert_v1alpha1_IPClass_To_ipam(in *IPClass, out *ipam.IPClass) error {
 		ReclaimPolicy:        ipam.ReclaimPolicy(in.Spec.ReclaimPolicy),
 		RetentionLease:       copyDuration(in.Spec.RetentionLease),
 		Visibility:           in.Spec.Visibility,
-		BackingProjects:      copyStrings(in.Spec.BackingProjects),
 		Provisioner:          in.Spec.Provisioner,
 		Parameters:           copyParameters(in.Spec.Parameters),
 	}
@@ -235,7 +234,6 @@ func convert_ipam_IPClass_To_v1alpha1(in *ipam.IPClass, out *IPClass) error {
 		ReclaimPolicy:        ReclaimPolicy(in.Spec.ReclaimPolicy),
 		RetentionLease:       copyDuration(in.Spec.RetentionLease),
 		Visibility:           in.Spec.Visibility,
-		BackingProjects:      copyStrings(in.Spec.BackingProjects),
 		Provisioner:          in.Spec.Provisioner,
 		Parameters:           copyParameters(in.Spec.Parameters),
 	}

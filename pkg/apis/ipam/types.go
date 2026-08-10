@@ -261,11 +261,6 @@ type IPClassSpec struct {
 	// Visibility controls who may name this class on a claim.
 	Visibility string
 
-	// BackingProjects names the projects whose pools may back this class, in
-	// addition to the platform project. Empty means the platform project alone.
-	// See the v1alpha1 type for why consent has to come from the class side.
-	BackingProjects []string
-
 	// Provisioner names the component responsible for realising allocations of
 	// this class. Empty means the IPAM service itself.
 	Provisioner string

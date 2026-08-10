@@ -382,33 +382,6 @@ type IPClassSpec struct {
 	// +kubebuilder:validation:Enum=platform;consumer;shared
 	Visibility string `json:"visibility,omitempty"`
 
-	// BackingProjects names the projects whose pools may back this class, in
-	// addition to the platform project — which may always back it and need not
-	// be listed.
-	//
-	// This is the class *consenting* to be backed, and it is the half that
-	// IPPool.spec.classNames cannot supply. That field is a pool volunteering
-	// itself, written by the pool's owner; without a matching statement from the
-	// class side, any tenant able to create an IPPool in their own project could
-	// list a popular class name on it and start receiving other tenants' claims.
-	// They would learn that each claim happened, choose the address it received,
-	// and hold the range it came from. Consent has to come from the class
-	// because the class is the thing being consumed.
-	//
-	// Empty — the default — means the platform project alone, which is
-	// fail-closed and is exactly the behaviour every existing class had when
-	// discovery searched only platform-authored pools.
-	//
-	// Enforced in two places on purpose. IPPool writes are rejected when the
-	// pool's project is not listed, so an operator gets an error naming the
-	// field rather than a pool that silently serves nobody. Discovery applies
-	// the same rule at read time, which is the authoritative one: consent is
-	// revocable, and a write-time check alone would let every pool that passed
-	// validation once keep serving forever after the project was removed here.
-	// +optional
-	// +listType=set
-	BackingProjects []string `json:"backingProjects,omitempty"`
-
 	// Provisioner names the component responsible for realising allocations of
 	// this class, for classes whose addresses require action beyond
 	// bookkeeping. Empty means the IPAM service itself.
@@ -529,6 +502,15 @@ type IPPoolSpec struct {
 	// of these classes may draw from this pool, subject to family and scope
 	// agreement. Operator-authored pools set this; it is how capacity is
 	// published to consumers without naming them.
+	//
+	// A pool backs a class only when the two are in the same project. This
+	// field is a pool volunteering itself, written by the pool's owner, so on
+	// its own it is not consent: without the same-project rule, any tenant able
+	// to create an IPPool in their own project could list a popular class name
+	// here and start receiving other tenants' claims — learning that each claim
+	// happened, choosing the address it received, and holding the range it came
+	// from. Naming a class in another project is rejected at write time, and
+	// discovery applies the same rule at read time.
 	// +optional
 	// +listType=set
 	ClassNames []string `json:"classNames,omitempty"`
