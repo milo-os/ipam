@@ -828,13 +828,6 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 							Ref:         ref(v1.Duration{}.OpenAPIModelName()),
 						},
 					},
-					"visibility": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Visibility controls who may name this class on a claim.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 					"provisioner": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Provisioner names the component responsible for realising allocations of this class, for classes whose addresses require action beyond bookkeeping. Empty means the IPAM service itself.",
@@ -1131,8 +1124,9 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) comm
 					},
 					"visibility": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "Visibility controls whether a project other than this pool's owner may draw from it. Only \"shared\" opens it; every other value, including unset, keeps the pool to its own project. A shared pool is still subject to the \"use\" authorization check, so sharing publishes a pool rather than granting it.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},

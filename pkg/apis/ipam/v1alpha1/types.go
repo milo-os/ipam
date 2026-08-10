@@ -248,8 +248,7 @@ type PoolCapacity struct {
 	Available string `json:"available,omitempty"`
 }
 
-// Pool visibility constants for IPPool.spec.visibility and
-// IPClass.spec.visibility.
+// Visibility values for IPPool.spec.visibility.
 const (
 	VisibilityPlatform string = "platform"
 	VisibilityConsumer string = "consumer"
@@ -408,11 +407,6 @@ type IPClassSpec struct {
 	// MaxRetentionLease.
 	// +optional
 	RetentionLease *metav1.Duration `json:"retentionLease,omitempty"`
-
-	// Visibility controls who may name this class on a claim.
-	// +optional
-	// +kubebuilder:validation:Enum=platform;consumer;shared
-	Visibility string `json:"visibility,omitempty"`
 
 	// Provisioner names the component responsible for realising allocations of
 	// this class, for classes whose addresses require action beyond
@@ -584,6 +578,11 @@ type IPPoolSpec struct {
 
 	// +optional
 	Allocation AllocationSpec `json:"allocation,omitempty"`
+	// Visibility controls whether a project other than this pool's owner may
+	// draw from it. Only "shared" opens it; every other value, including unset,
+	// keeps the pool to its own project. A shared pool is still subject to the
+	// "use" authorization check, so sharing publishes a pool rather than
+	// granting it.
 	// +optional
 	// +kubebuilder:validation:Enum=platform;consumer;shared
 	Visibility string `json:"visibility,omitempty"`

@@ -162,8 +162,7 @@ type ReservationSpec struct {
 	UnitPrefixLength int32
 }
 
-// Pool visibility constants for IPPoolSpec.Visibility and
-// IPClassSpec.Visibility.
+// Visibility values for IPPoolSpec.Visibility.
 const (
 	VisibilityPlatform string = "platform"
 	VisibilityConsumer string = "consumer"
@@ -268,9 +267,6 @@ type IPClassSpec struct {
 	// indefinitely is not a lease. The effective lease is the shorter of this
 	// and the pool's MaxRetentionLease.
 	RetentionLease *metav1.Duration
-
-	// Visibility controls who may name this class on a claim.
-	Visibility string
 
 	// Provisioner names the component responsible for realising allocations of
 	// this class. Empty means the IPAM service itself.
