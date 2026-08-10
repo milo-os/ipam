@@ -113,7 +113,7 @@ type AllocationSpec struct {
 // exact for IPv4. For address spaces larger than an int64 (e.g. wide IPv6
 // prefixes) Total saturates to the maximum int64 and Allocated/Available are
 // clamped to non-negative values rather than overflowing; consumers needing an
-// accurate IPv6 view should read UtilizationPercent and LargestFreePrefix.
+// accurate IPv6 view should read UtilizationPercent.
 type PoolCapacity struct {
 	Total     int64 `json:"total"`
 	Allocated int64 `json:"allocated"`
@@ -130,7 +130,6 @@ type PoolCapacity struct {
 // +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.status.allocatedCIDR`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.status.ipFamily`
-// +kubebuilder:printcolumn:name="Largest Free",type=integer,JSONPath=`.status.largestFreePrefix`
 // +kubebuilder:printcolumn:name="Util%",type=integer,JSONPath=`.status.utilizationPercent`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +genclient
@@ -176,23 +175,8 @@ type IPPoolStatus struct {
 	// +optional
 	IPFamily IPFamily `json:"ipFamily,omitempty"`
 	// +optional
-	Capacity PoolCapacity `json:"capacity,omitempty"`
-	// largestFreePrefix is the prefix length of the largest free aligned
-	// block currently available (e.g. 45 for a free /45). Zero when the pool
-	// is exhausted or its capacity is not yet computed. This is the
-	// family-agnostic signal for remaining headroom; the integer capacity
-	// fields saturate for very large address spaces.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=128
-	LargestFreePrefix int32 `json:"largestFreePrefix"`
-	// utilizationPercent is the allocated share of the pool's address space,
-	// 0–100, computed with arbitrary-precision arithmetic so it is accurate
-	// for both IPv4 and IPv6.
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=100
-	UtilizationPercent int32 `json:"utilizationPercent"`
+	Capacity           PoolCapacity `json:"capacity,omitempty"`
+	UtilizationPercent int32        `json:"utilizationPercent"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type

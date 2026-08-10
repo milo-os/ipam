@@ -64,7 +64,7 @@ type PoolMeasurement struct {
 
 // Measure reports a pool's free-space view in a single traversal.
 //
-// It answers what LargestFreePrefixLen and a total-minus-free capacity
+// It answers what a total-minus-free capacity
 // computation answer separately, from one pass over the free regions, and it
 // is the measurement Allocate reports internally. Reserved positions count as
 // consumed whether or not the caller has materialised them yet.
@@ -82,7 +82,7 @@ func Measure(parents, existing []net.IPNet, r Reservation) (PoolMeasurement, err
 // Allocate chooses a free block and reports the resulting state of the pool in
 // a single traversal of its free space.
 //
-// It is equivalent to FindFirstAvailableBlock followed by LargestFreePrefixLen
+// It is equivalent to FindFirstAvailableBlock followed by Measure
 // and UtilizationPercent over the pool with the new block included, at roughly
 // a third of the cost. Reserved positions are excluded from allocation and
 // counted as used, whether or not the caller has materialised them yet.

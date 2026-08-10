@@ -22,7 +22,6 @@ func mustCIDR(t *testing.T, s string) net.IPNet {
 // TestSetPoolStatusCapacity verifies the utilization fields are sane for both
 // address families. The IPv6 case guards against the int64 capacity overflow:
 // a wide IPv6 pool must not report negative or out-of-range values, and the
-// big.Int-derived fields (UtilizationPercent, LargestFreePrefix) must stay
 // meaningful where the integer counts saturate.
 func TestSetPoolStatusCapacity(t *testing.T) {
 	tests := []struct {
@@ -91,9 +90,6 @@ func TestSetPoolStatusCapacity(t *testing.T) {
 			}
 			if s.UtilizationPercent < 0 || s.UtilizationPercent > 100 {
 				t.Errorf("utilizationPercent %d out of [0,100]", s.UtilizationPercent)
-			}
-			if s.LargestFreePrefix != tt.wantLargestFree {
-				t.Errorf("largestFreePrefix: got %d, want %d", s.LargestFreePrefix, tt.wantLargestFree)
 			}
 
 			// Capacity counts must never be negative regardless of family.

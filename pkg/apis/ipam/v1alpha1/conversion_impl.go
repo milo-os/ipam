@@ -128,7 +128,6 @@ func convert_v1alpha1_IPPool_To_ipam(in *IPPool, out *ipam.IPPool) error {
 		AllocatedCIDR:      in.Status.AllocatedCIDR,
 		IPFamily:           ipam.IPFamily(in.Status.IPFamily),
 		Capacity:           ipam.PoolCapacity(in.Status.Capacity),
-		LargestFreePrefix:  in.Status.LargestFreePrefix,
 		UtilizationPercent: in.Status.UtilizationPercent,
 		Conditions:         toIpamConditions(in.Status.Conditions),
 	}
@@ -150,7 +149,6 @@ func convert_ipam_IPPool_To_v1alpha1(in *ipam.IPPool, out *IPPool) error {
 		AllocatedCIDR:      in.Status.AllocatedCIDR,
 		IPFamily:           IPFamily(in.Status.IPFamily),
 		Capacity:           PoolCapacity(in.Status.Capacity),
-		LargestFreePrefix:  in.Status.LargestFreePrefix,
 		UtilizationPercent: in.Status.UtilizationPercent,
 		Conditions:         toIpamConditions(in.Status.Conditions),
 	}

@@ -298,12 +298,7 @@ func (a *app) renderClaimDryRun(o *claimOptions, pool *ipamv1alpha1.IPPool, fami
 	}
 	if pool != nil {
 		before, after := projectedUtilization(pool.Status.Capacity, family, o.length)
-		freeAfter := largestFreePrefix(family, pool.Status.Capacity.Available-(int64(1)<<uint(familyBits(family)-o.length)))
-		freeStr := "—"
-		if freeAfter > 0 {
-			freeStr = fmt.Sprintf("/%d", freeAfter)
-		}
-		_, _ = fmt.Fprintf(a.io.ErrOut, "Pool after:    utilization %.0f%% → %.0f%%, largest free block %s\n", before, after, freeStr)
+		_, _ = fmt.Fprintf(a.io.ErrOut, "Pool after:    utilization %.0f%% → %.0f%%\n", before, after)
 	}
 	return nil
 }
@@ -326,7 +321,6 @@ func (a *app) claimCreateError(err error, o *claimOptions, family ipamv1alpha1.I
 		if o.pool != "" {
 			if p, gErr := cs.IpamV1alpha1().IPPools().Get(context.Background(), o.pool, metav1.GetOptions{}); gErr == nil {
 				util = utilizationPercent(p.Status.Capacity)
-				largest = largestFreePrefix(family, p.Status.Capacity.Available)
 			}
 		}
 		return exhaustionError(poolDisplay(o), string(family), o.length, util, largest, err)

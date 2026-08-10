@@ -27,8 +27,12 @@ func BenchmarkAllocateVsSeparateCalls(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
+				// The second traversal Allocate avoids: measuring the pool
+				// after the block is taken.
 				after := append(append([]net.IPNet{}, existing...), *block)
-				_ = UtilizationPercent(parents, after)
+				if _, mErr := Measure(parents, after, Reservation{}); mErr != nil {
+					b.Fatal(mErr)
+				}
 			}
 		})
 

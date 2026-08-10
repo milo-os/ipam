@@ -10,5 +10,4 @@ status:
   # carved CIDR and surfaced in status.
   ipFamily: IPv6
   # A freshly carved, empty /48 has its largest free block at the pool size.
-  largestFreePrefix: 48
   utilizationPercent: 0
