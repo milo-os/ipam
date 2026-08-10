@@ -151,9 +151,6 @@ func addressCount(cidr net.IPNet) *big.Int {
 // UtilizationPercent returns the allocated share of the parents' total address
 // space, as an integer in [0, 100]. An empty pool reports 0.
 //
-// UtilizationPercent uses arbitrary-precision arithmetic, so the result stays
-// accurate for IPv6 spaces wider than an int64.
-//
 // DO NOT USE UtilizationPercent TO REPORT A POOL'S UTILIZATION. It SUMS the
 // allocations, which produces two errors:
 //
@@ -161,34 +158,13 @@ func addressCount(cidr net.IPNet) *big.Int {
 //   - An allocation lying outside the parents counts, though it consumes
 //     nothing.
 //
-// A pool where eight holders legitimately share one address — the same address
-// in eight networks — reports eight times its real occupancy. Use Measure, or
-// the figure Allocate already returns, both of which derive utilization from
-// free space and count each address once.
+// A pool where eight networks legitimately share one address reports eight
+// times its real occupancy. Use Measure, which derives utilization from free
+// space and counts each address once.
 //
-// It survives as the reference implementation the benchmarks measure against,
-// and as the thing whose disagreement with Measure is worth a test. It has no
-// callers outside this package's own tests, and it should not gain one.
-//
-// # Do not delete it, and here is what deleting it costs
-//
-// "No production callers" has already been mistaken for "dead code" once, in a
-// task filed to remove this function. Deleting it does not compile — seven test
-// call sites depend on it — and two of them are the point:
-//
-//   - allocate_test.go, TestMeasure_CountsSharedAddressOnce:
-//     asserts Measure reports 6% where this reports 50%. That contrast IS the
-//     regression proof for the over-reporting defect. Remove the summing
-//     implementation and the test degrades to "Measure returns 6", which is
-//     equally true of an implementation that returns 6 for the wrong reason.
-//   - arch_probe_test.go: the ten-second QEMU discriminator, kept deliberately
-//     so nobody re-diagnoses emulated-amd64 heap corruption as an allocator bug.
-//
-// The rest are its own unit test and two benchmarks.
-//
-// So the honest summary is not "dead". It is "deliberately unreachable from
-// production, and load-bearing in tests". That is what an exported symbol with
-// no production callers looks like when it is doing its job.
+// TWO PRODUCTION CALLERS STILL USE IT, in internal/allocator and the IPPool
+// registry, and both write the result to pool.Status.UtilizationPercent. Those
+// call sites and this function go together in the change that follows this one.
 func UtilizationPercent(parents, existing []net.IPNet) int {
 	total := new(big.Int)
 	for _, p := range parents {
