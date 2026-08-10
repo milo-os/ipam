@@ -278,6 +278,11 @@ tasks:
       - task: lint
       - task: verify:imports
       - task: verify:kustomize
+      # Generated code must match the generators. This gate could not exist
+      # until the `tool` directive stopped `go mod tidy` from dropping
+      # k8s.io/code-generator — in the meantime pkg/client and the zz_generated
+      # files were hand-edited, which drifts silently.
+      - task: verify:codegen
       # Observability: dashboard drift, PromQL syntax, manifest schema.
       - task: observability:verify
 
@@ -291,6 +296,11 @@ tasks:
       else
         echo "OK: no forbidden imports"
       fi
+
+  verify:codegen:
+    desc: Fail if committed generated code differs from what the generators produce
+    silent: true
+    cmd: "{{.TASKFILE_DIR}}/hack/verify-codegen.sh"
 
   verify:kustomize:
     desc: Verify all kustomize overlays render cleanly
