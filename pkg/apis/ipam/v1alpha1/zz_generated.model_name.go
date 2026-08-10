@@ -11,6 +11,11 @@ func (in AllocationSpec) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ClassSourceRef) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.ClassSourceRef"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in IPAllocation) OpenAPIModelName() string {
 	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPAllocation"
 }

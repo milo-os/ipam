@@ -109,6 +109,12 @@ type ScopeRef struct {
 	Name     string
 }
 
+// ClassSourceRef names a class in another project.
+type ClassSourceRef struct {
+	Project string
+	Name    string
+}
+
 // PrefixLengthRange bounds the sizes a claim of a class may request. A
 // fixed-size class sets Min and Max equal.
 type PrefixLengthRange struct {
@@ -199,6 +205,11 @@ type IPClass struct {
 }
 
 type IPClassSpec struct {
+	// Source makes this class a reference to a class in another project rather
+	// than a definition of its own. Every other field must be empty when it is
+	// set, and no pool may name such a class. See the v1alpha1 type.
+	Source *ClassSourceRef
+
 	// IPFamily is the single address family this class hands out. Required and
 	// immutable. Dual-stack is two classes, never one.
 	IPFamily IPFamily

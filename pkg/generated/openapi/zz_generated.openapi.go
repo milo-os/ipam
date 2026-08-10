@@ -18,6 +18,7 @@ import (
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
 		v1alpha1.AllocationSpec{}.OpenAPIModelName():      schema_pkg_apis_ipam_v1alpha1_AllocationSpec(ref),
+		v1alpha1.ClassSourceRef{}.OpenAPIModelName():      schema_pkg_apis_ipam_v1alpha1_ClassSourceRef(ref),
 		v1alpha1.IPAllocation{}.OpenAPIModelName():        schema_pkg_apis_ipam_v1alpha1_IPAllocation(ref),
 		v1alpha1.IPAllocationList{}.OpenAPIModelName():    schema_pkg_apis_ipam_v1alpha1_IPAllocationList(ref),
 		v1alpha1.IPAllocationSpec{}.OpenAPIModelName():    schema_pkg_apis_ipam_v1alpha1_IPAllocationSpec(ref),
@@ -124,6 +125,34 @@ func schema_pkg_apis_ipam_v1alpha1_AllocationSpec(ref common.ReferenceCallback) 
 						},
 					},
 				},
+			},
+		},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_ClassSourceRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ClassSourceRef names a class in another project.\n\nThe project is explicit rather than implied by server configuration, so which project a class comes from is a fact stated on the object and visible to anyone who can read it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"project": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+				},
+				Required: []string{"project", "name"},
 			},
 		},
 	}
@@ -692,6 +721,12 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source makes this class a reference to a class in another project rather than a definition of its own. The referenced class holds the policy; this object says only that the project may consume it.\n\nA claim naming this class resolves through Source and allocates against the referenced class, so two projects referencing one class share its pool and its address space whatever they call it locally. Pool identity keys off the referenced class, never the local name.\n\nEvery other field in this spec must be empty when Source is set. A reference that could restate UniqueWithin or PoolPer would be a copy, and two copies that drift redefine an address space they share — the failure is two holders of one address, on the success path, with each object valid in its own project.\n\nNo pool may name a class that sets this in IPPool.spec.classNames. Backing belongs to the class holding the definition; a reference that could be backed would let its project inject capacity into a class the claim reports as someone else's.",
+							Ref:         ref(v1alpha1.ClassSourceRef{}.OpenAPIModelName()),
+						},
+					},
 					"ipFamily": {
 						SchemaProps: spec.SchemaProps{
 							Description: "IPFamily is the single address family this class hands out. Required and immutable. Dual-stack is two classes, never one.",
@@ -702,7 +737,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 					},
 					"parentClassName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ParentClassName is the class whose allocations this one carves from. Empty means allocations come from the pools that offer this class directly via IPPool.spec.classNames.\n\nImmutable: changing it strands every existing allocation outside its declared ancestry.",
+							Description: "ParentClassName is the class whose allocations this one carves from, resolved in this class's own project. Empty means allocations come from the pools that offer this class directly via IPPool.spec.classNames.\n\nImmutable: changing it strands every existing allocation outside its declared ancestry.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -828,7 +863,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 			},
 		},
 		Dependencies: []string{
-			v1alpha1.PrefixLengthRange{}.OpenAPIModelName(), v1alpha1.ReservationSpec{}.OpenAPIModelName(), v1alpha1.RoutingSpec{}.OpenAPIModelName(), v1.Duration{}.OpenAPIModelName()},
+			v1alpha1.ClassSourceRef{}.OpenAPIModelName(), v1alpha1.PrefixLengthRange{}.OpenAPIModelName(), v1alpha1.ReservationSpec{}.OpenAPIModelName(), v1alpha1.RoutingSpec{}.OpenAPIModelName(), v1.Duration{}.OpenAPIModelName()},
 	}
 }
 

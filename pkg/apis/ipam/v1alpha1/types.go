@@ -135,6 +135,16 @@ type ScopeRef struct {
 	Name     string `json:"name"`
 }
 
+// ClassSourceRef names a class in another project.
+//
+// The project is explicit rather than implied by server configuration, so which
+// project a class comes from is a fact stated on the object and visible to
+// anyone who can read it.
+type ClassSourceRef struct {
+	Project string `json:"project"`
+	Name    string `json:"name"`
+}
+
 // PrefixLengthRange bounds the sizes a claim of a class may request. A
 // fixed-size class sets Min and Max equal.
 type PrefixLengthRange struct {
@@ -279,13 +289,35 @@ type IPClass struct {
 }
 
 type IPClassSpec struct {
+	// Source makes this class a reference to a class in another project rather
+	// than a definition of its own. The referenced class holds the policy; this
+	// object says only that the project may consume it.
+	//
+	// A claim naming this class resolves through Source and allocates against
+	// the referenced class, so two projects referencing one class share its pool
+	// and its address space whatever they call it locally. Pool identity keys
+	// off the referenced class, never the local name.
+	//
+	// Every other field in this spec must be empty when Source is set. A
+	// reference that could restate UniqueWithin or PoolPer would be a copy, and
+	// two copies that drift redefine an address space they share — the failure
+	// is two holders of one address, on the success path, with each object valid
+	// in its own project.
+	//
+	// No pool may name a class that sets this in IPPool.spec.classNames.
+	// Backing belongs to the class holding the definition; a reference that
+	// could be backed would let its project inject capacity into a class the
+	// claim reports as someone else's.
+	// +optional
+	Source *ClassSourceRef `json:"source,omitempty"`
+
 	// IPFamily is the single address family this class hands out. Required and
 	// immutable. Dual-stack is two classes, never one.
 	IPFamily IPFamily `json:"ipFamily"`
 
-	// ParentClassName is the class whose allocations this one carves from.
-	// Empty means allocations come from the pools that offer this class
-	// directly via IPPool.spec.classNames.
+	// ParentClassName is the class whose allocations this one carves from,
+	// resolved in this class's own project. Empty means allocations come from
+	// the pools that offer this class directly via IPPool.spec.classNames.
 	//
 	// Immutable: changing it strands every existing allocation outside its
 	// declared ancestry.
