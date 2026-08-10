@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -307,42 +306,23 @@ func poolStorageKey(project, name string) string {
 	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
 }
 
-// setPoolStatusCapacity populates every utilization field on the pool's status
-// from its parent ranges and current allocations. The integer Capacity counts
-// saturate cleanly for address spaces wider than int64 (Total caps at MaxInt64,
-// Allocated/Available never go negative);
-// UtilizationPercent are computed with arbitrary-precision arithmetic and are
-// the accurate signal for IPv6. IPFamily reflects the pool's effective family.
+// setPoolStatusCapacity populates the pool's capacity and utilization from its
+// parent ranges and current allocations.
+//
+// Every figure comes from one Measure, so the counts and the percentage cannot
+// disagree. The counts are exact decimal strings: an IPv6 /20 holds 2^108
+// addresses, which no int64 can express.
 func setPoolStatusCapacity(pool *ipam.IPPool, parents, allocations []net.IPNet) {
-	const maxInt64 = int64(math.MaxInt64)
-	var total int64
-	for _, p := range parents {
-		c := allocation.CountAddresses(p)
-		if total > maxInt64-c {
-			total = maxInt64
-			break
-		}
-		total += c
+	m, err := allocation.Measure(parents, allocations, allocation.Reservation{})
+	if err != nil {
+		return
 	}
-	var allocated int64
-	for _, a := range allocations {
-		c := allocation.CountAddresses(a)
-		if allocated > maxInt64-c {
-			allocated = maxInt64
-			break
-		}
-		allocated += c
+	pool.Status.Capacity = ipam.PoolCapacity{
+		Total:     m.Total.String(),
+		Allocated: m.Consumed.String(),
+		Available: m.Free.String(),
 	}
-	allocated = min(allocated, total)
-	available := max(total-allocated, 0)
-	pool.Status.Capacity = ipam.PoolCapacity{Total: total, Allocated: allocated, Available: available}
-
-	// Measure, not a sum of allocation sizes. Allocations may overlap: two
-	// networks can hold one address out of a shared range, and summing counts
-	// that address once per holder.
-	if m, err := allocation.Measure(parents, allocations, allocation.Reservation{}); err == nil {
-		pool.Status.UtilizationPercent = int32(m.UtilizationPercent)
-	}
+	pool.Status.UtilizationPercent = m.UtilizationPercent
 	if fam, err := effectiveIPFamily(pool); err == nil {
 		pool.Status.IPFamily = ipam.IPFamily(fam)
 	}

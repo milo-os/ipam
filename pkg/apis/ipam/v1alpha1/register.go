@@ -13,7 +13,7 @@ const GroupName = "ipam.miloapis.com"
 var SchemeGroupVersion = schema.GroupVersion{Group: GroupName, Version: "v1alpha1"}
 
 var (
-	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes, RegisterConversions)
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes, RegisterConversions, addFieldLabelConversions)
 	AddToScheme   = SchemeBuilder.AddToScheme
 )
 
@@ -24,6 +24,7 @@ func Resource(resource string) schema.GroupResource {
 
 func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
+		&IPClass{}, &IPClassList{},
 		&IPPool{}, &IPPoolList{},
 		&IPAllocation{}, &IPAllocationList{},
 		&IPClaim{}, &IPClaimList{},

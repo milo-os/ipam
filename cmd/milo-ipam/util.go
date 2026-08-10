@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/big"
 	"net/netip"
 	"time"
 
@@ -21,11 +22,20 @@ func familyBits(family ipamv1alpha1.IPFamily) int {
 
 // utilizationPercent computes allocated/total as a percentage. A pool with no
 // reported total (status not yet populated) is treated as 0%.
+//
+// The counts are decimal strings, and an IPv6 pool's total exceeds any int64, so
+// the division is done in big.Rat and only the result becomes a float.
 func utilizationPercent(c ipamv1alpha1.PoolCapacity) float64 {
-	if c.Total <= 0 {
+	total, ok := new(big.Int).SetString(c.Total, 10)
+	if !ok || total.Sign() <= 0 {
 		return 0
 	}
-	return float64(c.Allocated) / float64(c.Total) * 100
+	allocated, ok := new(big.Int).SetString(c.Allocated, 10)
+	if !ok {
+		return 0
+	}
+	pct, _ := new(big.Rat).SetFrac(new(big.Int).Mul(allocated, big.NewInt(100)), total).Float64()
+	return pct
 }
 
 // utilizationLabel returns a non-color textual severity so meaning survives
@@ -173,20 +183,22 @@ func validateCIDR(cidr string) (netip.Prefix, ipamv1alpha1.IPFamily, error) {
 // added to the allocated count. Returns before% and after%.
 func projectedUtilization(c ipamv1alpha1.PoolCapacity, family ipamv1alpha1.IPFamily, claimLen int) (before, after float64) {
 	before = utilizationPercent(c)
-	if c.Total <= 0 {
+	total, ok := new(big.Int).SetString(c.Total, 10)
+	if !ok || total.Sign() <= 0 {
 		return before, before
 	}
-	width := familyBits(family)
-	hostBits := width - claimLen
-	if hostBits < 0 || hostBits >= 63 {
-		// Degenerate or astronomically large claim: clamp to full.
+	allocated, ok := new(big.Int).SetString(c.Allocated, 10)
+	if !ok {
+		return before, before
+	}
+	hostBits := familyBits(family) - claimLen
+	if hostBits < 0 {
 		return before, 100
 	}
-	claimAddrs := int64(1) << uint(hostBits)
-	allocated := c.Allocated + claimAddrs
-	if allocated > c.Total {
-		allocated = c.Total
+	allocated.Add(allocated, new(big.Int).Lsh(big.NewInt(1), uint(hostBits)))
+	if allocated.Cmp(total) > 0 {
+		allocated.Set(total)
 	}
-	after = float64(allocated) / float64(c.Total) * 100
+	after, _ = new(big.Rat).SetFrac(new(big.Int).Mul(allocated, big.NewInt(100)), total).Float64()
 	return before, after
 }

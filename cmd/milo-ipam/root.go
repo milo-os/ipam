@@ -72,7 +72,6 @@ distinct per failure class (notably 7 = IPAM_POOL_EXHAUSTED).`,
 	pf.StringVar(&opts.project, "project", "", "Override the active project for this invocation")
 
 	root.AddCommand(newPoolCommand(a))
-	root.AddCommand(newPrefixCommand(a))
 	root.AddCommand(newVersionCommand(io))
 
 	return root

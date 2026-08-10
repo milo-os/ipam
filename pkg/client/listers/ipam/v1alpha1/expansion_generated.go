@@ -18,6 +18,10 @@ type IPClaimListerExpansion interface{}
 // IPClaimNamespaceLister.
 type IPClaimNamespaceListerExpansion interface{}
 
+// IPClassListerExpansion allows custom methods to be added to
+// IPClassLister.
+type IPClassListerExpansion interface{}
+
 // IPPoolListerExpansion allows custom methods to be added to
 // IPPoolLister.
 type IPPoolListerExpansion interface{}
