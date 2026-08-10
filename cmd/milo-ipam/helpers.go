@@ -62,7 +62,7 @@ func parseFamily(s string) (ipamv1alpha1.IPFamily, error) {
 }
 
 // parseStrategy validates an allocation strategy string against the API enum.
-func parseStrategy(s string) (ipamv1alpha1.Strategy, error) {
+func parseStrategy(s string) (ipamv1alpha1.AllocationStrategy, error) {
 	switch strings.ToLower(s) {
 	case "firstfit", "first-fit", "first":
 		return ipamv1alpha1.FirstFit, nil

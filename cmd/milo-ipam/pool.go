@@ -218,7 +218,7 @@ func childCounts(cs clientset.Interface, namespace string, pools []ipamv1alpha1.
 	claims, err := cs.IpamV1alpha1().IPClaims(namespace).List(context.Background(), metav1.ListOptions{})
 	if err == nil {
 		for i := range claims.Items {
-			if ref := claims.Items[i].Spec.PoolRef; ref != nil {
+			if ref := claims.Items[i].Status.PoolRef; ref != nil {
 				prefixes[ref.Name]++
 			}
 		}
@@ -379,7 +379,7 @@ given (mirroring the server's deletion protection).`,
 			var heldPrefixes []string
 			if claims != nil {
 				for i := range claims.Items {
-					if r := claims.Items[i].Spec.PoolRef; r != nil && r.Name == name {
+					if r := claims.Items[i].Status.PoolRef; r != nil && r.Name == name {
 						heldPrefixes = append(heldPrefixes, claims.Items[i].Name)
 					}
 				}

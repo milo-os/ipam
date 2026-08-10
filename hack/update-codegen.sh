@@ -6,11 +6,23 @@ set -o pipefail
 SCRIPT_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 MODULE_NAME="go.miloapis.com/ipam"
 
-CODEGEN_PKG=$(go list -m -f '{{.Dir}}' k8s.io/code-generator 2>/dev/null)
+# The `|| true` is what makes the diagnostic below reachable. Under
+# `set -o errexit`, an assignment from a failing command substitution takes the
+# substitution's exit status, so without it the script died silently right here
+# — no message, no hint, just exit 1. Found by deliberately removing the tool
+# directive to check that this guard fires; it did not.
+CODEGEN_PKG=$(go list -m -f '{{.Dir}}' k8s.io/code-generator 2>/dev/null || true)
 
 if [ -z "${CODEGEN_PKG}" ]; then
-    echo "ERROR: k8s.io/code-generator not found in go.mod"
-    echo "Run: go get k8s.io/code-generator@v0.35.0"
+    echo "ERROR: k8s.io/code-generator is not in the module graph." >&2
+    echo "" >&2
+    echo "  It is a build-time-only dependency — no Go file imports it — so" >&2
+    echo "  'go mod tidy' drops a plain require and this script stops working." >&2
+    echo "  It is held by a 'tool' directive in go.mod, which tidy preserves." >&2
+    echo "" >&2
+    echo "  Restore it with:  go get -tool k8s.io/code-generator@v0.35.3" >&2
+    echo "  (match the k8s.io/apimachinery version in go.mod)" >&2
+    echo "" >&2
     exit 1
 fi
 

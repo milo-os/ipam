@@ -40,7 +40,7 @@ The layout is computed client-side from data the API already returns.`,
 			if withPrefixes {
 				if claims, cErr := cs.IpamV1alpha1().IPClaims(ns).List(context.Background(), metav1.ListOptions{}); cErr == nil {
 					for i := range claims.Items {
-						if r := claims.Items[i].Spec.PoolRef; r != nil {
+						if r := claims.Items[i].Status.PoolRef; r != nil {
 							leaves[r.Name] = append(leaves[r.Name], claims.Items[i])
 						}
 					}

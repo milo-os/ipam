@@ -18,6 +18,24 @@ func RegisterConversions(s *runtime.Scheme) error {
 		toExternal         conversion.ConversionFunc
 	}{
 		{
+			(*ipam.IPClass)(nil), (*IPClass)(nil),
+			func(a, b any, sc conversion.Scope) error {
+				return convert_v1alpha1_IPClass_To_ipam(a.(*IPClass), b.(*ipam.IPClass))
+			},
+			func(a, b any, sc conversion.Scope) error {
+				return convert_ipam_IPClass_To_v1alpha1(a.(*ipam.IPClass), b.(*IPClass))
+			},
+		},
+		{
+			(*ipam.IPClassList)(nil), (*IPClassList)(nil),
+			func(a, b any, sc conversion.Scope) error {
+				return convert_v1alpha1_IPClassList_To_ipam(a.(*IPClassList), b.(*ipam.IPClassList))
+			},
+			func(a, b any, sc conversion.Scope) error {
+				return convert_ipam_IPClassList_To_v1alpha1(a.(*ipam.IPClassList), b.(*IPClassList))
+			},
+		},
+		{
 			(*ipam.IPPool)(nil), (*IPPool)(nil),
 			func(a, b any, sc conversion.Scope) error {
 				return convert_v1alpha1_IPPool_To_ipam(a.(*IPPool), b.(*ipam.IPPool))

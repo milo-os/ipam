@@ -14,6 +14,7 @@ type IpamV1alpha1Interface interface {
 	RESTClient() rest.Interface
 	IPAllocationsGetter
 	IPClaimsGetter
+	IPClassesGetter
 	IPPoolsGetter
 }
 
@@ -28,6 +29,10 @@ func (c *IpamV1alpha1Client) IPAllocations(namespace string) IPAllocationInterfa
 
 func (c *IpamV1alpha1Client) IPClaims(namespace string) IPClaimInterface {
 	return newIPClaims(c, namespace)
+}
+
+func (c *IpamV1alpha1Client) IPClasses() IPClassInterface {
+	return newIPClasses(c)
 }
 
 func (c *IpamV1alpha1Client) IPPools() IPPoolInterface {

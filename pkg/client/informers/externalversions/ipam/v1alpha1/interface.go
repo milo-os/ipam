@@ -12,6 +12,8 @@ type Interface interface {
 	IPAllocations() IPAllocationInformer
 	// IPClaims returns a IPClaimInformer.
 	IPClaims() IPClaimInformer
+	// IPClasses returns a IPClassInformer.
+	IPClasses() IPClassInformer
 	// IPPools returns a IPPoolInformer.
 	IPPools() IPPoolInformer
 }
@@ -35,6 +37,11 @@ func (v *version) IPAllocations() IPAllocationInformer {
 // IPClaims returns a IPClaimInformer.
 func (v *version) IPClaims() IPClaimInformer {
 	return &iPClaimInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// IPClasses returns a IPClassInformer.
+func (v *version) IPClasses() IPClassInformer {
+	return &iPClassInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
 // IPPools returns a IPPoolInformer.
