@@ -72,7 +72,7 @@
 //
 // # Why the ref qualifier is the claiming tenant
 //
-// A ScopeRef carries no project of its own, so the tenant used to qualify it is
+// A ScopeRef carries no project of its own, so the tenant qualifying it is
 // the tenant of the caller whose scope it is. That is correct for what a claim
 // can currently express: a claim's refs name objects in the claimant's own
 // project. If ScopeRef ever gains a project field — which cross-project

@@ -55,7 +55,6 @@
 -- Down restores 001-era state exactly (see the note on retained allocations).
 --
 -- PostgreSQL floor
--- ----------------
 -- 13, and 001's header comment is right. Two independent things need it:
 -- 001 uses pg_current_xact_id() / pg_snapshot_xmin(), added in 13, and 002
 -- needs btree_gist installable by a non-superuser, which requires the trusted
@@ -71,9 +70,7 @@
 -- restored from a 001-era dump onto an older server, and as a statement of the
 -- floor that executes rather than one that rots.
 --
--- (An earlier revision of this file asserted a floor of 14, justified by a
--- recursive CTE with CYCLE. No such query exists anywhere in the repo — chain
--- depth and cycle rejection are done in Go, in internal/allocator/class.go and
+-- (Chain depth and cycle rejection happen in Go, in internal/allocator/class.go and
 -- internal/registry/ipam/ipclass/storage.go. The claim was inherited from a
 -- task brief and repeated without checking. If you raise this floor, name the
 -- feature that needs it and make sure it is one this repo actually uses.)
@@ -96,14 +93,12 @@ $$;
 -- install it without superuser; the deployed role owns its database.
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
--- ---------------------------------------------------------------------------
 -- 1. Expression indexes
--- ---------------------------------------------------------------------------
 --
 -- A JSON expression index over a path the model stopped writing does not
 -- error. It stops matching, every query that relied on it degrades to a
 -- sequential scan over ipam_objects, and nothing says so. Only paths the new
--- model no longer writes are dropped here.
+-- model does not write are dropped here.
 --
 -- IMPORTANT: these indexes are also declared in Go, in each resource's
 -- strategy.go, and `ipam migrate up` runs fieldindex.SyncIndexes immediately
@@ -112,8 +107,8 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 -- internal/registry/ipam/{ipclaim,ipallocation,ippool}/strategy.go must be
 -- updated to match this migration.
 
--- IPClaim.spec.poolRef is gone: a claim no longer names a pool. The allocator
--- resolves one and records it in status.poolRef.
+-- A claim names a class, not a pool, so nothing reads this index. The allocator
+-- resolves the pool and records it in status.poolRef.
 DROP INDEX IF EXISTS idx_ipam_ipclaim_pool_ref_name;
 
 -- IPClaim.spec.ipFamily survives as a field, but only to select the default
@@ -210,9 +205,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_ipallocation_scope_digest
     ON ipam_objects ((ipam_data_to_jsonb(data) -> 'status' ->> 'scopeDigest'))
     WHERE kind = 'IPAllocation';
 
--- ---------------------------------------------------------------------------
 -- 2. Pool identity — what concurrent provisioning contends on
--- ---------------------------------------------------------------------------
 --
 -- A claim for a network and location that has never been used cascades: it
 -- creates the location's subnet pool, and possibly the network's prefix pool
@@ -250,7 +243,6 @@ CREATE INDEX IF NOT EXISTS idx_ipam_ipallocation_scope_digest
 -- SELECT ... FOR UPDATE on a row that does not exist yet.
 --
 -- DO NOTHING vs DO UPDATE, measured
--- ---------------------------------
 -- The one-round-trip alternative settles win-or-lose without the follow-up
 -- SELECT:
 --
@@ -258,7 +250,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_ipallocation_scope_digest
 --   DO UPDATE SET pool_key = ipam_pool_identity.pool_key
 --   RETURNING pool_key, (xmax = 0) AS won
 --
--- It is correct, and it was the first thing implemented. But DO UPDATE makes
+-- It is correct. But DO UPDATE makes
 -- every loser take a row lock on the winner's tuple and write a new version,
 -- so the losers serialise against each other on the single row the whole herd
 -- is contending for. DO NOTHING takes no lock and writes nothing, so once the
@@ -317,8 +309,8 @@ CREATE TABLE IF NOT EXISTS ipam_pool_identity (
     --
     --   * pool_key mixed the calling project in (via tenant.Identity.ResourceKey)
     --     while scope_digest did not, so the derivation stopped being a function
-    --     of the primary key the moment tenancy was added to keys — the precise
-    --     precondition the old comment said would make the constraint reachable.
+    --     of the primary key, which is the precondition that would make the
+    --     constraint reachable.
     --   * and it did not become reachable, because the constraint never runs on
     --     that path. Two tenants proposing different pool_keys for one
     --     (class_name, scope_digest) conflict on the PRIMARY KEY first; DO
@@ -366,9 +358,7 @@ CREATE TABLE IF NOT EXISTS ipam_pool_identity (
 
 CREATE INDEX IF NOT EXISTS idx_ipam_pool_identity_class ON ipam_pool_identity (class_name);
 
--- ---------------------------------------------------------------------------
 -- 3. Class offers — class health without scanning every pool
--- ---------------------------------------------------------------------------
 --
 -- IPClass.status.offeringPools must be answerable cheaply: zero means every
 -- claim naming the class fails, which is worth surfacing before a consumer
@@ -422,9 +412,7 @@ END;
 $$ LANGUAGE plpgsql;
 -- +goose StatementEnd
 
--- ---------------------------------------------------------------------------
 -- 4. Allocations outlive their claims
--- ---------------------------------------------------------------------------
 --
 -- A claim released under reclaimPolicy Retain leaves its allocation in place,
 -- still held and still counted against its holder, until something releases it
@@ -452,7 +440,7 @@ ALTER TABLE ipam_cidr_allocations ALTER COLUMN claim_key DROP NOT NULL;
 -- It is added in three steps so this migration applies to a database with rows
 -- in it rather than requiring a reset: add nullable, backfill, then constrain.
 -- The backfill uses claim_key because every row predating this migration is
--- claim-bound — claim_key could not be NULL before this file made it so.
+-- claim-bound: 001 declares claim_key NOT NULL.
 ALTER TABLE ipam_cidr_allocations ADD COLUMN IF NOT EXISTS allocation_key TEXT;
 
 UPDATE ipam_cidr_allocations SET allocation_key = claim_key WHERE allocation_key IS NULL;
@@ -506,9 +494,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_retained
     ON ipam_cidr_allocations (allocated_at)
     WHERE claim_key IS NULL AND purpose = 'Claim';
 
--- ---------------------------------------------------------------------------
 -- 5. Overlap exclusion
--- ---------------------------------------------------------------------------
 --
 -- CLAUDE.md describes a GiST overlap index on (pool_key, allocated_cidr) as an
 -- existing secondary check. It never existed: 001 creates a plain btree on
@@ -566,7 +552,6 @@ ALTER TABLE ipam_cidr_allocations
 -- that were already carves wearing the 'Reservation' label.
 --
 -- WHY THIS IS 003 AND NOT AN EDIT TO 002
--- --------------------------------------
 -- 002 has only ever run on disposable clusters, so editing it is tempting and
 -- was the first suggestion. It does not work, for a reason that has nothing to
 -- do with how disposable the data is: **goose records applied versions**. A
@@ -584,7 +569,6 @@ ALTER TABLE ipam_cidr_allocations
 -- unblocks it without anyone having to recreate a database first.
 --
 -- WHY THREE VALUES WHEN THE SEARCH ONLY DISTINGUISHES TWO
--- ------------------------------------------------------
 -- The allocator's free-space search must treat a gateway reservation and a
 -- child pool's carve identically — both are space that is spoken for and
 -- neither belongs to a claim — so its predicate is `purpose <> 'Claim'` and
@@ -597,10 +581,9 @@ ALTER TABLE ipam_cidr_allocations
 --
 -- So the distinction is real but narrow: exactly one reader acts on it. That
 -- is worth stating because a third enum value the hot path ignores looks like
--- something to simplify back to two. It is not. Before this value existed the
--- two were told apart by an allocation-key naming convention
--- (`<poolKey>#reservation/<n>`) — semantics carried in a string prefix, which
--- works only until a pool key contains a '#'.
+-- something to simplify back to two. It is not. The alternative is to carry the
+-- distinction in an allocation-key naming convention, and semantics in a string
+-- prefix work only until a pool key contains that character.
 --
 -- Do not add an index on `purpose`. The hot path still only asks "is this a
 -- Claim in my scope", which idx_ipam_cidr_alloc_pool_scope already covers; the
@@ -638,7 +621,6 @@ UPDATE ipam_cidr_allocations a
 -- allocated, and measure the retention lease from it.
 --
 -- THE BUG THIS FIXES
--- ------------------
 -- 002 built the retained-set index on allocated_at, the only timestamp the
 -- table had:
 --
@@ -667,7 +649,6 @@ COMMENT ON COLUMN ipam_cidr_allocations.retained_at IS
     'way no lease applies. Never measure a lease from allocated_at.';
 
 -- NO BACKFILL, AND THE REASON IS THE BUG ABOVE
--- --------------------------------------------
 -- There are already-retained rows in the wild with no retained_at. The
 -- tempting fills are allocated_at and NOW(). Both reproduce the defect this
 -- migration exists to remove:
@@ -946,7 +927,6 @@ UPDATE ipam_cidr_allocations a
        );
 
 -- 1. AN INDEX THAT CAN BE READ IN ADDRESS ORDER
--- ---------------------------------------------
 -- The bounded search (internal/allocation.Scan) consumes allocations in
 -- ascending address order and stops at the first gap that fits. It therefore
 -- needs rows delivered in that order without a sort.
@@ -954,8 +934,8 @@ UPDATE ipam_cidr_allocations a
 -- idx_ipam_cidr_alloc_pool_scope from 002 cannot do it. Its key is
 -- (pool_key, scope_digest) and allocated_cidr is an INCLUDE column — INCLUDE
 -- payload is not part of the key, so it can satisfy a fetch but never an
--- ORDER BY. That is why the old query had an explicit Sort node above the scan
--- (298 kB of quicksort at 2000 rows) and why sorting was never the fix: a
+-- ORDER BY. A search over that index needs an explicit Sort above the scan —
+-- 298 kB of quicksort at 2000 rows — and sorting is not the fix, because a
 -- sorted whole-set read is still a whole-set read.
 --
 -- The new index keys on (pool_key, allocated_cidr), which is exactly the
@@ -980,9 +960,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_pool_addr
     ON ipam_cidr_allocations (pool_key, allocated_cidr)
     INCLUDE (purpose, scope_digest);
 
-
 -- 2. A FLOOR, WITHOUT WHICH THE BOUNDED SEARCH IS STILL LINEAR
--- ------------------------------------------------------------
 -- This is the half that is easy to leave out, because the search looks bounded
 -- without it. It is not. A pool filled sequentially — which is what first-fit
 -- does, and what every load run and every real subnet allocation produces — has
@@ -995,7 +973,6 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_pool_addr
 -- the pool's base, and a sequentially filled pool then decides after one page.
 --
 -- THE INVARIANT IS ONE-DIRECTIONAL, AND EVERYTHING DEPENDS ON THAT
--- ----------------------------------------------------------------
 -- A floor that is too LOW is harmless: the scan starts earlier than it needed
 -- to, walks addresses it will find taken, and returns the same answer more
 -- slowly. A missing row means "start at the base", which is the safest value
@@ -1018,7 +995,6 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_pool_addr
 -- the wrong change.
 --
 -- WHY A TABLE RATHER THAN A COLUMN ON THE POOL
--- ---------------------------------------------
 -- The floor is per (pool, address space), not per pool. A shared pool serves
 -- many spaces at once — that is the entire point of uniqueWithin — and they
 -- fill independently, so one floor per pool would be pinned to the least-full
@@ -1054,15 +1030,12 @@ CREATE TABLE IF NOT EXISTS ipam_pool_search_floor (
 -- prefix scan, so no second index is added; this comment exists so the next
 -- person does not add one after reading the release path.
 
-
 -- 3. THE FLOOR IS LOWERED BY A TRIGGER, NOT BY THE RELEASE PATHS
--- ---------------------------------------------------------------
 -- Three code paths delete an allocation row today — Release's delete branch,
 -- ForceRelease, and ReleasePoolReservations — and the lease sweep reaches two
--- of them. Patching each is how docs/verification-conventions.md rule 4
--- happened three times in this service: IPPool's Delete was fixed and
--- DeleteCollection was not, then IPAllocation had neither. The miss was never
--- the condition, it was the SET of entry points.
+-- of them. Patching each entry point is the failure docs/verification-conventions.md
+-- rule 4 describes: the set of entry points is what a fix misses, not the
+-- condition inside any one of them.
 --
 -- A trigger has no set. Every delete lowers the floor, including from paths
 -- nobody has written yet, and including a DELETE typed by hand into psql during
@@ -1106,9 +1079,7 @@ CREATE TRIGGER ipam_cidr_alloc_lower_floor
     AFTER DELETE ON ipam_cidr_allocations
     FOR EACH ROW EXECUTE FUNCTION ipam_lower_search_floor();
 
-
 -- 4. HOW THE FLOOR IS RAISED, AND WHY IT IS A COMPARE-AND-SET
--- ------------------------------------------------------------
 -- The allocator raises the floor after a search, to the lowest free address
 -- that search actually walked to. The write is a compare-and-set against the
 -- value the search STARTED from (see raiseSearchFloor in
@@ -1125,9 +1096,8 @@ CREATE TRIGGER ipam_cidr_alloc_lower_floor
 -- and the lower value survives. That costs a slower scan next time and loses
 -- nothing, which is the direction this whole mechanism is built to fail in.
 --
--- DO NOT READ THE CAS AS AVOIDING A LOCK. An earlier version of this comment
--- said "the CAS needs no lock at all", which is false and was the most
--- dangerous sentence in this file: an UPDATE takes a row lock for the rest of
+-- DO NOT READ THE CAS AS AVOIDING A LOCK. It does not: an UPDATE takes a row
+-- lock for the rest of
 -- the transaction whether or not its WHERE clause is a compare-and-set. The CAS
 -- solves the LOST-UPDATE problem. It does nothing about lock ordering.
 --
