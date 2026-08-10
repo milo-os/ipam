@@ -267,7 +267,7 @@ func TestMeasure_CountsSharedAddressOnce(t *testing.T) {
 	if got.Total.Int64() != 16 {
 		t.Fatalf("expected 16 total, got %s", got.Total)
 	}
-	// 1/16 = 6.25% exactly. It used to read 6: integer division truncated it,
+	// 1/16 = 6.25% exactly. Integer division would truncate this to 6,
 	// which is the defect that made every pool sized for growth report 0%.
 	if got.UtilizationPercent != 6.25 {
 		t.Fatalf("expected 6.25%%, got %g%%", got.UtilizationPercent)

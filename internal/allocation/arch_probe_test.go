@@ -10,22 +10,20 @@ import (
 	"testing"
 )
 
-// The architecture probe that settled #35.
+// TestArchProbe tells an emulated binary from a real memory bug, in ten
+// seconds, before anyone hunts for corruption in this package.
 //
-// #35 was reported as heap corruption in this package: three fatal signatures
-// ("found pointer to free object", SIGSEGV, and a nil dereference in math/big
-// with a torn slice header), always on this path, at ~300 carves in one pool,
-// with serial traffic. This package is stdlib-only with no unsafe and no cgo,
-// so it could not be the culprit — and it was not the victim of anything in our
-// code either.
+// THE SIGNATURES IT EXPLAINS. "found pointer to free object", a SIGSEGV, or a
+// nil dereference in math/big with a torn slice header — all on the allocation
+// path, at a few hundred carves in one pool, under serial traffic. This package
+// is stdlib-only with no unsafe and no cgo, so it cannot corrupt a heap.
 //
-// **It was QEMU.** The deployed image is built with GOARCH from an ARG that
-// defaults to amd64 (Dockerfile) and nothing overrode it, so on an arm64 host
-// the apiserver binary was amd64 running under emulation. Emulated Go binaries
-// produce exactly those signatures, because Go's atomics, memory model and
-// signal-based preemption are hard to emulate faithfully.
+// Emulated Go binaries produce exactly those signatures, because Go's atomics,
+// memory model and signal-based preemption are hard to emulate faithfully. The
+// Dockerfile takes GOARCH from an ARG defaulting to amd64, so an image built
+// without overriding it runs under QEMU on an arm64 host.
 //
-// Compile this for two architectures and run both in Docker to see it:
+// Compile for two architectures and run both in Docker:
 //
 //	GOOS=linux GOARCH=arm64 go test -c -o probe-arm64 ./internal/allocation/
 //	GOOS=linux GOARCH=amd64 go test -c -o probe-amd64 ./internal/allocation/
@@ -33,13 +31,10 @@ import (
 //	docker run --rm --platform linux/amd64 -e QEMU_PROBE=2000 ... /probe-amd64 -test.run TestArchProbe
 //
 // Native arm64 survives 2000 carves every time. Emulated amd64 faults within
-// ~100, at a different address each run. No apiserver, no database, no HTTP, no
-// concurrency — the emulation alone is sufficient.
+// ~100, at a different address each run. No apiserver, no database, no HTTP and
+// no concurrency are involved: the emulation alone is sufficient.
 //
-// Kept, and skipped unless QEMU_PROBE is set, because "our pure-Go package is
-// corrupting the heap" is a conclusion that will be reached again, and this is
-// the ten-second way to rule the architecture in or out before hunting for a
-// memory bug that is not there.
+// Skipped unless QEMU_PROBE is set, so it costs a normal run nothing.
 func TestArchProbe(t *testing.T) {
 	if os.Getenv("QEMU_PROBE") == "" {
 		t.Skip("set QEMU_PROBE=<carves> to run the architecture probe")

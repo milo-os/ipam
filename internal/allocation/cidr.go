@@ -374,15 +374,14 @@ func splitRegionIntoAlignedCIDRs(start, end *big.Int, totalBits int) []net.IPNet
 // length) currently available within the pool. Returns ErrPoolExhausted if the
 // pool is fully allocated.
 //
-// KEPT ONLY FOR THE PRE-CLASS-MODEL ALLOCATOR, along with LargestFreePrefixLen.
-// Nothing in the engine above calls either one; they survive because the
-// allocator shipping today does, and the follow-up that rewires it deletes both
-// with their last caller.
+// Its only callers are the allocator and the IPPool registry, both writing
+// status.largestFreePrefix. The engine in this package does not use it, and
+// neither does Measure.
 //
-// Measure deliberately does not compute this. Finding the largest free aligned
-// block walks every free region, and a pool with N scattered allocations has
-// roughly N of them: at 4,096 allocations that cost 1,321us against 312us
-// without, on the path every successful claim takes.
+// THIS IS EXPENSIVE. It walks every free region, and a pool with N scattered
+// allocations has roughly N of them: on a /12 at 4,096 allocations, including
+// this search costs 1,321us against 0.3us without. Its callers run on the path
+// every successful claim takes.
 func (p *CIDRPool) LargestFreeBlock() (*net.IPNet, error) {
 	var best *net.IPNet
 	var bestSize *big.Int

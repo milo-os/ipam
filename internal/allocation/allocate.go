@@ -185,8 +185,8 @@ type parentView struct {
 }
 
 // takeFrom removes block from region i, splitting it into the parts on either
-// side. The block always lies within that region, because that is where it was
-// selected from.
+// side. The block always lies within that region, because selectBlock chooses
+// it from there.
 func (v *parentView) takeFrom(i int, block net.IPNet) {
 	region := v.regions[i]
 	bStart, bEnd := cidrBounds(block)
@@ -332,12 +332,12 @@ func measure(views []parentView) PoolMeasurement {
 	m.Total = new(big.Int)
 	m.Free = new(big.Int)
 
-	// This loop deliberately computes totals and nothing else. It used to also
-	// find the largest free aligned block, which cost ~99% of the function:
-	// largestAlignedBlock ran once per FREE REGION, and a pool holding N
-	// scattered allocations has roughly N regions. At 4,096 allocations,
-	// measure took 1,321us with the search and 1.5us without, on the path
-	// every successful claim takes.
+	// Totals only.
+	//
+	// DO NOT ADD A LARGEST-FREE-BLOCK SEARCH HERE. It runs largestAlignedBlock
+	// once per FREE REGION, and a pool holding N scattered allocations has
+	// roughly N regions. On a /12 at 4,096 allocations that is 1,321us against
+	// 0.3us without, and every successful claim reaches this function.
 	for i := range views {
 		v := &views[i]
 		m.Total.Add(m.Total, addressCount(v.parent))
