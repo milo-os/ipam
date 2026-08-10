@@ -17,7 +17,7 @@
 //     is a real space, not a missing value, and a unique index over NULL would
 //     not constrain it.
 //
-// # There are two digests here, and using the wrong one is silent
+// # Two digests, and using the wrong one is silent
 //
 // They answer different questions and the tenant enters them differently.
 // Getting it backwards produces two holders of one address in one direction and
@@ -68,7 +68,7 @@
 //     platform pool hands the same address to two projects. Both Bound, one
 //     pool, nothing logged.
 //
-// # Why the ref qualifier is the claiming tenant
+// # The ref qualifier is the claiming tenant
 //
 // A ScopeRef carries no project of its own, so the tenant qualifying it is
 // the tenant of the caller whose scope it is. That is correct for what a claim
@@ -77,7 +77,7 @@
 // consumption would want — the qualifier becomes that field, and this comment
 // is where to start.
 //
-// # Two encodings, two version tags, on purpose
+// # Two encodings, two version tags
 //
 // The two forms carry different version tags, v2 and v3, so a digest of one can
 // never be read as a digest of the other.
@@ -93,11 +93,12 @@
 // `purpose <> 'Claim' OR scope_digest = $1`, so a non-Claim row is matched by
 // purpose and its digest is never read.
 //
-// # Why the tenant is a string
+// # The tenant is a string
 //
-// So this package keeps depending on nothing but the API types — it is imported
-// by the allocator and by three registries, and none of them should acquire a
-// transitive k8s.io/apiserver dependency through it. The value must be the same
+// A string keeps this package depending on nothing but the API types. It is
+// imported by the allocator and by three registries, and none of them should
+// acquire a transitive k8s.io/apiserver dependency through it. The value must be
+// the same
 // discriminator that prefixes object keys (tenant.Identity.Name, empty for
 // platform callers); if key prefixes ever start distinguishing more than the
 // name, this must too, or two spaces the storage layer keeps apart will share a

@@ -305,7 +305,7 @@ CREATE TABLE IF NOT EXISTS ipam_pool_identity (
     -- collision.
     --
     -- DO NOT READ THIS CONSTRAINT AS A BACKSTOP AGAINST KEY-DERIVATION BUGS.
-    -- It said so until 005, and the claim had already been falsified twice over:
+    -- The claim that it is a backstop is false twice over:
     --
     --   * pool_key mixed the calling project in (via tenant.Identity.ResourceKey)
     --     while scope_digest did not, so the derivation stopped being a function
@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS ipam_pool_identity (
     --     allocating from the first tenant's pool.
     --
     -- So a pool_key that disagrees with the digest is invisible here by
-    -- construction. 005 fixed the derivation by putting the tenant inside the
+    -- construction. The derivation puts the tenant inside the
     -- digest; what catches a regression is TestPlanCascadeSeparatesProjects and
     -- the class-tenant-collision e2e suite, not this constraint. What this
     -- constraint does catch is the same pool_key inserted for two DIFFERENT
@@ -514,7 +514,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_retained
 --                 chain therefore overlap by construction. Constraining on
 --                 scope_digest alone would reject every nested pool.
 --
---   scope_digest  Carries the owning tenant as well as the scope — see 005 and
+--   scope_digest  Carries the owning tenant as well as the scope — see
 --                 internal/scope. So this constraint is already per-tenant and
 --                 must not grow an owner_project column: it would have to be
 --                 dropped and rebuilt over every allocation in the service to
@@ -550,24 +550,7 @@ ALTER TABLE ipam_cidr_allocations
 -- Accept 'PoolCarve' as a third allocation purpose, and reclassify the rows
 -- that were already carves wearing the 'Reservation' label.
 --
--- WHY THIS IS 003 AND NOT AN EDIT TO 002
--- 002 has only ever run on disposable clusters, so editing it is tempting and
--- was the first suggestion. It does not work, for a reason that has nothing to
--- do with how disposable the data is: **goose records applied versions**. A
--- database already at version 2 will never re-run 002, so widening the CHECK
--- there is a no-op everywhere it is already applied. The file would say one
--- thing and every existing database would do another, and `migrate up` would
--- report nothing to do while every write of a PoolCarve row failed.
---
--- That is the same silent divergence between a stated schema and the real one
--- that this migration series has been cleaning up, and it is why 001 was kept
--- byte-identical. A migration that has been applied anywhere is immutable; the
--- fix for an applied migration is always another migration.
---
--- Concretely: there is a live cluster at version 2 right now. This file
--- unblocks it without anyone having to recreate a database first.
---
--- WHY THREE VALUES WHEN THE SEARCH ONLY DISTINGUISHES TWO
+-- THREE VALUES, THOUGH THE SEARCH DISTINGUISHES ONLY TWO
 -- The allocator's free-space search must treat a gateway reservation and a
 -- child pool's carve identically — both are space that is spoken for and
 -- neither belongs to a claim — so its predicate is `purpose <> 'Claim'` and
@@ -601,11 +584,11 @@ ALTER TABLE ipam_cidr_allocations
 -- claim's allocation_key names an IPAllocation, and a genuine edge reservation
 -- names no pool object at all.
 --
--- On a fresh database this updates nothing. It exists so 003 is honestly
--- re-runnable against a populated one rather than only against a database
--- someone remembered to recreate — the delete guard reads this column, so a
--- database that skipped the backfill would keep the undeletable-pool bug with
--- the constraint looking correct.
+-- This updates nothing on any database reachable from 001: every row there
+-- takes the 'Claim' default, so none is a 'Reservation' naming an IPPool. It is
+-- kept as a no-op guard for a database populated by a build that wrote carves
+-- under the old label, because the delete guard reads this column and a pool
+-- whose carve is mislabelled cannot be deleted.
 UPDATE ipam_cidr_allocations a
    SET purpose = 'PoolCarve'
  WHERE a.purpose = 'Reservation'
@@ -619,16 +602,10 @@ UPDATE ipam_cidr_allocations a
 -- Record WHEN an allocation was retained, separately from when it was
 -- allocated, and measure the retention lease from it.
 --
--- THE BUG THIS FIXES
--- 002 built the retained-set index on allocated_at, the only timestamp the
--- table had:
+-- THE INDEX MUST BE ON retained_at, NOT allocated_at
 --
---   CREATE INDEX idx_ipam_cidr_alloc_retained
---       ON ipam_cidr_allocations (allocated_at)
---       WHERE claim_key IS NULL AND purpose = 'Claim';
---
--- allocated_at is set when the address was handed out. A lease measured from
--- it expires from the moment of *allocation*, not of retention — so an address
+-- allocated_at is set when the address is handed out. A lease measured from
+-- it expires from the moment of allocation, not of retention — so an address
 -- allocated a year ago and retained yesterday is already a year past a 30-day
 -- lease and is released on the sweeper's first pass. Retention would survive
 -- until the next tick and then evaporate, worst for exactly the long-lived
@@ -847,7 +824,7 @@ UPDATE ipam_cidr_allocations
 
 -- The default for a writer that does not supply a digest.
 --
--- 002 and 005 both explained the choice and it is unchanged: a writer that
+-- The choice: a writer that
 -- forgets lands in the STRICTEST space, so the failure is a spurious conflict
 -- someone notices rather than a silent double-allocation nobody does. Only the
 -- value moves, to scope.EmptyAddressSpaceDigest() — canonical form
@@ -855,7 +832,7 @@ UPDATE ipam_cidr_allocations
 --
 -- It is the address-space value rather than the pool one because the rows that
 -- can arrive without a digest are allocations, and the strictest space for an
--- allocation is now the tenant-independent empty one. Under 005's default such
+-- allocation is the tenant-independent empty one. Under a tenant-qualified default such
 -- a row would sit in the platform's pool space, which no claim from any project
 -- shares — blocking nothing.
 --
@@ -993,7 +970,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_pool_addr
 -- makes a wrong floor produce a wrong ADDRESS rather than a slow search, it is
 -- the wrong change.
 --
--- WHY A TABLE RATHER THAN A COLUMN ON THE POOL
+-- A TABLE RATHER THAN A COLUMN ON THE POOL
 -- The floor is per (pool, address space), not per pool. A shared pool serves
 -- many spaces at once — that is the entire point of uniqueWithin — and they
 -- fill independently, so one floor per pool would be pinned to the least-full
