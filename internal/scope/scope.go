@@ -148,9 +148,9 @@ const (
 // It cannot be right, because the two jobs need the tenant in different places:
 // a pool identity must be tenant-distinct even when the scope is empty, and an
 // address space must be tenant-INdistinct exactly when the scope is empty. A
-// single function has to pick one, and whichever it picks is silently wrong for
-// the other caller — two tenants sharing one address, or a tenant's subnet
-// renumbered. Both were shipped. Use PoolDigest or AddressSpaceDigest and say
+// single function has to pick one, and whichever it picks is wrong for the other
+// caller: two tenants sharing one address, or a tenant's subnet renumbered. Use
+// PoolDigest or AddressSpaceDigest and say
 // which question you are asking.
 
 // EmptyPoolDigest is the digest of a pool scope with no roles, for a given
@@ -260,7 +260,7 @@ func CanonicalAddressSpace(tenant string, s map[string]ipam.ScopeRef) string {
 // writeUID emits a ref's UID, always, empty or not. An unset UID encodes as a
 // zero-length field, which is distinct from every set one — so a reference
 // pinned to a UID is a different space from the same reference by name alone,
-// which is exactly what the field promises.
+// which is what the field promises.
 func writeUID(b *strings.Builder, ref ipam.ScopeRef) {
 	writeField(b, ref.UID)
 }
@@ -313,8 +313,7 @@ func AddressSpaceDigest(tenant string, s map[string]ipam.ScopeRef) string {
 // checking a conversion round trip.
 //
 // It goes through the pool form with an empty tenant because that form emits
-// the tenant exactly once, so passing "" removes it cleanly and what remains is
-// the refs and nothing else. The choice of form is not observable — the result
+// the tenant exactly once, so passing "" leaves the refs and nothing else. The choice of form is not observable — the result
 // is never stored, only compared against another call of this same function.
 func SameRefs(a, b map[string]ipam.ScopeRef) bool {
 	return CanonicalPool("", a) == CanonicalPool("", b)
@@ -360,8 +359,8 @@ func Roles(s map[string]ipam.ScopeRef) []string {
 // MissingRoleError reports that a scope did not carry roles something required
 // of it — a class's PoolPer or UniqueWithin entries.
 //
-// It names them because that is the whole point: the allocator rejects a claim
-// missing a required role rather than falling back to a wider comparison, and a
+// It names them because the allocator rejects a claim missing a required role
+// rather than falling back to a wider comparison, and a
 // wider comparison would look correct while refusing addresses the narrow one
 // was meant to allow. That failure surfaces as unexplained exhaustion. This one
 // surfaces as "you forgot `location`".

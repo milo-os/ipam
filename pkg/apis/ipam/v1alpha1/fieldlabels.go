@@ -23,8 +23,8 @@ import (
 // against a live apiserver.
 //
 // The two failure directions are not symmetric. A field declared selectable but
-// not converted is rejected by the API, loudly. A field converted but not
-// selectable is accepted and then matches nothing, silently.
+// not converted is rejected by the API. A field converted but not selectable is
+// accepted, and then matches nothing.
 //
 // metadata.namespace is permitted for the namespaced kinds only. On a
 // cluster-scoped kind it filters on nothing a caller could have meant.

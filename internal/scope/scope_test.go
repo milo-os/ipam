@@ -568,7 +568,7 @@ func TestAddressSpaceDigestIgnoresTenantWithoutRefs(t *testing.T) {
 	if EmptyAddressSpaceDigest() != AddressSpaceDigest("anything", map[string]ipam.ScopeRef{}) {
 		t.Error("EmptyAddressSpaceDigest must equal the digest of the empty scope, for any tenant")
 	}
-	// The tenant must be absent from the encoding entirely, not merely
+	// The tenant must be absent from the encoding entirely, not
 	// cancelled out. A tenant that reached the string could be made to matter
 	// again by a scope that happened to contain the right bytes.
 	if strings.Contains(CanonicalAddressSpace("project-alpha", nil), "project-alpha") {

@@ -163,7 +163,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_ippool_class_names
 -- existed, so the API rejected the selector outright and this index was
 -- maintained on every write and never read. All three are in place now, and
 -- test/e2e/field-selectors issues the query against a live apiserver so it
--- cannot quietly stop working again.
+-- cannot stop working without a test failing.
 CREATE INDEX IF NOT EXISTS idx_ipam_ippool_scope_digest
     ON ipam_objects ((ipam_data_to_jsonb(data) -> 'status' ->> 'scopeDigest'))
     WHERE kind = 'IPPool';
@@ -377,7 +377,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_pool_identity_class ON ipam_pool_identity (c
 -- write that did not touch spec is inefficient rather than harmful.
 --
 -- It can be rebuilt at any time from ipam_objects; see the rebuild query in
--- migrations/README.md. It is NOT merely a cache any more: allocator.DiscoverPool
+-- migrations/README.md. It is not a cache: allocator.DiscoverPool
 -- joins it to find the pools offering a class, so a pool missing its offer rows
 -- is a pool nothing can allocate from.
 --
@@ -502,8 +502,8 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_retained
 -- allocator has been the only thing preventing overlapping allocations.
 --
 -- An exclusion constraint fails at creation if any overlapping pair is already
--- present, so it can be added now and possibly never again. Adding it while
--- the tables are still disposable is the point.
+-- present, so it can be added now and possibly never again, while the tables
+-- are still disposable.
 --
 -- Both equality columns are load-bearing, and getting either wrong breaks a
 -- case the design requires:
@@ -530,8 +530,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_retained
 --                 instead of per network.
 --
 -- Retained (claim_key IS NULL) and reserved (purpose = 'Reservation') rows
--- participate. That is the point of both: a held address is capacity nobody
--- else can use, and it must behave that way here.
+-- participate: a held address is capacity nobody else can use.
 ALTER TABLE ipam_cidr_allocations DROP CONSTRAINT IF EXISTS ipam_cidr_alloc_no_overlap;
 ALTER TABLE ipam_cidr_allocations
     ADD CONSTRAINT ipam_cidr_alloc_no_overlap
@@ -580,8 +579,8 @@ ALTER TABLE ipam_cidr_allocations
 -- telling the operator to release claims that did not exist.
 --
 -- So the distinction is real but narrow: exactly one reader acts on it. That
--- is worth stating because a third enum value the hot path ignores looks like
--- something to simplify back to two. It is not. The alternative is to carry the
+-- matters because a third enum value the hot path ignores looks like something
+-- to simplify back to two. It is not. The alternative is to carry the
 -- distinction in an allocation-key naming convention, and semantics in a string
 -- prefix work only until a pool key contains that character.
 --
@@ -882,7 +881,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Counted rather than merely mentioned: the referencing rows decide whether
+    -- Counted rather than mentioned: the referencing rows decide whether
     -- the rewrite is one statement or four, and an operator who runs the one
     -- statement with rows present gets a foreign-key error instead of an
     -- answer.
@@ -1003,7 +1002,7 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_pool_addr
 -- claim.
 CREATE TABLE IF NOT EXISTS ipam_pool_search_floor (
     -- ON DELETE CASCADE, because a floor for a pool that no longer exists is
-    -- not merely useless: pool names are a pure function of scope, so the next
+    -- worse than useless: pool names are a pure function of scope, so the next
     -- pool to take this key would inherit a floor describing a different pool's
     -- occupancy — a too-high floor, which is the one direction that loses
     -- addresses.
