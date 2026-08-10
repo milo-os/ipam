@@ -14,14 +14,12 @@ const (
 // PoolSelectionStrategy chooses WHICH POOL serves a claim, when several pools
 // back one class. It is set on IPClass.
 //
-// Deliberately a different type from AllocationStrategy, which chooses which
-// free block is taken from inside a pool. The two were one enum until
-// 2026-08-09, and the conflation was actively harmful: removing
-// status.largestFreePrefix made class-level BestFit unimplementable — it
-// selected on contiguous headroom, which is the one question the remaining
-// status does not answer — while pool-level BestFit is unaffected, because it
-// reads the allocation set it is already holding. One shared value meant one
-// edit silently changed both.
+// It is a separate type from AllocationStrategy, which chooses which free block
+// is taken from inside a pool, and the two must not be merged. A pool-level
+// strategy reads the allocation set it already holds and can answer anything
+// about it. A class-level strategy sees only each pool's published status, so
+// it cannot select on contiguous headroom. Sharing one enum would offer values
+// that only one of the two can implement.
 //
 // +kubebuilder:validation:Enum=FirstFit;LeastUtilized
 type PoolSelectionStrategy string
@@ -216,19 +214,15 @@ type AllocationSpec struct {
 
 // PoolCapacity reports a pool's address counts EXACTLY, as decimal strings.
 //
-// Strings because these are not int64 quantities. A /20 of IPv6 holds
-// 2^108 addresses — thirty-three digits — and the previous int64 fields
-// saturated at 9223372036854775807, which is not an address count but a
-// ceiling. A pool reported `total: 9223372036854775807, allocated:
-// 9007199254740991`, and neither figure was true: a client dividing them got a
-// number that meant nothing, which is why utilizationPercent had to exist as
-// the only trustworthy signal for IPv6.
+// Strings because these are not int64 quantities. A /20 of IPv6 holds 2^108
+// addresses — thirty-three digits — so an integer field would report a ceiling
+// rather than a count, and two such ceilings divided give a ratio that means
+// nothing.
 //
-// The cost is that a client wanting a percentage from these must do
-// arbitrary-precision arithmetic. utilizationPercent is retained precisely so
-// that most clients do not have to: it is the same measurement, already
-// reduced. Use the counts when you need exactness, the percentage when you need
-// a number to show someone.
+// The cost is that a client wanting a percentage must do arbitrary-precision
+// arithmetic. utilizationPercent exists so that most do not have to: it is the
+// same measurement, already reduced. Use the counts when you need exactness,
+// the percentage when you need a number to show someone.
 //
 // Decimal digits only — no sign, no exponent, no units. An empty string means
 // the figure has not been computed, which is distinct from "0".

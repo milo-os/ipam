@@ -22,58 +22,25 @@
 --   a search floor          the lowest address a pool's space is known free
 --                           from, per (pool, address space)
 --
--- ONE MIGRATION, NOT NINE. The class model was developed as a sequence of
--- additive steps, each with guards refusing to apply over data written by the
--- step before. No deployment ran those intermediate steps: 001 is what shipped.
--- Guards against states that never existed are noise, and their operator advice
--- named cleanup tasks from the load-test suite, which a production operator does
--- not have.
+-- Everything here is additive: 001 is left byte-identical, and two allocations
+-- may hold the same address exactly when their scopes differ. Down is a no-op
+-- (see the note above it).
 --
--- EQUIVALENCE IS PROVEN, NOT ASSERTED. One database migrated through the nine
--- steps and another through this file produce identical output from
--- `pg_dump --schema-only`, excluding goose's own version table.
+-- POSTGRESQL FLOOR: 13. Two independent things need it — 001 uses
+-- pg_current_xact_id() / pg_snapshot_xmin(), and 002 needs btree_gist
+-- installable by a non-superuser, which requires trusted extensions. Neither
+-- file uses 14+ syntax. Verified on 13.23, as a non-superuser role owning its
+-- database, exclusion constraint and all. Deployed clusters run 17.10.
+--
+-- The guard below is redundant with 001, which fails first below 13 with
+-- `pg_current_xact_id() does not exist` (confirmed on 12.22). It covers a
+-- database restored from a 001-era dump onto an older server.
+--
+-- Chain depth and cycle rejection happen in Go — internal/allocator/class.go
+-- and internal/registry/ipam/ipclass/storage.go — not here. If you raise this
+-- floor, name the feature that needs it.
 
 -- +goose Up
-
---
--- Class model: scope-based pool identity, class offers, and allocation
--- uniqueness scoped by address space.
---
--- 001 modelled one claim drawing from one named pool. The class model inverts
--- that: a claim names a class and carries a scope, the allocator resolves (or
--- provisions) a pool from it, and two allocations may hold the same address
--- exactly when their scopes differ. Three things follow, and this migration
--- provides them:
---
---   * an identity table concurrent pool provisioning contends on, cheaply,
---   * a class-offer table so class health does not scan every pool's JSON,
---   * a scope digest on every allocation, and an exclusion constraint that
---     enforces non-overlap *within* an address space rather than across all
---     of them.
---
--- 001 is deliberately left byte-identical. Everything here is additive, and
--- Down restores 001-era state exactly (see the note on retained allocations).
---
--- PostgreSQL floor
--- 13, and 001's header comment is right. Two independent things need it:
--- 001 uses pg_current_xact_id() / pg_snapshot_xmin(), added in 13, and 002
--- needs btree_gist installable by a non-superuser, which requires the trusted
--- extension mechanism, also added in 13. Nothing in either file uses 14+
--- syntax. Deployed clusters run 17.10.
---
--- Verified: 001 and 002 both apply cleanly on 13.23, as a non-superuser role
--- owning its database, exclusion constraint and all.
---
--- The guard below is belt-and-braces, not the primary enforcement. Below 13 the
--- schema already fails at 001 — `pg_current_xact_id() does not exist` — before
--- this ever runs, confirmed on 12.22. It earns its place only for a database
--- restored from a 001-era dump onto an older server, and as a statement of the
--- floor that executes rather than one that rots.
---
--- (Chain depth and cycle rejection happen in Go, in internal/allocator/class.go and
--- internal/registry/ipam/ipclass/storage.go. The claim was inherited from a
--- task brief and repeated without checking. If you raise this floor, name the
--- feature that needs it and make sure it is one this repo actually uses.)
 
 -- +goose StatementBegin
 DO $$
@@ -157,11 +124,11 @@ CREATE INDEX IF NOT EXISTS idx_ipam_ippool_class_names
 -- so the answer is reachable from the object store as well, which is what an
 -- on-call engineer has.
 --
--- That query was aspirational for a long time and is now real. It needed three
--- things and had one: this index, a `status.scopeDigest` entry in IPPool's
--- SelectableFields, and a field-label conversion on the scheme. Only the index
--- existed, so the API rejected the selector outright and this index was
--- maintained on every write and never read. All three are in place now, and
+-- The query needs three things: this index, a `status.scopeDigest` entry in
+-- IPPool's SelectableFields, and a field-label conversion on the scheme. Drop
+-- either of the other two and the API rejects the selector outright, leaving
+-- this index maintained on every write and never read. All three are in place,
+-- and
 -- test/e2e/field-selectors issues the query against a live apiserver so it
 -- cannot stop working without a test failing.
 CREATE INDEX IF NOT EXISTS idx_ipam_ippool_scope_digest
@@ -220,9 +187,8 @@ CREATE INDEX IF NOT EXISTS idx_ipam_ipallocation_scope_digest
 -- provision different pools. The digest is used rather than columns because
 -- the set of roles varies by class — there is no fixed column list to index.
 --
--- The foreign key is DEFERRABLE INITIALLY DEFERRED, and that is the whole
--- design. The allocator claims the identity row *before* the pool object
--- exists:
+-- The foreign key is DEFERRABLE INITIALLY DEFERRED so the allocator can claim
+-- the identity row *before* the pool object exists:
 --
 --   INSERT INTO ipam_pool_identity (class_name, scope_digest, pool_key)
 --   VALUES ($1, $2, $3)
@@ -250,11 +216,10 @@ CREATE INDEX IF NOT EXISTS idx_ipam_ipallocation_scope_digest
 --   DO UPDATE SET pool_key = ipam_pool_identity.pool_key
 --   RETURNING pool_key, (xmax = 0) AS won
 --
--- It is correct. But DO UPDATE makes
--- every loser take a row lock on the winner's tuple and write a new version,
--- so the losers serialise against each other on the single row the whole herd
--- is contending for. DO NOTHING takes no lock and writes nothing, so once the
--- winner commits the losers proceed in parallel.
+-- It is correct, and it does not scale: DO UPDATE makes every loser take a row
+-- lock on the winner's tuple and write a new version, so the losers serialise
+-- against each other on the single row the whole herd is contending for. DO
+-- NOTHING takes no lock and writes nothing.
 --
 -- Measured on PostgreSQL 17.10, median wall time for the whole herd, 5 rounds:
 --
@@ -496,14 +461,9 @@ CREATE INDEX IF NOT EXISTS idx_ipam_cidr_alloc_retained
 
 -- 5. Overlap exclusion
 --
--- CLAUDE.md describes a GiST overlap index on (pool_key, allocated_cidr) as an
--- existing secondary check. It never existed: 001 creates a plain btree on
--- pool_key alone, which cannot answer an overlap question at all. The Go
--- allocator has been the only thing preventing overlapping allocations.
---
--- An exclusion constraint fails at creation if any overlapping pair is already
--- present, so it can be added now and possibly never again, while the tables
--- are still disposable.
+-- This constraint is what prevents two allocations from overlapping. The Go
+-- allocator prevents it too, and is not the enforcement: a bug there, or any
+-- writer that does not go through it, is refused here.
 --
 -- Both equality columns are load-bearing, and getting either wrong breaks a
 -- case the design requires:
@@ -809,10 +769,10 @@ $$;
 -- The search does not read it either way (`purpose <> 'Claim'` excludes
 -- reservations from every space). What changes is the exclusion constraint,
 -- which does NOT filter by purpose: (pool_key, scope_digest, allocated_cidr)
--- now compares a reservation against every `uniqueWithin: []` claim in the
--- pool, whoever made it. 002's header says reserved rows participate in that
--- constraint precisely so that a held address is capacity nobody else can use;
--- carrying the owner's pool digest is what stopped them participating for
+-- compares a reservation against every `uniqueWithin: []` claim in the pool,
+-- whoever made it. That is the point of reserved rows participating in the
+-- constraint — a held address is capacity nobody else can use. Give a
+-- reservation the owner's pool digest instead and it stops participating for
 -- anyone but the owner.
 --
 -- It cannot wrongly refuse a claim: the search already withholds every
@@ -1072,14 +1032,13 @@ CREATE TRIGGER ipam_cidr_alloc_lower_floor
 -- and the lower value survives. That costs a slower scan next time and loses
 -- nothing, which is the direction this whole mechanism is built to fail in.
 --
--- DO NOT READ THE CAS AS AVOIDING A LOCK. It does not: an UPDATE takes a row
--- lock for the rest of
--- the transaction whether or not its WHERE clause is a compare-and-set. The CAS
--- solves the LOST-UPDATE problem. It does nothing about lock ordering.
+-- DO NOT READ THE CAS AS AVOIDING A LOCK. An UPDATE takes a row lock for the
+-- rest of the transaction whether or not its WHERE clause is a compare-and-set.
+-- The CAS solves the LOST-UPDATE problem and does nothing about lock ordering.
 --
 -- Lock ordering is handled where it has to be, in the code. AllocatePrefix
 -- takes the pool row lock first and touches the floor second. Every path that
--- DELETES an allocation — and so fires the trigger above — now takes the pool
+-- DELETES an allocation — and so fires the trigger above — takes the pool
 -- row lock before deleting, so it acquires the same two locks in the same
 -- order. Release does this for every pool it will touch, sorted, because a
 -- claim can span pools and two releases could otherwise take the same pair in
@@ -1131,6 +1090,17 @@ SET data = convert_to(
 WHERE data IS NOT NULL
   AND jsonb_typeof(convert_from(data, 'UTF8')::jsonb #> '{status,capacity,total}') = 'number';
 -- +goose StatementEnd
+
+-- Down is deliberately a no-op rather than a reversal.
+--
+-- Reversing would drop scope_digest, purpose and allocation_key, and with them
+-- the only record of which address space each allocation belongs to. A retained
+-- allocation has no claim to rebuild that from, so the drop is not recoverable
+-- by re-applying Up. The 001-era schema is also unable to represent two
+-- allocations holding the same address, which this schema permits, so a
+-- reversal would have to choose one of them to delete.
+--
+-- Roll back by restoring a dump taken before this migration.
 
 -- +goose Down
 

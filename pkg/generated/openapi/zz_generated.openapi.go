@@ -1258,13 +1258,6 @@ func schema_pkg_apis_ipam_v1alpha1_ObjectRef(ref common.ReferenceCallback) commo
 							Format:  "",
 						},
 					},
-					"uid": {
-						SchemaProps: spec.SchemaProps{
-							Description: "UID pins this reference to one specific instance of the named object. Unlike ScopeRef.UID it takes no part in allocation identity — it exists so that \"who holds this address\" stays answerable after the holder has been deleted and recreated under the same name, which is exactly the case an operator hits during an incident.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
 				},
 				Required: []string{"apiGroup", "kind", "name"},
 			},
@@ -1276,7 +1269,7 @@ func schema_pkg_apis_ipam_v1alpha1_PoolCapacity(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PoolCapacity reports a pool's address counts EXACTLY, as decimal strings.\n\nStrings because these are not int64 quantities. A /20 of IPv6 holds 2^108 addresses — thirty-three digits — and the previous int64 fields saturated at 9223372036854775807, which is not an address count but a ceiling. A pool reported `total: 9223372036854775807, allocated: 9007199254740991`, and neither figure was true: a client dividing them got a number that meant nothing, which is why utilizationPercent had to exist as the only trustworthy signal for IPv6.\n\nThe cost is that a client wanting a percentage from these must do arbitrary-precision arithmetic. utilizationPercent is retained precisely so that most clients do not have to: it is the same measurement, already reduced. Use the counts when you need exactness, the percentage when you need a number to show someone.\n\nDecimal digits only — no sign, no exponent, no units. An empty string means the figure has not been computed, which is distinct from \"0\".",
+				Description: "PoolCapacity reports a pool's address counts EXACTLY, as decimal strings.\n\nStrings because these are not int64 quantities. A /20 of IPv6 holds 2^108 addresses — thirty-three digits — so an integer field would report a ceiling rather than a count, and two such ceilings divided give a ratio that means nothing.\n\nThe cost is that a client wanting a percentage must do arbitrary-precision arithmetic. utilizationPercent exists so that most do not have to: it is the same measurement, already reduced. Use the counts when you need exactness, the percentage when you need a number to show someone.\n\nDecimal digits only — no sign, no exponent, no units. An empty string means the figure has not been computed, which is distinct from \"0\".",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"total": {
@@ -1414,13 +1407,6 @@ func schema_pkg_apis_ipam_v1alpha1_ScopeRef(ref common.ReferenceCallback) common
 							Default: "",
 							Type:    []string{"string"},
 							Format:  "",
-						},
-					},
-					"uid": {
-						SchemaProps: spec.SchemaProps{
-							Description: "UID pins this reference to one specific instance of the named object. When set it participates in scope identity, so an object deleted and recreated under the same name is a *different* address space and gets fresh allocations rather than inheriting its predecessor's.\n\nSuppliers should set it. Omitting it makes identity name-based, which lets a recreated object inherit — occasionally desirable, and the reason this is a field rather than a rule.",
-							Type:        []string{"string"},
-							Format:      "",
 						},
 					},
 				},
