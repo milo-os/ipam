@@ -1,7 +1,5 @@
 package allocation
 
-// First-fit without the whole set.
-//
 // FindFirstAvailableBlock and Allocate take every allocation in the pool as a
 // slice. That shape is honest for a library with no database under it, and it
 // is why allocation cost grows with pool occupancy: the caller loads N rows to
@@ -22,11 +20,10 @@ package allocation
 // strategies therefore keep the set-based path and its cost. That limit is
 // what the strategies mean, not an omission to fix later.
 //
-// # This is not yet on the hot path, and what it still needs
+// # Not wired yet: two things wiring needs
 //
-// Nothing in internal/allocator calls Scan. Wiring it is not a matter of
-// swapping the call, and the two missing pieces are worth stating here rather
-// than in a task nobody will find:
+// Nothing in internal/allocator calls Scan, and swapping the call is not enough.
+// Two pieces are missing:
 //
 //  1. An index ordered by (pool_key, allocated_cidr). The index that exists is
 //     (pool_key, scope_digest) INCLUDE (allocated_cidr). An INCLUDE column
@@ -204,8 +201,8 @@ func (s *Scan) feedOne(block net.IPNet) error {
 	// either this block's start minus one, or the parent's last address when
 	// End supplies it. Turning stray blocks away here therefore means no fit
 	// can be proposed past the end of the parent, and tryFit needs no clamp of
-	// its own. One was written and removed: deleting it changed no test,
-	// because this return had already made it unreachable.
+	// its own. A clamp there is dead code, and no test detects its absence,
+	// because this return makes it unreachable.
 	if start.Cmp(s.pEnd) > 0 {
 		return nil
 	}

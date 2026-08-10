@@ -1,7 +1,5 @@
 package allocation
 
-// One traversal, two answers.
-//
 // Choosing a block and reporting utilization are two questions about one
 // thing: the pool's free regions. Computing the regions costs time linear in
 // the number of allocations the pool already holds. Two separate calls compute
@@ -338,16 +336,12 @@ func measure(views []parentView) PoolMeasurement {
 	m.Total = new(big.Int)
 	m.Free = new(big.Int)
 
-	// Totals only.
-	//
-	// This loop used to also find the largest free aligned block. That single
-	// concern cost ~99% of the function, because it called largestAlignedBlock
-	// once per FREE REGION, and a pool holding N scattered allocations has
-	// roughly N regions. At 4,096 allocations, measure ran in 1,321us with the
-	// search and 1.5us without.
-	//
-	// Every successful claim reaches this function through
-	// PublishPoolCapacity, so the search ran on the hot path.
+	// This loop deliberately computes totals and nothing else. It used to also
+	// find the largest free aligned block, which cost ~99% of the function:
+	// largestAlignedBlock ran once per FREE REGION, and a pool holding N
+	// scattered allocations has roughly N regions. At 4,096 allocations,
+	// measure took 1,321us with the search and 1.5us without, on the path
+	// every successful claim takes.
 	for i := range views {
 		v := &views[i]
 		m.Total.Add(m.Total, addressCount(v.parent))
@@ -364,14 +358,11 @@ func measure(views []parentView) PoolMeasurement {
 		return m
 	}
 
-	// Divide as a rational, not as integers.
-	//
-	// Integer division truncates, and truncation is the defect this replaced:
-	// every figure below 1% became 0. A pool holding 256 of 1,048,576
-	// addresses reported 0%.
-	//
-	// big.Rat stays exact for IPv6 counts of any width. float64 division of the
-	// raw totals loses precision before the percentage is taken.
+	// Integer division truncates, and truncation was the defect this replaced:
+	// every figure below 1% became 0, so a pool holding 256 of 1,048,576
+	// addresses reported 0%. big.Rat stays exact for IPv6 counts of any width,
+	// where float64 division of the raw totals loses precision before the
+	// percentage is taken.
 	m.UtilizationPercent = clampPercent(new(big.Rat).SetFrac(
 		new(big.Int).Mul(m.Consumed, big.NewInt(100)), m.Total))
 	return m

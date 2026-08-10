@@ -249,7 +249,7 @@ func TestAllocate_UtilizationIgnoresDuplicateRows(t *testing.T) {
 
 // The case from #41: a /28 where eight networks each legitimately hold the same
 // address. One address is consumed, not eight. The summing implementation
-// reports eight times the real occupancy; this is the whole reason Measure
+// reports eight times the real occupancy, which is why Measure
 // exists.
 func TestMeasure_CountsSharedAddressOnce(t *testing.T) {
 	parents := mustCIDRs(t, []string{"10.71.0.0/28"})
