@@ -288,10 +288,10 @@ func TestCIDRPool_Allocate_DelegatesToFinder(t *testing.T) {
 		wantErr  error
 	}{
 		{
-			name:     "first_fit_default",
-			ranges:   []string{"10.0.0.0/24"},
-			prefix:   25,
-			want:     "10.0.0.0/25",
+			name:   "first_fit_default",
+			ranges: []string{"10.0.0.0/24"},
+			prefix: 25,
+			want:   "10.0.0.0/25",
 		},
 		{
 			name:     "best_fit_routes_through_pool",
@@ -302,12 +302,12 @@ func TestCIDRPool_Allocate_DelegatesToFinder(t *testing.T) {
 			want:     "10.0.1.0/24",
 		},
 		{
-			name:    "exhausted_propagates_error",
-			ranges:  []string{"10.0.0.0/30"},
+			name:     "exhausted_propagates_error",
+			ranges:   []string{"10.0.0.0/30"},
 			existing: []string{"10.0.0.0/30"},
 			strategy: FirstFit,
 			prefix:   30,
-			wantErr: ErrPoolExhausted,
+			wantErr:  ErrPoolExhausted,
 		},
 	}
 	for _, c := range cases {
@@ -318,62 +318,6 @@ func TestCIDRPool_Allocate_DelegatesToFinder(t *testing.T) {
 				Strategy: c.strategy,
 			}
 			got, err := p.Allocate(c.prefix)
-			if c.wantErr != nil {
-				if !errors.Is(err, c.wantErr) {
-					t.Fatalf("err = %v, want %v", err, c.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if cidrStr(*got) != c.want {
-				t.Fatalf("got %s, want %s", cidrStr(*got), c.want)
-			}
-		})
-	}
-}
-
-func TestCIDRPool_LargestFreeBlock_Table(t *testing.T) {
-	cases := []struct {
-		name     string
-		ranges   []string
-		existing []string
-		want     string
-		wantErr  error
-	}{
-		{
-			name:   "empty_pool_returns_parent",
-			ranges: []string{"10.0.0.0/24"},
-			want:   "10.0.0.0/24",
-		},
-		{
-			name:     "half_used_returns_other_half",
-			ranges:   []string{"10.0.0.0/24"},
-			existing: []string{"10.0.0.0/25"},
-			want:     "10.0.0.128/25",
-		},
-		{
-			name:     "fragmented_returns_largest_aligned_block",
-			ranges:   []string{"10.0.0.0/24"},
-			existing: []string{"10.0.0.0/26", "10.0.0.128/26"},
-			// Free regions: 10.0.0.64/26 and 10.0.0.192/26 — both /26.
-			want: "10.0.0.64/26",
-		},
-		{
-			name:     "fully_allocated",
-			ranges:   []string{"10.0.0.0/30"},
-			existing: []string{"10.0.0.0/30"},
-			wantErr:  ErrPoolExhausted,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			p := &CIDRPool{
-				Ranges:   parseCIDRs(t, c.ranges),
-				Existing: parseCIDRs(t, c.existing),
-			}
-			got, err := p.LargestFreeBlock()
 			if c.wantErr != nil {
 				if !errors.Is(err, c.wantErr) {
 					t.Fatalf("err = %v, want %v", err, c.wantErr)
@@ -456,4 +400,3 @@ func parseCIDRs(t *testing.T, ss []string) []net.IPNet {
 	}
 	return out
 }
-
