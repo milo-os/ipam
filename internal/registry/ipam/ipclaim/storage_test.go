@@ -823,7 +823,6 @@ func TestExhaustionReportsTheResolvedPool(t *testing.T) {
 	fa.allocErr = &allocator.ExhaustionError{
 		PoolKey:               "/ipam.miloapis.com/ippools/tenant-v4-us-central-1",
 		RequestedPrefixLength: 32,
-		LargestFreePrefix:     28,
 		UtilizationPercent:    98,
 	}
 
@@ -851,7 +850,6 @@ func TestExhaustionReportsTheResolvedPool(t *testing.T) {
 		registryerrors.CausePoolName:           "tenant-v4-us-central-1",
 		registryerrors.CauseClassName:          "tenant-endpoint-ipv4",
 		registryerrors.CauseRequestedPrefix:    "32",
-		registryerrors.CauseLargestFreePrefix:  "28",
 		registryerrors.CauseUtilizationPercent: "98",
 	} {
 		if causes[field] != want {

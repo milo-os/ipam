@@ -331,9 +331,9 @@ func (a *app) renderPoolTable(pools []ipamv1alpha1.IPPool) error {
 	sort.Slice(pools, func(i, j int) bool { return pools[i].Name < pools[j].Name })
 
 	wide := a.opts.output == outputWide
-	headers := []string{"NAME", "CIDR", "FAMILY", "CLASSES", "SCOPE", "UTILIZATION", "LARGEST FREE", "AGE"}
+	headers := []string{"NAME", "CIDR", "FAMILY", "CLASSES", "SCOPE", "UTILIZATION", "AGE"}
 	if wide {
-		headers = []string{"NAME", "CIDR", "FAMILY", "CLASSES", "SCOPE", "UTILIZATION", "LARGEST FREE", "CHILDREN", "ALLOCATIONS", "PHASE", "AGE"}
+		headers = []string{"NAME", "CIDR", "FAMILY", "CLASSES", "SCOPE", "UTILIZATION", "CHILDREN", "ALLOCATIONS", "PHASE", "AGE"}
 	}
 	t := newTable(a.io.Out, headers)
 
@@ -351,15 +351,14 @@ func (a *app) renderPoolTable(pools []ipamv1alpha1.IPPool) error {
 			cidr = p.Spec.CIDR
 		}
 		util := utilizationCell(poolUtilization(p), 10, a.color.enabled)
-		free := poolLargestFreeCell(p)
 		family := orDash(string(poolFamily(p)))
 		classes := poolClassesCell(p)
 		if wide {
-			t.row(p.Name, orDash(cidr), family, classes, formatScope(p.Spec.Scope), util, free,
+			t.row(p.Name, orDash(cidr), family, classes, formatScope(p.Spec.Scope), util,
 				itoa(children[p.Name]), itoa(allocations[p.Name]), orDash(string(p.Status.Phase)),
 				humanDuration(p.CreationTimestamp))
 		} else {
-			t.row(p.Name, orDash(cidr), family, classes, formatScope(p.Spec.Scope), util, free,
+			t.row(p.Name, orDash(cidr), family, classes, formatScope(p.Spec.Scope), util,
 				humanDuration(p.CreationTimestamp))
 		}
 	}
@@ -452,7 +451,6 @@ func (a *app) renderPoolDetail(p *ipamv1alpha1.IPPool) error {
 		t.row("Capacity", fmt.Sprintf("total=%s allocated=%s available=%s",
 			p.Status.Capacity.Total, p.Status.Capacity.Allocated, p.Status.Capacity.Available))
 	}
-	t.row("Largest free", poolLargestFreeCell(p))
 	if alloc := p.Spec.Allocation; alloc.MinPrefixLength != 0 || alloc.MaxPrefixLength != 0 || alloc.Strategy != "" {
 		t.row("Allocation", fmt.Sprintf("min=/%d max=/%d strategy=%s",
 			alloc.MinPrefixLength, alloc.MaxPrefixLength, orDash(string(alloc.Strategy))))

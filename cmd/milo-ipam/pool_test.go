@@ -24,7 +24,7 @@ func TestPoolListTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := ta.out.String()
-	for _, want := range []string{"NAME", "UTILIZATION", "LARGEST FREE", "prod-backbone", "73%", "edge-v6", "4%"} {
+	for _, want := range []string{"NAME", "UTILIZATION", "prod-backbone", "73%", "edge-v6", "4%"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table missing %q:\n%s", want, out)
 		}

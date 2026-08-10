@@ -271,7 +271,6 @@ func selectBlock(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, pare
 			return nil, &ExhaustionError{
 				PoolKey:               req.PoolKey,
 				RequestedPrefixLength: req.PrefixLength,
-				LargestFreePrefix:     int32(res.LargestFreePrefix),
 				UtilizationPercent:    res.UtilizationPercent,
 			}
 		}
@@ -352,7 +351,6 @@ func measurePoolForExhaustion(ctx context.Context, tx pgx.Tx, poolKey string, pa
 	}
 	m := measurePool(parents, existing)
 	return &ExhaustionError{
-		LargestFreePrefix:  int32(m.LargestFreePrefix),
 		UtilizationPercent: m.UtilizationPercent,
 	}, nil
 }
@@ -483,7 +481,6 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 			return nil, &ExhaustionError{
 				PoolKey:               sourcePoolKey,
 				RequestedPrefixLength: prefixLen,
-				LargestFreePrefix:     int32(res.LargestFreePrefix),
 				UtilizationPercent:    res.UtilizationPercent,
 			}
 		}
@@ -1430,7 +1427,6 @@ func newExhaustionError(poolKey string, prefixLen int, parents, existing []net.I
 		PoolKey:               poolKey,
 		RequestedPrefixLength: prefixLen,
 		UtilizationPercent:    m.UtilizationPercent,
-		LargestFreePrefix:     int32(m.LargestFreePrefix),
 	}
 }
 

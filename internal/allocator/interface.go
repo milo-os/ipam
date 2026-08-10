@@ -166,9 +166,12 @@ var _ PrefixAllocator = (*PostgresPrefixAllocator)(nil)
 // classRef rather than classNames. Every fact here is in hand at the moment of
 // failure and nowhere else, so it travels with the error.
 //
-// LargestFreePrefix is the one that changes what an operator does. A pool with
-// no free space needs more capacity; a pool with a free /28 that cannot satisfy
-// a /24 is fragmented, and adding capacity may not help.
+// It used to also carry the largest free aligned block, which is the figure that
+// distinguishes "needs more capacity" from "is fragmented". That was removed
+// because it was not free: finding it costs a scan of every free region, and the
+// same computation sat on the success path too, where it was ~99% of measure().
+// Utilization answers the common case — a pool at 100% needs capacity — and the
+// fragmented case is diagnosable from the allocation list when it arises.
 //
 // It wraps ErrPoolExhausted, so existing errors.Is checks keep working and
 // callers that want the detail use errors.As.
@@ -179,16 +182,13 @@ type ExhaustionError struct {
 	PoolKey string
 	// RequestedPrefixLength is the block size that could not be satisfied.
 	RequestedPrefixLength int
-	// LargestFreePrefix is the prefix length of the largest free aligned block
-	// left, or 0 when there is none.
-	LargestFreePrefix int32
 	// UtilizationPercent is the pool's allocated share, 0–100.
 	UtilizationPercent float64
 }
 
 func (e *ExhaustionError) Error() string {
-	return fmt.Sprintf("ipam: pool %q cannot satisfy a /%d (largest free /%d, %g%% utilized)",
-		e.PoolKey, e.RequestedPrefixLength, e.LargestFreePrefix, e.UtilizationPercent)
+	return fmt.Sprintf("ipam: pool %q cannot satisfy a /%d (%g%% utilized)",
+		e.PoolKey, e.RequestedPrefixLength, e.UtilizationPercent)
 }
 
 // Unwrap makes errors.Is(err, ErrPoolExhausted) true, so every existing

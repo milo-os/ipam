@@ -28,7 +28,6 @@ func BenchmarkAllocateVsSeparateCalls(b *testing.B) {
 					b.Fatal(err)
 				}
 				after := append(append([]net.IPNet{}, existing...), *block)
-				_, _ = LargestFreePrefixLen(parents, after)
 				_ = UtilizationPercent(parents, after)
 			}
 		})
@@ -88,7 +87,6 @@ func BenchmarkRowOrderSensitivity(b *testing.B) {
 // The pool-status path: two traversals plus region splitting, against one.
 //
 // SeparateCalls mirrors what the allocator does per status write —
-// LargestFreePrefixLen for the prefix, and a total-minus-free consumption
 // computed via SubtractCIDR, which splits every free region into aligned CIDRs
 // only to add their sizes back up. Measure answers both from one pass.
 func BenchmarkMeasureVsStatusCalls(b *testing.B) {
@@ -98,7 +96,6 @@ func BenchmarkMeasureVsStatusCalls(b *testing.B) {
 		b.Run(fmt.Sprintf("SeparateCalls/n=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				_, _ = LargestFreePrefixLen(parents, existing)
 				free := new(big.Int)
 				for _, p := range parents {
 					for _, c := range SubtractCIDR(p, existing) {

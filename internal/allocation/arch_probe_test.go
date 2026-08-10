@@ -64,9 +64,6 @@ func TestArchProbe(t *testing.T) {
 			t.Fatalf("carve %d: %v", i, err)
 		}
 		existing = append(existing, *got)
-		if _, ok := LargestFreePrefixLen(parents, existing); !ok {
-			t.Fatalf("carve %d: no largest free prefix", i)
-		}
 		_ = UtilizationPercent(parents, existing)
 
 		if i%500 == 499 {

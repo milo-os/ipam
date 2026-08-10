@@ -1048,7 +1048,6 @@ func exhaustionError(err error, className string) error {
 		className,
 		poolName,
 		int32(detail.RequestedPrefixLength),
-		detail.LargestFreePrefix,
 		detail.UtilizationPercent,
 		detail.Error(),
 	)

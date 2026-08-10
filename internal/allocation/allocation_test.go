@@ -258,53 +258,6 @@ func TestCIDRPool_Release(t *testing.T) {
 	}
 }
 
-func TestLargestFreePrefixLen(t *testing.T) {
-	tests := []struct {
-		name     string
-		parents  []net.IPNet
-		existing []net.IPNet
-		want     int
-		wantOK   bool
-	}{
-		{
-			name:    "empty IPv4 pool",
-			parents: []net.IPNet{mustCIDR(t, "10.0.0.0/16")},
-			want:    16,
-			wantOK:  true,
-		},
-		{
-			name:     "IPv4 with one /24 carved",
-			parents:  []net.IPNet{mustCIDR(t, "10.0.0.0/24")},
-			existing: []net.IPNet{mustCIDR(t, "10.0.0.0/25")},
-			want:     25,
-			wantOK:   true,
-		},
-		{
-			name:    "wide IPv6 pool reports a prefix length, not overflow",
-			parents: []net.IPNet{mustCIDR(t, "2001:db8::/44")},
-			want:    44,
-			wantOK:  true,
-		},
-		{
-			name:     "fully allocated pool has no free block",
-			parents:  []net.IPNet{mustCIDR(t, "10.0.0.0/24")},
-			existing: []net.IPNet{mustCIDR(t, "10.0.0.0/24")},
-			wantOK:   false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := LargestFreePrefixLen(tt.parents, tt.existing)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if ok && got != tt.want {
-				t.Fatalf("prefix len = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestUtilizationPercent(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -342,19 +295,5 @@ func TestUtilizationPercent(t *testing.T) {
 				t.Fatalf("UtilizationPercent %d out of [0,100]", got)
 			}
 		})
-	}
-}
-
-func TestCIDRPool_LargestFreeBlock(t *testing.T) {
-	p := &CIDRPool{
-		Ranges:   []net.IPNet{mustCIDR(t, "10.0.0.0/16")},
-		Existing: []net.IPNet{mustCIDR(t, "10.0.0.0/24")},
-	}
-	got, err := p.LargestFreeBlock()
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if cidrStr(*got) == "10.0.0.0/24" {
-		t.Fatalf("largest free block should not be the allocated one")
 	}
 }

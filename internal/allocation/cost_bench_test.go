@@ -28,7 +28,6 @@ func existingAt(n int) ([]net.IPNet, []net.IPNet) {
 // the total quadratic in pool occupancy. Measured at n=4000:
 //
 //	FindFirstAvailableBlock   1.75 ms   3.76 MB   49%
-//	LargestFreePrefixLen      1.68 ms   3.77 MB   47%
 //	UtilizationPercent        0.17 ms   0.38 MB    5%
 //
 // The result worth acting on is the middle row: **computing the status field
@@ -44,12 +43,6 @@ func BenchmarkPerAllocationWork(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				_, _ = FindFirstAvailableBlock(parents, existing, 48, FirstFit)
-			}
-		})
-		b.Run(fmt.Sprintf("LargestFreePrefixLen/n=%d", n), func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				_, _ = LargestFreePrefixLen(parents, existing)
 			}
 		})
 		b.Run(fmt.Sprintf("UtilizationPercent/n=%d", n), func(b *testing.B) {

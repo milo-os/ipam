@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"math/bits"
 	"net/netip"
 	"time"
 
@@ -54,26 +53,6 @@ func utilizationLabel(pct float64) string {
 	default:
 		return ""
 	}
-}
-
-// largestFreePrefix derives the prefix length of the largest power-of-two block
-// that fits in the pool's available address count. It is an approximation
-// computed entirely from status.capacity (the API does not report a true
-// largest-contiguous-free block); a value of 0 means "no free space" and the
-// caller should treat -1 / 0 as "unknown / none".
-//
-// Example: an IPv4 pool with 1024 available addresses can fit at most a /22
-// (1024 = 2^10, hostBits=10, 32-10=22).
-func largestFreePrefix(family ipamv1alpha1.IPFamily, available int64) int {
-	if available <= 0 {
-		return 0
-	}
-	width := familyBits(family)
-	hostBits := bits.Len64(uint64(available)) - 1 // floor(log2(available))
-	if hostBits > width {
-		hostBits = width
-	}
-	return width - hostBits
 }
 
 // utilizationCell renders the at-a-glance utilization for a table row: a bar (in
@@ -139,17 +118,6 @@ func poolUtilization(p *ipamv1alpha1.IPPool) float64 {
 	return utilizationPercent(p.Status.Capacity)
 }
 
-// poolLargestFreeCell formats the largest-free-block column.
-//
-// The server no longer reports an exact largest free prefix — status.
-// largestFreePrefix was removed because computing it meant reading every
-// allocation in the pool on every write. What is left is the estimate derived
-// from the integer capacity counts, which is approximate for IPv6 by
-// construction and is labelled as such by largestFreeCell.
-func poolLargestFreeCell(p *ipamv1alpha1.IPPool) string {
-	return largestFreeCell(p.Spec.IPFamily, p.Status.Capacity)
-}
-
 // utilizationBar renders a fixed-width bar of filled/empty cells. When color is
 // enabled the filled portion is tinted by severity; the glyphs themselves still
 // distinguish filled from empty so the bar reads correctly in monochrome.
@@ -182,21 +150,6 @@ func utilizationBar(pct float64, width int, useColor bool) string {
 	default:
 		return colorize(bar, colorGreen)
 	}
-}
-
-// largestFreeCell formats the largest-free-block column.
-func largestFreeCell(family ipamv1alpha1.IPFamily, c ipamv1alpha1.PoolCapacity) string {
-	avail, ok := new(big.Int).SetString(c.Available, 10)
-	if !ok || !avail.IsInt64() {
-		// Either unreported, or a count too large for the estimator's int64
-		// arithmetic — which for IPv6 is the normal case, not an error.
-		return "—"
-	}
-	l := largestFreePrefix(family, avail.Int64())
-	if l <= 0 {
-		return "—"
-	}
-	return fmt.Sprintf("/%d", l)
 }
 
 // humanDuration formats an age the way kubectl does: the two most significant

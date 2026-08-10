@@ -75,34 +75,6 @@ func (p *CIDRPool) Release(cidr net.IPNet) ([]net.IPNet, error) {
 	return out, nil
 }
 
-// LargestFreeBlock returns the biggest free contiguous CIDR (smallest prefix
-// length) currently available within the pool. Returns ErrPoolExhausted if
-// the pool is fully allocated.
-func (p *CIDRPool) LargestFreeBlock() (*net.IPNet, error) {
-	var best *net.IPNet
-	var bestSize *big.Int
-	for _, parent := range p.Ranges {
-		_, bits := parent.Mask.Size()
-		within := filterWithin(parent, p.Existing)
-		regions := freeRegions(parent, within)
-		for _, region := range regions {
-			cidr, ok := largestAlignedBlock(region.start, region.end, bits)
-			if !ok {
-				continue
-			}
-			if best == nil || cidrSize(cidr).Cmp(bestSize) > 0 {
-				blockCopy := cidr
-				best = &blockCopy
-				bestSize = cidrSize(cidr)
-			}
-		}
-	}
-	if best == nil {
-		return nil, ErrPoolExhausted
-	}
-	return best, nil
-}
-
 // FragmentationPct reports the proportion of free address space that is split
 // across multiple non-contiguous regions. 0.0 means a single contiguous free
 // region (or fully allocated); higher values mean more fragmentation.
@@ -174,20 +146,6 @@ func addressCount(cidr net.IPNet) *big.Int {
 		return big.NewInt(0)
 	}
 	return new(big.Int).Lsh(big.NewInt(1), uint(hostBits))
-}
-
-// LargestFreePrefixLen returns the prefix length of the largest free aligned
-// block available across parents after removing existing allocations. The
-// second return value is false when the pool is fully allocated (no free
-// block). The result is family-agnostic and never overflows.
-func LargestFreePrefixLen(parents, existing []net.IPNet) (int, bool) {
-	pool := &CIDRPool{Ranges: parents, Existing: existing}
-	block, err := pool.LargestFreeBlock()
-	if err != nil {
-		return 0, false
-	}
-	ones, _ := block.Mask.Size()
-	return ones, true
 }
 
 // UtilizationPercent returns the allocated share of the parents' total address
@@ -405,35 +363,6 @@ func freeRegions(parent net.IPNet, within []net.IPNet) []ipRange {
 		})
 	}
 	return regions
-}
-
-// largestAlignedBlock returns the largest aligned CIDR that fits inside
-// [start,end] (inclusive) for the given address-family bit width. The
-// returned CIDR uses the same address family as derived from totalBits.
-func largestAlignedBlock(start, end *big.Int, totalBits int) (net.IPNet, bool) {
-	if start.Cmp(end) > 0 {
-		return net.IPNet{}, false
-	}
-	// Try smaller prefix lengths (larger blocks) first, skipping those whose
-	// block is wider than the region: if blockSize > span then even a block
-	// starting at `start` ends past `end`, so no alignment can save it. On a
-	// fragmented pool most regions are small, so this starts the walk within a
-	// step or two of the answer instead of at /0.
-	span := new(big.Int).Sub(end, start)
-	span.Add(span, big.NewInt(1))
-	first := totalBits - (span.BitLen() - 1)
-	if first < 0 {
-		first = 0
-	}
-	for p := first; p <= totalBits; p++ {
-		size := blockSize(p, totalBits)
-		aligned := alignUp(start, p, totalBits)
-		blockEnd := new(big.Int).Sub(new(big.Int).Add(aligned, size), big.NewInt(1))
-		if blockEnd.Cmp(end) <= 0 {
-			return makeCIDR(aligned, p, totalBits), true
-		}
-	}
-	return net.IPNet{}, false
 }
 
 // splitRegionIntoAlignedCIDRs greedily decomposes [start,end] into the

@@ -45,28 +45,6 @@ func TestUtilizationLabel(t *testing.T) {
 	}
 }
 
-func TestLargestFreePrefix(t *testing.T) {
-	cases := []struct {
-		name      string
-		family    ipamv1alpha1.IPFamily
-		available int64
-		want      int
-	}{
-		{"none", ipamv1alpha1.IPv4, 0, 0},
-		{"exactly 256 -> /24", ipamv1alpha1.IPv4, 256, 24},
-		{"1024 -> /22", ipamv1alpha1.IPv4, 1024, 22},
-		{"1000 -> /23 (floor)", ipamv1alpha1.IPv4, 1000, 23},
-		{"one address -> /32", ipamv1alpha1.IPv4, 1, 32},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := largestFreePrefix(tc.family, tc.available); got != tc.want {
-				t.Fatalf("largestFreePrefix(%s,%d) = %d, want %d", tc.family, tc.available, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestValidateCIDR(t *testing.T) {
 	cases := []struct {
 		in       string

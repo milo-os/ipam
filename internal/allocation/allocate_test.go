@@ -1,7 +1,7 @@
 package allocation
 
 // Allocate answers in one traversal what FindFirstAvailableBlock,
-// LargestFreePrefixLen and UtilizationPercent answer in three. These tests
+// UtilizationPercent answers in two. These tests
 // exist mainly to hold the two paths to the same answers, since the whole
 // value of the merged path is that it changes nothing but the cost.
 
@@ -32,9 +32,6 @@ func allocateSeparately(t *testing.T, parents, existing []net.IPNet, prefixLen i
 		if rErr == nil {
 			after = append(append([]net.IPNet{}, after...), reserved...)
 		}
-	}
-	if lfp, ok := LargestFreePrefixLen(parents, after); ok {
-		res.LargestFreePrefix = lfp
 	}
 	// Measure, not the exported UtilizationPercent. That one SUMS allocation
 	// sizes — it double-counts an address held by two allocations, and it
@@ -99,9 +96,6 @@ func TestAllocate_AgreesWithSeparateCalls(t *testing.T) {
 			if got.Block != nil && cidrStr(*got.Block) != cidrStr(*want.Block) {
 				t.Fatalf("block: merged=%s separate=%s", cidrStr(*got.Block), cidrStr(*want.Block))
 			}
-			if got.LargestFreePrefix != want.LargestFreePrefix {
-				t.Fatalf("largest free prefix: merged=%d separate=%d", got.LargestFreePrefix, want.LargestFreePrefix)
-			}
 			if got.UtilizationPercent != want.UtilizationPercent {
 				t.Fatalf("utilization: merged=%g%% separate=%g%%", got.UtilizationPercent, want.UtilizationPercent)
 			}
@@ -123,9 +117,6 @@ func TestAllocate_AgreesWithSeparateCalls_FillToExhaustion(t *testing.T) {
 
 				if (gotErr == nil) != (wantErr == nil) {
 					t.Fatalf("step %d: error mismatch: merged=%v separate=%v", i, gotErr, wantErr)
-				}
-				if got.LargestFreePrefix != want.LargestFreePrefix {
-					t.Fatalf("step %d: largest free prefix: merged=%d separate=%d", i, got.LargestFreePrefix, want.LargestFreePrefix)
 				}
 				if got.UtilizationPercent != want.UtilizationPercent {
 					t.Fatalf("step %d: utilization: merged=%g%% separate=%g%%", i, got.UtilizationPercent, want.UtilizationPercent)
@@ -169,9 +160,6 @@ func TestAllocate_ReportsPostAllocationState(t *testing.T) {
 	if got.UtilizationPercent != 50 {
 		t.Fatalf("expected 50%% utilization after taking half, got %g%%", got.UtilizationPercent)
 	}
-	if got.LargestFreePrefix != 25 {
-		t.Fatalf("expected largest free prefix 25, got %d", got.LargestFreePrefix)
-	}
 }
 
 // On exhaustion the figures still describe the pool, because that is what the
@@ -192,9 +180,6 @@ func TestAllocate_PopulatesResultOnExhaustion(t *testing.T) {
 	if got.UtilizationPercent != 50 {
 		t.Fatalf("expected 50%% utilization, got %g%%", got.UtilizationPercent)
 	}
-	if got.LargestFreePrefix != 25 {
-		t.Fatalf("expected largest free prefix 25, got %d", got.LargestFreePrefix)
-	}
 }
 
 // A fully-allocated pool has no free block at all, which is the zero sentinel
@@ -206,9 +191,6 @@ func TestAllocate_FullPoolReportsZeroLargestFree(t *testing.T) {
 	got, err := Allocate(parents, existing, 26, FirstFit, Reservation{})
 	if !errors.Is(err, ErrPoolExhausted) {
 		t.Fatalf("expected ErrPoolExhausted, got %v", err)
-	}
-	if got.LargestFreePrefix != 0 {
-		t.Fatalf("expected 0 (nothing free), got %d", got.LargestFreePrefix)
 	}
 	if got.UtilizationPercent != 100 {
 		t.Fatalf("expected 100%%, got %g%%", got.UtilizationPercent)
@@ -362,9 +344,6 @@ func TestMeasure_Table(t *testing.T) {
 			if got.UtilizationPercent != c.wantPct {
 				t.Fatalf("pct: expected %g, got %g", c.wantPct, got.UtilizationPercent)
 			}
-			if got.LargestFreePrefix != c.wantLargest {
-				t.Fatalf("largest free prefix: expected %d, got %d", c.wantLargest, got.LargestFreePrefix)
-			}
 		})
 	}
 }
@@ -410,9 +389,6 @@ func TestMeasure_AgreesWithAllocate(t *testing.T) {
 		m, err := Measure(parents, existing, Reservation{})
 		if err != nil {
 			t.Fatalf("step %d: measure: %v", i, err)
-		}
-		if m.LargestFreePrefix != got.LargestFreePrefix {
-			t.Fatalf("step %d: largest free prefix: allocate=%d measure=%d", i, got.LargestFreePrefix, m.LargestFreePrefix)
 		}
 		if m.UtilizationPercent != got.UtilizationPercent {
 			t.Fatalf("step %d: utilization: allocate=%g%% measure=%g%%", i, got.UtilizationPercent, m.UtilizationPercent)

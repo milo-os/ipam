@@ -28,16 +28,6 @@ import (
 type AllocationResult struct {
 	// Block is the allocated CIDR, or nil when no block was available.
 	Block *net.IPNet
-	// LargestFreePrefix is the prefix length of the largest free aligned block
-	// remaining. Zero means nothing is free.
-	//
-	// It is NOT reported in a pool's status — that field was removed, because
-	// maintaining it on every write bought nothing a reader acted on. It
-	// survives here because it is the useful half of an EXHAUSTION error:
-	// "you asked for a /24 and the largest free block is a /26" is a sentence
-	// an operator can act on, and it is computed only when an allocation has
-	// already failed.
-	LargestFreePrefix int
 	// UtilizationPercent is the allocated share of the pool, in [0, 100].
 	UtilizationPercent float64
 }
@@ -55,9 +45,6 @@ type AllocationResult struct {
 // int64 status fields does its own clamping, because where to clamp is a
 // question about the API's types rather than about the address space.
 type PoolMeasurement struct {
-	// LargestFreePrefix is the prefix length of the largest free aligned block.
-	// Zero means nothing is free — the same sentinel IPPoolStatus uses.
-	LargestFreePrefix int
 	// UtilizationPercent is the consumed share of the pool, in [0, 100].
 	//
 	// A float, and rounded to four decimal places, because an integer percent
@@ -126,7 +113,6 @@ func Allocate(parents, existing []net.IPNet, prefixLen int, s Strategy, r Reserv
 	}
 
 	m := measure(views)
-	res.LargestFreePrefix = m.LargestFreePrefix
 	res.UtilizationPercent = m.UtilizationPercent
 	if block == nil {
 		return res, ErrPoolExhausted
@@ -344,28 +330,20 @@ func selectBlock(views []parentView, prefixLen int, s Strategy) (*net.IPNet, int
 // measure reports the free-space view of every parent in views.
 func measure(views []parentView) PoolMeasurement {
 	var m PoolMeasurement
-	var bestSize *big.Int
-	haveBlock := false
 
 	m.Total = new(big.Int)
 	m.Free = new(big.Int)
 
+	// Totals only. This used to also find the largest free aligned block, and
+	// that single line was ~99% of this function: one largestAlignedBlock plus
+	// a big.Int size and comparison per FREE REGION, and a pool with N
+	// scattered allocations has ~N regions. Measured at 4,096 allocations,
+	// measure() ran 1,321us with it and 1.5us without — and it is on the path
+	// every successful claim takes, through PublishPoolCapacity.
 	for i := range views {
 		v := &views[i]
 		m.Total.Add(m.Total, addressCount(v.parent))
 		m.Free.Add(m.Free, v.free)
-		for _, region := range v.regions {
-			cidr, ok := largestAlignedBlock(region.start, region.end, v.bits)
-			if !ok {
-				continue
-			}
-			size := cidrSize(cidr)
-			if !haveBlock || size.Cmp(bestSize) > 0 {
-				haveBlock = true
-				bestSize = size
-				m.LargestFreePrefix, _ = cidr.Mask.Size()
-			}
-		}
 	}
 
 	m.Consumed = new(big.Int).Sub(m.Total, m.Free)

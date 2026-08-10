@@ -455,7 +455,7 @@ func (a *app) renderClaimDryRun(dryClaim *ipamv1alpha1.IPClaim, cs clientset.Int
 	if ref := dryClaim.Status.PoolRef; ref != nil {
 		line := ref.Name
 		if p, err := cs.IpamV1alpha1().IPPools().Get(context.Background(), ref.Name, metav1.GetOptions{}); err == nil {
-			line = fmt.Sprintf("%s (%.0f%% used, largest free %s)", p.Name, poolUtilization(p), poolLargestFreeCell(p))
+			line = fmt.Sprintf("%s (%.0f%% used)", p.Name, poolUtilization(p))
 		}
 		_, _ = fmt.Fprintf(a.io.ErrOut, "Resolved pool: %s\n", line)
 	}

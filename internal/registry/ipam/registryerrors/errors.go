@@ -78,11 +78,6 @@ const (
 	CausePoolName = "poolName"
 	// CauseClassName is the class the claim was made under.
 	CauseClassName = "className"
-	// CauseLargestFreePrefix is the largest free aligned block left, as a
-	// prefix length. It distinguishes "full" from "fragmented": a pool with a
-	// free /28 that cannot satisfy a /24 needs different action from one with
-	// nothing left at all.
-	CauseLargestFreePrefix = "largestFreePrefix"
 	// CauseUtilizationPercent is the pool's allocated share, 0–100.
 	CauseUtilizationPercent = "utilizationPercent"
 	// CauseRequestedPrefix is the block size that could not be satisfied.
@@ -98,12 +93,11 @@ const (
 // sees it, so a bare "pool exhausted" leaves a client with no way to say what
 // filled up — and every way of guessing is wrong for cascade-provisioned pools.
 // All three facts are in hand at the point of failure and nowhere else.
-func NewPoolExhausted(className, poolName string, requestedPrefix, largestFreePrefix int32, utilizationPercent float64, message string) *apierrors.StatusError {
+func NewPoolExhausted(className, poolName string, requestedPrefix int32, utilizationPercent float64, message string) *apierrors.StatusError {
 	causes := []metav1.StatusCause{
 		{Type: metav1.CauseType(CauseClassName), Message: className, Field: CauseClassName},
 		{Type: metav1.CauseType(CausePoolName), Message: poolName, Field: CausePoolName},
 		{Type: metav1.CauseType(CauseRequestedPrefix), Message: fmt.Sprintf("%d", requestedPrefix), Field: CauseRequestedPrefix},
-		{Type: metav1.CauseType(CauseLargestFreePrefix), Message: fmt.Sprintf("%d", largestFreePrefix), Field: CauseLargestFreePrefix},
 		{Type: metav1.CauseType(CauseUtilizationPercent), Message: fmt.Sprintf("%g", utilizationPercent), Field: CauseUtilizationPercent},
 	}
 	return &apierrors.StatusError{
