@@ -39,16 +39,9 @@
 // Each function documents where the tenant goes and why. Call the one that
 // matches the question you are asking.
 //
-// # The tenant is a string
-//
-// A string keeps this package depending on nothing but the API types. It is
-// imported by the allocator and by three registries, and none of them should
-// acquire a transitive k8s.io/apiserver dependency through it.
-//
-// The value must be the same discriminator that prefixes object keys
-// (tenant.Identity.Name, empty for platform callers). If key prefixes ever
-// distinguish more than the name, this must too, or two spaces the storage
-// layer keeps apart will share a digest.
+// The tenant is a plain string, and this package imports nothing but the API
+// types. It is imported by the allocator and by three registries, none of which
+// should acquire a transitive k8s.io/apiserver dependency through it.
 package scope
 
 import (
@@ -110,9 +103,13 @@ func EmptyAddressSpaceDigest() string { return AddressSpaceDigest("", nil) }
 
 // CanonicalPool returns the byte-exact serialization PoolDigest is taken over.
 //
-// tenant is the project or organization the pool belongs to — the same
-// discriminator that prefixes storage keys — and is empty for platform callers,
-// so every platform caller with the same scope still shares one digest.
+// tenant is the project or organization the pool belongs to, empty for platform
+// callers, so every platform caller with the same scope shares one digest.
+//
+// It must be the same discriminator that prefixes object keys
+// (tenant.Identity.Name). If key prefixes ever distinguish more than the name,
+// this must too, or two spaces the storage layer keeps apart will share a
+// digest. Every function here taking a tenant takes this value.
 //
 // The encoding is a flat sequence of length-prefixed fields, `<len>:<bytes>`,
 // where len is the byte length in decimal:
