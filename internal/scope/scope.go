@@ -19,15 +19,14 @@
 //
 // # There are two digests here, and using the wrong one is silent
 //
-// They answer different questions and the tenant enters them differently. That
-// is the whole design of this package, and getting it backwards produces two
-// holders of one address in one direction and a renumbered subnet in the other
-// — both on the success path.
+// They answer different questions and the tenant enters them differently.
+// Getting it backwards produces two holders of one address in one direction and
+// a renumbered subnet in the other, both on the success path.
 //
 //	PoolDigest         identity of a POOL a tenant owns
 //	AddressSpaceDigest the uniqueness domain an ALLOCATION lives in
 //
-// **PoolDigest folds the tenant in unconditionally**, as its own field. It
+// PoolDigest folds the tenant in unconditionally, as its own field. It
 // names an object, and that object's storage key is tenant-prefixed: if two
 // tenants derived one pool identity, the second would be handed the first's
 // pool_key — a key in another project's key space — and would allocate through
@@ -40,7 +39,7 @@
 // so this is a live shape and not a hypothetical one — see
 // TestPoolDigestSeparatesTenantsWithNoScope.
 //
-// **AddressSpaceDigest qualifies each REF with the tenant instead**, and emits
+// AddressSpaceDigest qualifies each REF with the tenant instead, and emits
 // no tenant field of its own. An address space is defined by what the class
 // says separates two allocations, and the class is the authority:
 //
@@ -59,16 +58,15 @@
 // case: it makes `uniqueWithin: []` mean "one space per tenant", which is not
 // the strictest setting but very nearly the loosest.
 //
-// That was not hypothetical in either direction. Both were measured on a live
-// cluster:
+// Both simpler designs are wrong, in opposite directions, and both fail on the
+// success path:
 //
-//   - Without any tenant (v1), two projects claiming the same class for their
-//     own `default` network derived one digest, collided on
-//     ipam_pool_identity's primary key, and were refused addresses uniqueWithin
-//     exists to permit.
-//   - With an unconditional tenant field (v2), a class with `uniqueWithin: []`
-//     over one platform pool handed 10.202.0.0/32 to project-alpha AND
-//     project-beta. Both Bound, one pool, nothing logged.
+//   - No tenant anywhere: two projects claiming one class for their own
+//     `default` network derive one digest, collide on ipam_pool_identity's
+//     primary key, and are refused the addresses uniqueWithin exists to permit.
+//   - An unconditional tenant field: a class with `uniqueWithin: []` over one
+//     platform pool hands the same address to two projects. Both Bound, one
+//     pool, nothing logged.
 //
 // # Why the ref qualifier is the claiming tenant
 //
@@ -81,19 +79,19 @@
 //
 // # Two encodings, two version tags, on purpose
 //
-// PoolDigest is canonical form v2 and is deliberately UNCHANGED by the
-// address-space split. A pool's name embeds its digest, so re-tagging it would
-// rename every cascade-provisioned pool: the identity lookup would miss, a new
-// pool would be provisioned, and the scope would be renumbered — against a
-// model that promises subnets "appear on first use and are never renumbered".
-// AddressSpaceDigest is a new form, v3, so a v2 and a v3 digest can never be
-// read as each other.
+// The two forms carry different version tags, v2 and v3, so a digest of one can
+// never be read as a digest of the other.
+//
+// PoolDigest's tag must not change. A cascade pool's name embeds its digest, so
+// re-tagging renames every provisioned pool: the identity lookup misses, a new
+// pool is provisioned, and the scope is renumbered — against a model that
+// promises subnets appear on first use and are never renumbered.
 //
 // The two values meet in exactly one column, ipam_cidr_allocations.scope_digest,
 // which holds an address-space digest on Claim rows and a pool digest on
 // PoolCarve rows. They are never compared: the search asks
 // `purpose <> 'Claim' OR scope_digest = $1`, so a non-Claim row is matched by
-// purpose and its digest is never read. See migrations/006_address_space_digest.sql.
+// purpose and its digest is never read.
 //
 // # Why the tenant is a string
 //
@@ -125,13 +123,11 @@ import (
 // Note what a tag does and does not buy: new digests cannot collide with old
 // ones, but any two digests are 64 hex characters and are not distinguishable
 // by looking at them. A stored digest therefore cannot be recognised, and
-// cannot be recomputed in SQL — it is a SHA-256 over a string the schema does
-// not store. So a change to either encoding has no backfill, only a reset of
-// the rows that encoding wrote. See migrations/005_scope_digest_tenancy.sql
-// (v1 → v2) and migrations/006_address_space_digest.sql (the v3 split).
+// cannot be recomputed in SQL: it is a SHA-256 over a string the schema does not
+// store. A change to either encoding therefore has no backfill, only a reset of
+// the rows that encoding wrote.
 const (
-	// canonicalPoolVersion is unchanged from the version that introduced the
-	// tenant field, and must stay that way: a cascade pool's NAME embeds its
+	// canonicalPoolVersion must not change: a cascade pool's NAME embeds its
 	// digest, so re-tagging renames every provisioned pool and renumbers every
 	// scope. See the package comment.
 	canonicalPoolVersion = "ipam.scope.v2"
@@ -141,17 +137,11 @@ const (
 	canonicalAddressSpaceVersion = "ipam.scope.v3"
 )
 
-// REMOVED, and not to be reintroduced: Digest(tenant, scope), its Canonical and
-// EmptyDigest, and ProjectDigest.
-//
-// One digest for both jobs is the obvious design and is what this package had.
-// It cannot be right, because the two jobs need the tenant in different places:
-// a pool identity must be tenant-distinct even when the scope is empty, and an
-// address space must be tenant-INdistinct exactly when the scope is empty. A
-// single function has to pick one, and whichever it picks is wrong for the other
-// caller: two tenants sharing one address, or a tenant's subnet renumbered. Use
-// PoolDigest or AddressSpaceDigest and say
-// which question you are asking.
+// DO NOT MERGE THESE INTO ONE DIGEST FUNCTION. The two jobs need the tenant in
+// different places: a pool identity must be tenant-distinct even when the scope
+// is empty, and an address space must be tenant-INdistinct exactly when the
+// scope is empty. A single function has to pick one, and whichever it picks is
+// wrong for the other caller.
 
 // EmptyPoolDigest is the digest of a pool scope with no roles, for a given
 // tenant. Pools and the rows they hold carry this value rather than NULL so the
@@ -166,8 +156,7 @@ func EmptyPoolDigest(tenant string) string { return PoolDigest(tenant, nil) }
 // the one space every `uniqueWithin: []` claim in a pool shares, whatever
 // tenant made it.
 //
-// It takes no tenant, and that absence is the fix for #64 rather than an
-// omission. See the package comment.
+// It takes no tenant. That absence is deliberate: see the package comment.
 func EmptyAddressSpaceDigest() string { return AddressSpaceDigest("", nil) }
 
 // CanonicalPool returns the byte-exact serialization PoolDigest is taken over.
@@ -179,7 +168,7 @@ func EmptyAddressSpaceDigest() string { return AddressSpaceDigest("", nil) }
 // The encoding is a flat sequence of length-prefixed fields, `<len>:<bytes>`,
 // where len is the byte length in decimal:
 //
-//	13:ipam.scope.v2 13:project-alpha 1:2 7:network 24:networking.datumapis.com 7:Network …
+//	13:ipam.scope.v2 13:project-alpha 1:2 7:network 24:networking.datumapis.com 7:Network 7:default …
 //
 // (spaces added for readability; there are none in the real encoding).
 //
@@ -193,8 +182,9 @@ func EmptyAddressSpaceDigest() string { return AddressSpaceDigest("", nil) }
 // decimal length.
 //
 // The role count is emitted before the roles so that a scope is not a prefix of
-// a longer one, and each role's five fields are emitted as a fixed-arity group
-// so a role name cannot be mistaken for an APIGroup.
+// a longer one, and each role's four fields — role, apiGroup, kind, name — are
+// emitted as a fixed-arity group so a role name cannot be mistaken for an
+// APIGroup.
 //
 // Exported because a digest is opaque: when two claims land in different pools
 // and someone needs to know why, the canonical forms are the answer and the
@@ -229,11 +219,12 @@ func CanonicalPool(tenant string, s map[string]ipam.ScopeRef) string {
 // refs derives one digest per tenant, because each ref names an object that
 // belongs to one.
 //
-// The group is a fixed arity of six rather than five, so nothing in the v2
-// layout can be reproduced by a v3 encoding even before the version tag is
-// considered. Every unforgeability property of CanonicalPool carries over
-// unchanged — the tenant is one more length-prefixed field in a fixed-arity
-// group, so it can no more impersonate a role than an APIGroup can.
+// The group is a fixed arity of five — role, tenant, apiGroup, kind, name —
+// against v2's four, so nothing in the v2 layout can be reproduced by a v3
+// encoding even before the version tag is considered. Every unforgeability
+// property of CanonicalPool carries over: the tenant is one more
+// length-prefixed field in a fixed-arity group, so it can no more impersonate a
+// role than an APIGroup can.
 //
 // Exported for the same reason as CanonicalPool: when two claims land in
 // different address spaces, this is the explanation and the digest is not.
