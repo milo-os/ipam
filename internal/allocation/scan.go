@@ -20,30 +20,23 @@ package allocation
 // strategies therefore keep the set-based path and its cost. That limit is
 // what the strategies mean, not an omission to fix later.
 //
-// # Not wired yet: two things wiring needs
+// # Ordering is the contract
 //
-// Nothing in internal/allocator calls Scan, and swapping the call is not enough.
-// Two pieces are missing:
+// Feed must receive blocks in ascending address order. Scan advances a cursor
+// and never looks back, so a block arriving late is a block it has already
+// stepped past. Feed returns ErrScanOutOfOrder rather than a wrong answer.
 //
-//  1. An index ordered by (pool_key, allocated_cidr). The index that exists is
-//     (pool_key, scope_digest) INCLUDE (allocated_cidr). An INCLUDE column
-//     cannot order a scan. Today's caller therefore cannot deliver blocks in
-//     ascending order without sorting them, and sorting means loading them
-//     all.
+// # Not wired yet
 //
-//  2. A persisted floor per (pool, address space). WITHOUT SUCH A FLOOR, A
-//     BOUNDED SEARCH STAYS LINEAR IN THE COMMON CASE. A pool filled
-//     sequentially holds its first free block at the end, so a scan from the
-//     base examines every allocation to reach it. Scan removes the Go-side
-//     cost and leaves the exponent. FirstFree exists to be persisted as that
-//     floor.
+// Nothing calls Scan. Using it needs an index ordered by
+// (pool_key, allocated_cidr); the index that exists is
+// (pool_key, scope_digest) INCLUDE (allocated_cidr), and an INCLUDE column
+// cannot order a scan.
 //
-// And a third thing that is not this package's to fix: the capacity recompute
-// runs on the same path and measures every allocation in the pool after every
-// insert (see writePoolCapacity). Making the search bounded while that stays
-// leaves the request quadratic. `consumed` can be maintained incrementally;
-// status.largestFreePrefix comes from the same traversal, is user-visible, and
-// feeds the 507 body — so that one is a decision, not a refactor.
+// It also needs somewhere to persist FirstFree as a per-(pool, address space)
+// floor. Without one a bounded search stays linear in the common case: a pool
+// filled sequentially holds its first free block at the end, so a scan from
+// the base still examines every allocation to reach it.
 //
 // # Reservations are not a parameter here
 //
