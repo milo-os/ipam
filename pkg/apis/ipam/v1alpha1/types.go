@@ -231,11 +231,6 @@ type AllocationSpec struct {
 	Strategy        AllocationStrategy `json:"strategy,omitempty"`
 }
 
-// PoolCapacity reports the address-count view of an IPPool. The counts are
-// exact for IPv4. For address spaces larger than an int64 (e.g. wide IPv6
-// prefixes) Total saturates to the maximum int64 and Allocated/Available are
-// clamped to non-negative values rather than overflowing; consumers needing an
-// accurate IPv6 view should read UtilizationPercent and LargestFreePrefix.
 // PoolCapacity reports a pool's address counts EXACTLY, as decimal strings.
 //
 // Strings because these are not int64 quantities. A /20 of IPv6 holds
@@ -505,7 +500,6 @@ type IPClassList struct {
 // +kubebuilder:printcolumn:name="CIDR",type=string,JSONPath=`.status.allocatedCIDR`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Family",type=string,JSONPath=`.status.ipFamily`
-// +kubebuilder:printcolumn:name="Largest Free",type=integer,JSONPath=`.status.largestFreePrefix`
 // +kubebuilder:printcolumn:name="Util%",type=integer,JSONPath=`.status.utilizationPercent`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +genclient
