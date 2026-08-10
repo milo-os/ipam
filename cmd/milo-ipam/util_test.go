@@ -45,28 +45,6 @@ func TestUtilizationLabel(t *testing.T) {
 	}
 }
 
-func TestLargestFreePrefix(t *testing.T) {
-	cases := []struct {
-		name      string
-		family    ipamv1alpha1.IPFamily
-		available int64
-		want      int
-	}{
-		{"none", ipamv1alpha1.IPv4, 0, 0},
-		{"exactly 256 -> /24", ipamv1alpha1.IPv4, 256, 24},
-		{"1024 -> /22", ipamv1alpha1.IPv4, 1024, 22},
-		{"1000 -> /23 (floor)", ipamv1alpha1.IPv4, 1000, 23},
-		{"one address -> /32", ipamv1alpha1.IPv4, 1, 32},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := largestFreePrefix(tc.family, tc.available); got != tc.want {
-				t.Fatalf("largestFreePrefix(%s,%d) = %d, want %d", tc.family, tc.available, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestProjectedUtilization(t *testing.T) {
 	cap := ipamv1alpha1.PoolCapacity{Total: 1024, Allocated: 256, Available: 768}
 	// Claiming a /24 (256 addrs) of an IPv4 pool with 256 already allocated.

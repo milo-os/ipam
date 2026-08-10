@@ -21,7 +21,7 @@ func TestPoolListTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := ta.out.String()
-	for _, want := range []string{"NAME", "UTILIZATION", "LARGEST FREE", "prod-backbone", "73%", "edge-v6", "4%"} {
+	for _, want := range []string{"NAME", "UTILIZATION", "prod-backbone", "73%", "edge-v6", "4%"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table missing %q:\n%s", want, out)
 		}
@@ -49,7 +49,6 @@ func TestPoolListPrefersServerStatus(t *testing.T) {
 			// path; the status fields below are authoritative.
 			Capacity:           ipamv1alpha1.PoolCapacity{Total: 1<<63 - 1, Allocated: 0, Available: 1<<63 - 1},
 			UtilizationPercent: 6,
-			LargestFreePrefix:  45,
 		},
 	}
 	cs := newFakeClientset(child)
@@ -59,7 +58,7 @@ func TestPoolListPrefersServerStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := ta.out.String()
-	for _, want := range []string{"IPv6", "6%", "/45"} {
+	for _, want := range []string{"IPv6", "6%"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("table missing server-reported %q:\n%s", want, out)
 		}
@@ -113,7 +112,7 @@ func TestPoolTreePrefersServerStatus(t *testing.T) {
 		Spec:       ipamv1alpha1.IPPoolSpec{CIDR: "2001:db8::/32", IPFamily: ipamv1alpha1.IPv6},
 		Status: ipamv1alpha1.IPPoolStatus{
 			Phase: ipamv1alpha1.PoolReady, AllocatedCIDR: "2001:db8::/32",
-			IPFamily: ipamv1alpha1.IPv6, UtilizationPercent: 18, LargestFreePrefix: 33,
+			IPFamily: ipamv1alpha1.IPv6, UtilizationPercent: 18,
 		},
 	}
 	child := &ipamv1alpha1.IPPool{
@@ -122,7 +121,7 @@ func TestPoolTreePrefersServerStatus(t *testing.T) {
 		Spec: ipamv1alpha1.IPPoolSpec{ParentPoolRef: &ipamv1alpha1.LocalRef{Name: "v6-root"}},
 		Status: ipamv1alpha1.IPPoolStatus{
 			Phase: ipamv1alpha1.PoolReady, AllocatedCIDR: "2001:db8::/36",
-			IPFamily: ipamv1alpha1.IPv6, UtilizationPercent: 12, LargestFreePrefix: 37,
+			IPFamily: ipamv1alpha1.IPv6, UtilizationPercent: 12,
 			// A saturated capacity that the old client-side path would misread.
 			Capacity: ipamv1alpha1.PoolCapacity{Total: 1<<63 - 1, Allocated: 0, Available: 1<<63 - 1},
 		},

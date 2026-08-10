@@ -236,9 +236,9 @@ func (a *app) renderPoolTable(pools []ipamv1alpha1.IPPool) error {
 	sort.Slice(pools, func(i, j int) bool { return pools[i].Name < pools[j].Name })
 
 	wide := a.opts.output == outputWide
-	headers := []string{"NAME", "CIDR", "FAMILY", "UTILIZATION", "LARGEST FREE", "AGE"}
+	headers := []string{"NAME", "CIDR", "FAMILY", "UTILIZATION", "AGE"}
 	if wide {
-		headers = []string{"NAME", "CIDR", "FAMILY", "UTILIZATION", "LARGEST FREE", "CHILDREN", "PREFIXES", "PHASE", "AGE"}
+		headers = []string{"NAME", "CIDR", "FAMILY", "UTILIZATION", "CHILDREN", "PREFIXES", "PHASE", "AGE"}
 	}
 	t := newTable(a.io.Out, headers)
 
@@ -256,14 +256,13 @@ func (a *app) renderPoolTable(pools []ipamv1alpha1.IPPool) error {
 			cidr = p.Spec.CIDR
 		}
 		util := utilizationCell(poolUtilization(p), 10, a.color.enabled)
-		free := poolLargestFreeCell(p)
 		family := orDash(string(poolFamily(p)))
 		if wide {
-			t.row(p.Name, orDash(cidr), family, util, free,
+			t.row(p.Name, orDash(cidr), family, util,
 				itoa(children[p.Name]), itoa(prefixes[p.Name]), orDash(string(p.Status.Phase)),
 				humanDuration(p.CreationTimestamp))
 		} else {
-			t.row(p.Name, orDash(cidr), family, util, free,
+			t.row(p.Name, orDash(cidr), family, util,
 				humanDuration(p.CreationTimestamp))
 		}
 	}
@@ -329,7 +328,6 @@ func (a *app) renderPoolDetail(p *ipamv1alpha1.IPPool) error {
 		t.row("Capacity", fmt.Sprintf("total=%d allocated=%d available=%d",
 			p.Status.Capacity.Total, p.Status.Capacity.Allocated, p.Status.Capacity.Available))
 	}
-	t.row("Largest free", poolLargestFreeCell(p))
 	if alloc := p.Spec.Allocation; alloc.MinPrefixLength != 0 || alloc.MaxPrefixLength != 0 || alloc.Strategy != "" {
 		t.row("Allocation", fmt.Sprintf("min=/%d max=/%d strategy=%s",
 			alloc.MinPrefixLength, alloc.MaxPrefixLength, orDash(string(alloc.Strategy))))

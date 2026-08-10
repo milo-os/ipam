@@ -310,7 +310,7 @@ func poolStorageKey(project, name string) string {
 // setPoolStatusCapacity populates every utilization field on the pool's status
 // from its parent ranges and current allocations. The integer Capacity counts
 // saturate cleanly for address spaces wider than int64 (Total caps at MaxInt64,
-// Allocated/Available never go negative); LargestFreePrefix and
+// Allocated/Available never go negative);
 // UtilizationPercent are computed with arbitrary-precision arithmetic and are
 // the accurate signal for IPv6. IPFamily reflects the pool's effective family.
 func setPoolStatusCapacity(pool *ipam.IPPool, parents, allocations []net.IPNet) {
@@ -337,11 +337,16 @@ func setPoolStatusCapacity(pool *ipam.IPPool, parents, allocations []net.IPNet) 
 	available := max(total-allocated, 0)
 	pool.Status.Capacity = ipam.PoolCapacity{Total: total, Allocated: allocated, Available: available}
 
-	pool.Status.UtilizationPercent = int32(allocation.UtilizationPercent(parents, allocations))
-	if prefixLen, ok := allocation.LargestFreePrefixLen(parents, allocations); ok {
-		pool.Status.LargestFreePrefix = int32(prefixLen)
-	} else {
-		pool.Status.LargestFreePrefix = 0
+	// Utilization from the free-space measurement, not from summing the
+	// allocations. Summing counts an address covered by several allocations
+	// once per allocation, so a range shared by eight networks read as eight
+	// times its real occupancy.
+	//
+	// status.largestFreePrefix is no longer written. Finding the largest free
+	// aligned block costs a walk of every free region, and this runs on every
+	// successful claim.
+	if m, err := allocation.Measure(parents, allocations, allocation.Reservation{}); err == nil {
+		pool.Status.UtilizationPercent = int32(m.UtilizationPercent)
 	}
 	if fam, err := effectiveIPFamily(pool); err == nil {
 		pool.Status.IPFamily = ipam.IPFamily(fam)

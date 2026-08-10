@@ -64,4 +64,3 @@ type PrefixAllocator interface {
 	// does not exist.
 	UpdateObject(ctx context.Context, tx pgx.Tx, key string, data []byte) (int64, error)
 }
-

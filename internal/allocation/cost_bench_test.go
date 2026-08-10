@@ -45,11 +45,5 @@ func BenchmarkPerAllocationWork(b *testing.B) {
 				_, _ = FindFirstAvailableBlock(parents, existing, 48, FirstFit)
 			}
 		})
-		b.Run(fmt.Sprintf("UtilizationPercent/n=%d", n), func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				_ = UtilizationPercent(parents, existing)
-			}
-		})
 	}
 }

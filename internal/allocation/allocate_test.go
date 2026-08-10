@@ -238,7 +238,7 @@ func TestAllocate_UtilizationIgnoresDuplicateRows(t *testing.T) {
 	}
 	// The summing implementation counts the duplicate and the nested block on
 	// top of the real occupancy.
-	if sum := UtilizationPercent(parents, append(existing, *got.Block)); sum <= 100 {
+	if sum := summedUtilizationPercent(parents, append(existing, *got.Block)); sum <= 100 {
 		t.Logf("summing implementation reports %d%%", sum)
 	}
 }
@@ -273,7 +273,7 @@ func TestMeasure_CountsSharedAddressOnce(t *testing.T) {
 		t.Fatalf("expected 6.25%%, got %g%%", got.UtilizationPercent)
 	}
 	// The summing implementation is what over-reported.
-	if sum := UtilizationPercent(parents, existing); sum != 50 {
+	if sum := summedUtilizationPercent(parents, existing); sum != 50 {
 		t.Fatalf("expected the summing implementation to report 50%%, got %d%%", sum)
 	}
 }
@@ -397,4 +397,35 @@ func TestMeasure_PropagatesReservationErrors(t *testing.T) {
 	if _, err := Measure(parents, nil, Reservation{UnitPrefixLength: 16, Leading: 1}); !errors.Is(err, ErrInvalidReservation) {
 		t.Fatalf("expected ErrInvalidReservation, got %v", err)
 	}
+}
+
+// summedUtilizationPercent is the WRONG way to compute utilization, kept here
+// as the contrast that makes the regression tests meaningful.
+//
+// It sums allocation sizes, so an address covered by several allocations counts
+// once per allocation. Measure derives the figure from free space and counts
+// each address once. A test asserting only "Measure returns 6" passes against
+// an implementation that returns 6 for the wrong reason; asserting that Measure
+// returns 6 where this returns 50 does not.
+//
+// This lives in the test file on purpose. The exported version had production
+// callers that should never have had it, which is how the pool status came to
+// over-report a shared range as eight times its real occupancy.
+func summedUtilizationPercent(parents, existing []net.IPNet) int {
+	total := new(big.Int)
+	for _, p := range parents {
+		total.Add(total, addressCount(p))
+	}
+	if total.Sign() == 0 {
+		return 0
+	}
+	used := new(big.Int)
+	for _, e := range existing {
+		used.Add(used, addressCount(e))
+	}
+	pct := new(big.Int).Div(new(big.Int).Mul(used, big.NewInt(100)), total)
+	if pct.Cmp(big.NewInt(100)) > 0 {
+		return 100
+	}
+	return int(pct.Int64())
 }

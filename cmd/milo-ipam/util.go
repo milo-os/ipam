@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"math/bits"
 	"net/netip"
 	"time"
 
@@ -42,26 +41,6 @@ func utilizationLabel(pct float64) string {
 	}
 }
 
-// largestFreePrefix derives the prefix length of the largest power-of-two block
-// that fits in the pool's available address count. It is an approximation
-// computed entirely from status.capacity (the API does not report a true
-// largest-contiguous-free block); a value of 0 means "no free space" and the
-// caller should treat -1 / 0 as "unknown / none".
-//
-// Example: an IPv4 pool with 1024 available addresses can fit at most a /22
-// (1024 = 2^10, hostBits=10, 32-10=22).
-func largestFreePrefix(family ipamv1alpha1.IPFamily, available int64) int {
-	if available <= 0 {
-		return 0
-	}
-	width := familyBits(family)
-	hostBits := bits.Len64(uint64(available)) - 1 // floor(log2(available))
-	if hostBits > width {
-		hostBits = width
-	}
-	return width - hostBits
-}
-
 // utilizationCell renders the at-a-glance utilization for a table row: a bar (in
 // color when enabled) plus the always-present numeric percentage and a textual
 // severity label so the cell is meaningful without color.
@@ -75,7 +54,7 @@ func utilizationCell(pct float64, width int, useColor bool) string {
 }
 
 // poolHasServerStatus reports whether the server populated the family-agnostic
-// status fields (ipFamily, utilizationPercent, largestFreePrefix). The status
+// status fields (ipFamily, utilizationPercent). The status
 // family is the reliable signal: the server sets it for both root and child
 // pools, so its presence means the accurate fields can be trusted over the
 // int64 capacity counts, which saturate for IPv6.
@@ -101,18 +80,6 @@ func poolUtilization(p *ipamv1alpha1.IPPool) float64 {
 		return float64(p.Status.UtilizationPercent)
 	}
 	return utilizationPercent(p.Status.Capacity)
-}
-
-// poolLargestFreeCell formats the largest-free-block column, preferring the
-// server's exact prefix length over the int64-capacity approximation.
-func poolLargestFreeCell(p *ipamv1alpha1.IPPool) string {
-	if poolHasServerStatus(p) {
-		if p.Status.LargestFreePrefix <= 0 {
-			return "—"
-		}
-		return fmt.Sprintf("/%d", p.Status.LargestFreePrefix)
-	}
-	return largestFreeCell(p.Spec.IPFamily, p.Status.Capacity)
 }
 
 // utilizationBar renders a fixed-width bar of filled/empty cells. When color is
@@ -147,15 +114,6 @@ func utilizationBar(pct float64, width int, useColor bool) string {
 	default:
 		return colorize(bar, colorGreen)
 	}
-}
-
-// largestFreeCell formats the largest-free-block column.
-func largestFreeCell(family ipamv1alpha1.IPFamily, c ipamv1alpha1.PoolCapacity) string {
-	l := largestFreePrefix(family, c.Available)
-	if l <= 0 {
-		return "—"
-	}
-	return fmt.Sprintf("/%d", l)
 }
 
 // humanDuration formats an age the way kubectl does: the two most significant

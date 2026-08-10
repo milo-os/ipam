@@ -9,7 +9,6 @@ spec:
     stay accurate:
     - status.ipFamily is reported for both root and child pools (children
       derive it from the carved CIDR rather than spec.ipFamily).
-    - status.largestFreePrefix reflects the largest free block as a prefix
       length, never a garbage/negative value.
     - status.utilizationPercent stays within [0, 100], computed with
       arbitrary-precision arithmetic.

@@ -59,7 +59,6 @@ func TestArchProbe(t *testing.T) {
 			t.Fatalf("carve %d: %v", i, err)
 		}
 		existing = append(existing, *got)
-		_ = UtilizationPercent(parents, existing)
 
 		if i%500 == 499 {
 			var m runtime.MemStats
