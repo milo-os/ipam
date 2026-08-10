@@ -26,38 +26,6 @@
 //	PoolDigest         identity of a POOL a tenant owns
 //	AddressSpaceDigest the uniqueness domain an ALLOCATION lives in
 //
-// PoolDigest folds the tenant in unconditionally, as its own field. It
-// names an object, and that object's storage key is tenant-prefixed: if two
-// tenants derived one pool identity, the second would be handed the first's
-// pool_key — a key in another project's key space — and would allocate through
-// it, bypassing the tenant prefixing every other path applies. Nothing about a
-// class's fields can be allowed to make that collision possible, so the tenant
-// is not negotiable here. Note in particular that a provisioning class may
-// legitimately declare no poolPer at all, which projects to the empty scope:
-// the tenant field is then the ONLY thing keeping two tenants' pools apart.
-// Nothing in the IPClass registry requires a parent class to declare poolPer,
-// so this is a live shape and not a hypothetical one — see
-// TestPoolDigestSeparatesTenantsWithNoScope.
-//
-// AddressSpaceDigest qualifies each REF with the tenant instead, and emits
-// no tenant field of its own. An address space is defined by what the class
-// says separates two allocations, and the class is the authority:
-//
-//   - `uniqueWithin: []` says nothing separates them. Every tenant then derives
-//     one digest, the pool is one address space, and no two claims may hold the
-//     same block — which is what the strictest setting has to mean. A
-//     public-unicast class is spelled this way.
-//   - `uniqueWithin: [network]` says networks separate them. A network named
-//     `default` in project A is a different NETWORK from `default` in project
-//     B — that is a property of the ref, not of the space — so the qualified
-//     refs differ and the two projects are two spaces that may each hold the
-//     same address. This is what shared tenant IPv4 requires.
-//
-// Both properties hold at once because the tenant qualifies the thing it
-// actually belongs to. An unconditional tenant field cannot express the first
-// case: it makes `uniqueWithin: []` mean "one space per tenant", which is not
-// the strictest setting but very nearly the loosest.
-//
 // Both simpler designs are wrong, in opposite directions, and both fail on the
 // success path:
 //
@@ -68,41 +36,19 @@
 //     platform pool hands the same address to two projects. Both Bound, one
 //     pool, nothing logged.
 //
-// # The ref qualifier is the claiming tenant
-//
-// A ScopeRef carries no project of its own, so the tenant qualifying it is
-// the tenant of the caller whose scope it is. That is correct for what a claim
-// can currently express: a claim's refs name objects in the claimant's own
-// project. If ScopeRef ever gains a project field — which cross-project
-// consumption would want — the qualifier becomes that field, and this comment
-// is where to start.
-//
-// # Two encodings, two version tags
-//
-// The two forms carry different version tags, v2 and v3, so a digest of one can
-// never be read as a digest of the other.
-//
-// PoolDigest's tag must not change. A cascade pool's name embeds its digest, so
-// re-tagging renames every provisioned pool: the identity lookup misses, a new
-// pool is provisioned, and the scope is renumbered — against a model that
-// promises subnets appear on first use and are never renumbered.
-//
-// The two values meet in exactly one column, ipam_cidr_allocations.scope_digest,
-// which holds an address-space digest on Claim rows and a pool digest on
-// PoolCarve rows. They are never compared: the search asks
-// `purpose <> 'Claim' OR scope_digest = $1`, so a non-Claim row is matched by
-// purpose and its digest is never read.
+// Each function documents where the tenant goes and why. Call the one that
+// matches the question you are asking.
 //
 // # The tenant is a string
 //
 // A string keeps this package depending on nothing but the API types. It is
 // imported by the allocator and by three registries, and none of them should
-// acquire a transitive k8s.io/apiserver dependency through it. The value must be
-// the same
-// discriminator that prefixes object keys (tenant.Identity.Name, empty for
-// platform callers); if key prefixes ever start distinguishing more than the
-// name, this must too, or two spaces the storage layer keeps apart will share a
-// digest again.
+// acquire a transitive k8s.io/apiserver dependency through it.
+//
+// The value must be the same discriminator that prefixes object keys
+// (tenant.Identity.Name, empty for platform callers). If key prefixes ever
+// distinguish more than the name, this must too, or two spaces the storage
+// layer keeps apart will share a digest.
 package scope
 
 import (
@@ -128,9 +74,10 @@ import (
 // store. A change to either encoding therefore has no backfill, only a reset of
 // the rows that encoding wrote.
 const (
-	// canonicalPoolVersion must not change: a cascade pool's NAME embeds its
-	// digest, so re-tagging renames every provisioned pool and renumbers every
-	// scope. See the package comment.
+	// canonicalPoolVersion must not change. A cascade pool's NAME embeds its
+	// digest, so re-tagging renames every provisioned pool: the identity lookup
+	// misses, a new pool is provisioned, and the scope is renumbered — against a
+	// model that promises subnets appear on first use and are never renumbered.
 	canonicalPoolVersion = "ipam.scope.v2"
 
 	// canonicalAddressSpaceVersion tags the form in which the tenant qualifies
@@ -157,7 +104,8 @@ func EmptyPoolDigest(tenant string) string { return PoolDigest(tenant, nil) }
 // the one space every `uniqueWithin: []` claim in a pool shares, whatever
 // tenant made it.
 //
-// It takes no tenant. That absence is deliberate: see the package comment.
+// It takes no tenant, so every `uniqueWithin: []` claim in a pool shares this
+// space whoever made it. See AddressSpaceDigest.
 func EmptyAddressSpaceDigest() string { return AddressSpaceDigest("", nil) }
 
 // CanonicalPool returns the byte-exact serialization PoolDigest is taken over.
@@ -257,15 +205,24 @@ func writeField(b *strings.Builder, v string) {
 // on: the lowercase hex SHA-256 of its canonical form, 64 characters wide
 // whatever the scope holds.
 //
-// The tenant is folded in unconditionally. This is the digest for
-// ipam_pool_identity, for the digest suffix in a provisioned pool's name, for
-// IPPool.status.scopeDigest, and for the PoolCarve row a child pool leaves
-// against its parent — everything whose subject is a pool object living in one
-// tenant's key space.
+// THE TENANT IS FOLDED IN UNCONDITIONALLY, as its own field, and that is not
+// negotiable. A pool is an object in a tenant-prefixed key space: if two
+// tenants derived one pool identity, the second would be handed the first's
+// pool_key — a key in another project's space — and would allocate through it,
+// bypassing the prefixing every other path applies.
+//
+// A provisioning class may legitimately declare no poolPer, which projects to
+// the empty scope. The tenant field is then the only thing keeping two tenants'
+// pools apart. Nothing in the IPClass registry requires a parent class to
+// declare poolPer, so this shape is live rather than hypothetical — see
+// TestPoolDigestSeparatesTenantsWithNoScope.
+//
+// This is the digest for ipam_pool_identity, for the digest suffix in a
+// provisioned pool's name, for IPPool.status.scopeDigest, and for the PoolCarve
+// row a child pool leaves against its parent.
 //
 // It is NOT the digest an allocation's uniqueness is enforced on. See
-// AddressSpaceDigest, and the package comment for what goes wrong if these are
-// swapped.
+// AddressSpaceDigest.
 func PoolDigest(tenant string, s map[string]ipam.ScopeRef) string {
 	sum := sha256.Sum256([]byte(CanonicalPool(tenant, s)))
 	return hex.EncodeToString(sum[:])
@@ -275,10 +232,25 @@ func PoolDigest(tenant string, s map[string]ipam.ScopeRef) string {
 // among ALLOCATIONS is enforced on — the space within which no two allocations
 // may hold the same block.
 //
-// The tenant qualifies each ref rather than the scope as a whole, so an empty
-// scope is one space across all tenants and a scope with refs is one space per
-// tenant. That is what makes `uniqueWithin: []` the strictest setting and
-// `uniqueWithin: [network]` the shared-IPv4 one, at the same time.
+// THE TENANT QUALIFIES EACH REF rather than the scope as a whole, and no tenant
+// field of its own is emitted. The class is the authority on what separates two
+// allocations:
+//
+//   - `uniqueWithin: []` says nothing separates them. Every tenant derives one
+//     digest, the pool is one address space, and no two claims may hold the
+//     same block. A public-unicast class is spelled this way.
+//   - `uniqueWithin: [network]` says networks separate them. A network named
+//     `default` in project A is a different NETWORK from `default` in project
+//     B, so the qualified refs differ and the two projects are two spaces that
+//     may each hold the same address. This is what shared tenant IPv4 requires.
+//
+// An unconditional tenant field cannot express the first case: it would make
+// `uniqueWithin: []` mean "one space per tenant", which is not the strictest
+// setting but very nearly the loosest.
+//
+// The qualifier is the CLAIMING tenant, because a ScopeRef carries no project
+// of its own and a claim's refs name objects in the claimant's own project. If
+// ScopeRef ever gains a project field, the qualifier becomes that field.
 //
 // It is NOT the digest a pool's identity is keyed on. See PoolDigest.
 func AddressSpaceDigest(tenant string, s map[string]ipam.ScopeRef) string {
