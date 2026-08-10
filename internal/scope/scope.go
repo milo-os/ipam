@@ -6,38 +6,14 @@
 // allocator never interprets them; it compares them. That comparison happens in
 // the database, over a digest, because a map cannot be a unique index key.
 //
-// Three properties make a digest safe to build an index on:
-//
-//   - Deterministic. Roles are sorted, so Go's randomized map iteration order
-//     cannot produce two digests for one scope.
-//   - Unforgeable. Every field is length-prefixed, so no delimiter appears in
-//     the encoding at all and no value — however chosen — can be made to parse
-//     as a different scope. See CanonicalPool.
-//   - Total. Every scope has a digest, including the empty one. An empty scope
-//     is a real space, not a missing value, and a unique index over NULL would
-//     not constrain it.
-//
-// # Two digests, and using the wrong one is silent
-//
-// They answer different questions and the tenant enters them differently.
-// Getting it backwards produces two holders of one address in one direction and
-// a renumbered subnet in the other, both on the success path.
+// There are two digests. They answer different questions, the tenant enters
+// them differently, and using the wrong one fails on the success path rather
+// than returning an error:
 //
 //	PoolDigest         identity of a POOL a tenant owns
 //	AddressSpaceDigest the uniqueness domain an ALLOCATION lives in
 //
-// Both simpler designs are wrong, in opposite directions, and both fail on the
-// success path:
-//
-//   - No tenant anywhere: two projects claiming one class for their own
-//     `default` network derive one digest, collide on ipam_pool_identity's
-//     primary key, and are refused the addresses uniqueWithin exists to permit.
-//   - An unconditional tenant field: a class with `uniqueWithin: []` over one
-//     platform pool hands the same address to two projects. Both Bound, one
-//     pool, nothing logged.
-//
-// Each function documents where the tenant goes and why. Call the one that
-// matches the question you are asking.
+// Each documents where its tenant goes and what the other choice would break.
 //
 // The tenant is a plain string, and this package imports nothing but the API
 // types. It is imported by the allocator and by three registries, none of which
@@ -298,6 +274,9 @@ func RoleSetKey(roles []string) string {
 // Roles returns the role names of a scope in sorted order. Callers that need to
 // iterate a scope deterministically — building an error message, writing an
 // index row — should go through this rather than ranging the map.
+//
+// The canonical encoders go through it so that Go's randomized map iteration
+// order cannot produce two digests for one scope.
 func Roles(s map[string]ipam.ScopeRef) []string {
 	roles := make([]string, 0, len(s))
 	for role := range s {
