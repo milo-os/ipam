@@ -215,7 +215,6 @@ func CanonicalPool(tenant string, s map[string]ipam.ScopeRef) string {
 		writeField(&b, ref.APIGroup)
 		writeField(&b, ref.Kind)
 		writeField(&b, ref.Name)
-		writeUID(&b, ref)
 	}
 	return b.String()
 }
@@ -252,17 +251,8 @@ func CanonicalAddressSpace(tenant string, s map[string]ipam.ScopeRef) string {
 		writeField(&b, ref.APIGroup)
 		writeField(&b, ref.Kind)
 		writeField(&b, ref.Name)
-		writeUID(&b, ref)
 	}
 	return b.String()
-}
-
-// writeUID emits a ref's UID, always, empty or not. An unset UID encodes as a
-// zero-length field, which is distinct from every set one — so a reference
-// pinned to a UID is a different space from the same reference by name alone,
-// which is what the field promises.
-func writeUID(b *strings.Builder, ref ipam.ScopeRef) {
-	writeField(b, ref.UID)
 }
 
 func writeField(b *strings.Builder, v string) {

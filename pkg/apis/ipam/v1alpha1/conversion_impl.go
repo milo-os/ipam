@@ -32,7 +32,6 @@ func toIpamObjectRef(in *ObjectRef) *ipam.ObjectRef {
 		Kind:      in.Kind,
 		Namespace: in.Namespace,
 		Name:      in.Name,
-		UID:       in.UID,
 	}
 }
 func toV1ObjectRef(in *ipam.ObjectRef) *ObjectRef {
@@ -44,7 +43,6 @@ func toV1ObjectRef(in *ipam.ObjectRef) *ObjectRef {
 		Kind:      in.Kind,
 		Namespace: in.Namespace,
 		Name:      in.Name,
-		UID:       in.UID,
 	}
 }
 
@@ -62,7 +60,6 @@ func toIpamScope(in map[string]ScopeRef) map[string]ipam.ScopeRef {
 			APIGroup: ref.APIGroup,
 			Kind:     ref.Kind,
 			Name:     ref.Name,
-			UID:      ref.UID,
 		}
 	}
 	return out
@@ -77,7 +74,6 @@ func toV1Scope(in map[string]ipam.ScopeRef) map[string]ScopeRef {
 			APIGroup: ref.APIGroup,
 			Kind:     ref.Kind,
 			Name:     ref.Name,
-			UID:      ref.UID,
 		}
 	}
 	return out

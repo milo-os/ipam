@@ -122,13 +122,6 @@ type ObjectRef struct {
 	Kind      string `json:"kind"`
 	Namespace string `json:"namespace,omitempty"`
 	Name      string `json:"name"`
-	// UID pins this reference to one specific instance of the named object.
-	// Unlike ScopeRef.UID it takes no part in allocation identity — it exists
-	// so that "who holds this address" stays answerable after the holder has
-	// been deleted and recreated under the same name, which is exactly the
-	// case an operator hits during an incident.
-	// +optional
-	UID string `json:"uid,omitempty"`
 }
 
 // ScopeRef identifies one participant in a claim's scope — the network a
@@ -142,16 +135,6 @@ type ScopeRef struct {
 	APIGroup string `json:"apiGroup"`
 	Kind     string `json:"kind"`
 	Name     string `json:"name"`
-	// UID pins this reference to one specific instance of the named object.
-	// When set it participates in scope identity, so an object deleted and
-	// recreated under the same name is a *different* address space and gets
-	// fresh allocations rather than inheriting its predecessor's.
-	//
-	// Suppliers should set it. Omitting it makes identity name-based, which
-	// lets a recreated object inherit — occasionally desirable, and the reason
-	// this is a field rather than a rule.
-	// +optional
-	UID string `json:"uid,omitempty"`
 }
 
 // PrefixLengthRange bounds the sizes a claim of a class may request. A

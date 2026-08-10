@@ -19,11 +19,11 @@ func TestCanonicalGolden(t *testing.T) {
 	// every deployed database, which is a migration, not a refactor.
 	got := CanonicalPool("project-alpha", map[string]ipam.ScopeRef{
 		"network":  {APIGroup: "networking.datumapis.com", Kind: "Network", Name: "default"},
-		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "us-central-1", UID: "4f2a"},
+		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "us-central-1"},
 	})
 	want := "13:ipam.scope.v2" + "13:project-alpha" + "1:2" +
-		"8:location" + "24:networking.datumapis.com" + "8:Location" + "12:us-central-1" + "4:4f2a" +
-		"7:network" + "24:networking.datumapis.com" + "7:Network" + "7:default" + "0:"
+		"8:location" + "24:networking.datumapis.com" + "8:Location" + "12:us-central-1" +
+		"7:network" + "24:networking.datumapis.com" + "7:Network" + "7:default"
 	if got != want {
 		t.Errorf("canonical form drifted\n got: %s\nwant: %s", got, want)
 	}
@@ -40,11 +40,11 @@ func TestCanonicalGolden(t *testing.T) {
 func TestCanonicalAddressSpaceGolden(t *testing.T) {
 	got := CanonicalAddressSpace("project-alpha", map[string]ipam.ScopeRef{
 		"network":  {APIGroup: "networking.datumapis.com", Kind: "Network", Name: "default"},
-		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "us-central-1", UID: "4f2a"},
+		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "us-central-1"},
 	})
 	want := "13:ipam.scope.v3" + "1:2" +
-		"8:location" + "13:project-alpha" + "24:networking.datumapis.com" + "8:Location" + "12:us-central-1" + "4:4f2a" +
-		"7:network" + "13:project-alpha" + "24:networking.datumapis.com" + "7:Network" + "7:default" + "0:"
+		"8:location" + "13:project-alpha" + "24:networking.datumapis.com" + "8:Location" + "12:us-central-1" +
+		"7:network" + "13:project-alpha" + "24:networking.datumapis.com" + "7:Network" + "7:default"
 	if got != want {
 		t.Errorf("canonical form drifted\n got: %s\nwant: %s", got, want)
 	}
@@ -96,27 +96,27 @@ func TestEmptyScope(t *testing.T) {
 	}
 }
 
-func TestUIDParticipatesInIdentity(t *testing.T) {
-	byName := map[string]ipam.ScopeRef{"network": ref("default")}
-	pinned := map[string]ipam.ScopeRef{"network": {
-		APIGroup: "networking.datumapis.com", Kind: "Network", Name: "default", UID: "4f2a",
-	}}
-	repinned := map[string]ipam.ScopeRef{"network": {
-		APIGroup: "networking.datumapis.com", Kind: "Network", Name: "default", UID: "9c81",
-	}}
+// Identity is name-based. A scope reference names an object; two references to
+// the same name in the same tenant are the same address space, whether or not
+// the object behind the name has been deleted and recreated in between.
+//
+// The consequence a caller must know: a recreated network inherits its
+// predecessor's allocations rather than starting empty. Suppliers wanting fresh
+// space give the replacement a different name.
+func TestIdentityIsNameBased(t *testing.T) {
+	first := map[string]ipam.ScopeRef{"network": ref("default")}
+	recreated := map[string]ipam.ScopeRef{"network": ref("default")}
 
-	if PoolDigest("", byName) == PoolDigest("", pinned) {
-		t.Error("a UID-pinned ref must not share a digest with the same ref by name")
+	if PoolDigest("p", first) != PoolDigest("p", recreated) {
+		t.Error("the same name in the same tenant must be the same pool identity")
 	}
-	if PoolDigest("", pinned) == PoolDigest("", repinned) {
-		t.Error("a network deleted and recreated (new UID) must be a different address space")
+	if AddressSpaceDigest("p", first) != AddressSpaceDigest("p", recreated) {
+		t.Error("the same name in the same tenant must be the same address space")
 	}
-	// An empty UID is exactly the name-based case, not a third thing.
-	explicitEmpty := map[string]ipam.ScopeRef{"network": {
-		APIGroup: "networking.datumapis.com", Kind: "Network", Name: "default", UID: "",
-	}}
-	if PoolDigest("", byName) != PoolDigest("", explicitEmpty) {
-		t.Error("an explicitly-empty UID must digest as an unset one")
+
+	renamed := map[string]ipam.ScopeRef{"network": ref("default-2")}
+	if AddressSpaceDigest("p", first) == AddressSpaceDigest("p", renamed) {
+		t.Error("a different name must be a different address space")
 	}
 }
 
