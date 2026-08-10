@@ -29,8 +29,14 @@ type AllocationResult struct {
 	// Block is the allocated CIDR, or nil when no block was available.
 	Block *net.IPNet
 	// LargestFreePrefix is the prefix length of the largest free aligned block
-	// remaining. Zero means nothing is free — the same sentinel
-	// IPPoolStatus.LargestFreePrefix uses.
+	// remaining. Zero means nothing is free.
+	//
+	// It is NOT reported in a pool's status — that field was removed, because
+	// maintaining it on every write bought nothing a reader acted on. It
+	// survives here because it is the useful half of an EXHAUSTION error:
+	// "you asked for a /24 and the largest free block is a /26" is a sentence
+	// an operator can act on, and it is computed only when an allocation has
+	// already failed.
 	LargestFreePrefix int
 	// UtilizationPercent is the allocated share of the pool, in [0, 100].
 	UtilizationPercent float64

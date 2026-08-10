@@ -1052,10 +1052,11 @@ func persistPoolCapacity(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPo
 }
 
 // setPoolCapacityStatus populates every utilization field on the pool's status
-// from the parent ranges and current allocations. The integer Capacity counts
-// saturate cleanly for address spaces wider than int64 (Total caps at MaxInt64,
-// Allocated/Available never go negative); UtilizationPercent is computed with
-// arbitrary-precision arithmetic and is the accurate signal for IPv6.
+// from the parent ranges and current allocations. The Capacity counts are EXACT
+// decimal strings — they used to be int64s that saturated at MaxInt64, which is
+// a ceiling rather than a count — and UtilizationPercent is computed with
+// arbitrary-precision arithmetic from the same measurement, so the four figures
+// cannot disagree.
 func setPoolCapacityStatus(pool *ipamv1alpha1.IPPool, parents, allocations []net.IPNet) {
 	v := PoolCapacityFor(parents, allocations)
 	pool.Status.Capacity = ipamv1alpha1.PoolCapacity{
@@ -1471,9 +1472,6 @@ type PoolCapacityView struct {
 	Allocated          string
 	Available          string
 	UtilizationPercent float64
-	// LargestFreePrefix is the prefix length of the largest free aligned block,
-	// 0 when nothing is free — the sentinel IPPoolStatus uses.
-	LargestFreePrefix int
 }
 
 // PoolCapacityFor measures how much of a pool is actually consumed.
@@ -1566,6 +1564,5 @@ func capacityFrom(m allocation.PoolMeasurement) PoolCapacityView {
 		Allocated:          consumedBig.String(),
 		Available:          new(big.Int).Sub(totalBig, consumedBig).String(),
 		UtilizationPercent: min(max(m.UtilizationPercent, 0), 100),
-		LargestFreePrefix:  m.LargestFreePrefix,
 	}
 }
