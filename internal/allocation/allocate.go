@@ -1,16 +1,14 @@
 package allocation
 
-// One traversal, three answers.
+// One traversal, two answers.
 //
-// Choosing a block, reporting the largest free prefix, and reporting
-// utilization are three questions about the same thing: the pool's free
-// regions. Answering them with three calls computes those regions three times,
-// and each computation is linear in the number of allocations already in the
-// pool — so a caller that does all three per allocation pays three times the
-// linear cost on every claim.
+// Choosing a block and reporting utilization are two questions about one
+// thing: the pool's free regions. Computing the regions costs time linear in
+// the number of allocations the pool already holds. Two separate calls compute
+// them twice, so a caller answering both per claim pays that cost twice.
 //
-// Allocate computes the regions once and answers all three from them. The
-// individual functions remain for callers that genuinely want one answer.
+// Allocate computes the regions once and answers both from them. The
+// individual functions remain for callers that want one answer.
 
 import (
 	"math"
@@ -18,13 +16,13 @@ import (
 	"net"
 )
 
-// AllocationResult is everything one traversal of a pool's free space can
-// answer: the block chosen, and the state of what remains.
+// AllocationResult holds what one traversal of a pool's free space answers:
+// the block chosen, and what remains.
 //
-// The two reported figures describe the pool *after* Block is taken, so a
-// caller can write them straight to status alongside the new allocation
-// without a second pass. When no block could be allocated they describe the
-// pool as it stands, which is what an exhaustion error wants to report.
+// The figures describe the pool AFTER Block is taken. A caller can therefore
+// write them to status alongside the new allocation without a second pass.
+// When no block was available, the figures describe the pool as it stands,
+// which is what an exhaustion error reports.
 type AllocationResult struct {
 	// Block is the allocated CIDR, or nil when no block was available.
 	Block *net.IPNet
@@ -32,27 +30,33 @@ type AllocationResult struct {
 	UtilizationPercent float64
 }
 
-// PoolMeasurement is the free-space view of a pool: how much is gone, how much
-// remains, and the largest thing that still fits.
+// PoolMeasurement is the free-space view of a pool: how much is gone, and how
+// much remains.
 //
-// Every figure derives from the pool's free regions rather than from summing
-// its allocations, so an address covered by several allocations counts once and
-// an allocation lying outside the parents counts not at all. That is the
-// difference between reporting a pool where eight holders share one address as
-// full and reporting it as holding one address.
+// Every figure derives from the pool's free regions, not from summing its
+// allocations. Two consequences follow:
 //
-// Total, Consumed and Free are exact and never saturate; a caller needing
-// int64 status fields does its own clamping, because where to clamp is a
-// question about the API's types rather than about the address space.
+//   - An address covered by several allocations counts once.
+//   - An allocation lying outside the parents counts not at all.
+//
+// That distinction decides whether a pool where eight holders share one address
+// reads as full or as holding one address.
+//
+// Total, Consumed and Free are exact and never saturate. A caller needing
+// int64 status fields clamps them itself, because where to clamp is a question
+// about that API's types rather than about the address space.
 type PoolMeasurement struct {
 	// UtilizationPercent is the consumed share of the pool, in [0, 100].
 	//
-	// A float, and rounded to four decimal places, because an integer percent
-	// is useless at the scale these pools are sized for: 256 addresses out of a
-	// /12's 1,048,576 is 0.024%, which truncates to 0 and reads as "no
-	// allocations" on a pool that has sixteen. Four places keeps 1 address in a
-	// /12 visible (0.0001) and keeps the JSON readable — the exact ratio here
-	// is 0.0244140625, which is noise rather than information.
+	// A float, rounded to four decimal places.
+	//
+	// An integer percent is useless at the scale these pools are sized for.
+	// 256 addresses out of a /12's 1,048,576 is 0.024%, which truncates to 0
+	// and reads as "no allocations" on a pool holding sixteen.
+	//
+	// Four places keep one address in a /12 visible, at 0.0001, and keep the
+	// JSON readable. The exact ratio is 0.0244140625, and those further digits
+	// are noise rather than information.
 	UtilizationPercent float64
 	// Total, Consumed and Free are address counts. Consumed + Free == Total.
 	Total    *big.Int
@@ -334,12 +338,16 @@ func measure(views []parentView) PoolMeasurement {
 	m.Total = new(big.Int)
 	m.Free = new(big.Int)
 
-	// Totals only. This used to also find the largest free aligned block, and
-	// that single line was ~99% of this function: one largestAlignedBlock plus
-	// a big.Int size and comparison per FREE REGION, and a pool with N
-	// scattered allocations has ~N regions. Measured at 4,096 allocations,
-	// measure() ran 1,321us with it and 1.5us without — and it is on the path
-	// every successful claim takes, through PublishPoolCapacity.
+	// Totals only.
+	//
+	// This loop used to also find the largest free aligned block. That single
+	// concern cost ~99% of the function, because it called largestAlignedBlock
+	// once per FREE REGION, and a pool holding N scattered allocations has
+	// roughly N regions. At 4,096 allocations, measure ran in 1,321us with the
+	// search and 1.5us without.
+	//
+	// Every successful claim reaches this function through
+	// PublishPoolCapacity, so the search ran on the hot path.
 	for i := range views {
 		v := &views[i]
 		m.Total.Add(m.Total, addressCount(v.parent))
@@ -356,10 +364,14 @@ func measure(views []parentView) PoolMeasurement {
 		return m
 	}
 
-	// A rational rather than integer division: consumed*100/total truncates,
-	// and truncation is the whole defect here — every figure below 1% became 0.
-	// big.Rat is exact for arbitrarily wide IPv6 counts, where float64 division
-	// of the raw totals would lose precision before the percentage is taken.
+	// Divide as a rational, not as integers.
+	//
+	// Integer division truncates, and truncation is the defect this replaced:
+	// every figure below 1% became 0. A pool holding 256 of 1,048,576
+	// addresses reported 0%.
+	//
+	// big.Rat stays exact for IPv6 counts of any width. float64 division of the
+	// raw totals loses precision before the percentage is taken.
 	m.UtilizationPercent = clampPercent(new(big.Rat).SetFrac(
 		new(big.Int).Mul(m.Consumed, big.NewInt(100)), m.Total))
 	return m
@@ -368,9 +380,9 @@ func measure(views []parentView) PoolMeasurement {
 // clampPercent converts an exact ratio to a percentage in [0, 100], rounded to
 // four decimal places.
 //
-// Rounding happens here rather than at the display layer so every consumer sees
-// the same number. A stored value with more precision than anyone renders is a
-// value two readers can disagree about.
+// clampPercent rounds here rather than leaving it to the display layer, so
+// every consumer reads the same number. A stored value carrying more precision
+// than anyone renders is a value two readers can disagree about.
 func clampPercent(r *big.Rat) float64 {
 	f, _ := r.Float64()
 	switch {

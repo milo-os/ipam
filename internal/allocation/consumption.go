@@ -4,25 +4,27 @@ package allocation
 // them.
 //
 // Measure answers "how much of this pool is gone" by walking every allocation
-// and subtracting the free regions from the parents. That is exact, and it is
-// the reason a claim costs O(allocations in the pool): the caller loads the
-// whole set to update one number. The instrument in
-// internal/allocator/allocation_scaling_postgres_test.go reads it directly —
-// heap tuples per allocation come out as occupancy + 51 at every checkpoint.
+// and subtracting the free regions from the parents. The answer is exact, and
+// it costs one full scan per claim: the caller loads the whole set to update
+// one number. The instrument in
+// internal/allocator/allocation_scaling_postgres_test.go reads that cost
+// directly. Heap tuples per allocation come out as occupancy + 51 at every
+// checkpoint.
 //
-// The delta needs only the allocations that OVERLAP the block being added or
-// removed. Everything else in the pool contributes identically before and
-// after, so it cancels — which is what makes a bounded index lookup sufficient
-// where a full scan was needed, and is the whole idea in one sentence.
+// A DELTA NEEDS ONLY THE ALLOCATIONS THAT OVERLAP THE BLOCK BEING ADDED OR
+// REMOVED. Every other allocation contributes the same amount before and
+// after, so it cancels. A bounded index lookup therefore suffices where a full
+// scan was required.
 //
-// # Why a delta is exact here, and why summing sizes is not
+// # Why a delta is exact here, and summing sizes is not
 //
-// The obvious version — consumed += size(block) — is wrong for the same reason
-// UtilizationPercent is wrong, and in the same direction. The class model lets
-// allocations legitimately overlap: two networks may hold the same address out
-// of one shared range, which is one address with two holders rather than two
-// addresses. Summing counts it twice, and a /28 shared by eight networks reads
-// as eight times its real occupancy.
+// The obvious version, consumed += size(block), fails for the same reason
+// UtilizationPercent fails, and in the same direction.
+//
+// The class model lets allocations overlap legitimately. Two networks may hold
+// one address out of a shared range, which is one address with two holders
+// rather than two addresses. Summing counts that address twice, so a /28
+// shared by eight networks reads as eight times its real occupancy.
 //
 // # This is not the whole of the change it exists for
 //
@@ -42,12 +44,14 @@ import (
 // AddedConsumption reports how many addresses become consumed when block is
 // added to a pool that already holds `overlapping`.
 //
-// parents are the pool's ranges. `overlapping` must contain EVERY existing
-// allocation that intersects block; it may contain others harmlessly, so a
-// caller that fetches a slightly wider set is safe and a caller that fetches a
-// narrower one over-counts. That requirement is part of this function's
-// contract rather than a detail of the call site, which is why it is stated
-// here.
+// parents are the pool's ranges.
+//
+// `overlapping` must contain EVERY existing allocation that intersects block.
+// Extra entries are harmless. A caller fetching a slightly wider set is
+// therefore safe, and a caller fetching a narrower one over-counts.
+//
+// That requirement belongs to this function's contract, not to any one call
+// site, which is why it appears here.
 func AddedConsumption(parents, overlapping []net.IPNet, block net.IPNet) (*big.Int, error) {
 	return consumptionDelta(parents, overlapping, block)
 }
@@ -72,12 +76,18 @@ func RemovedConsumption(parents, overlapping []net.IPNet, block net.IPNet) (*big
 // consumptionDelta is the difference the block makes to the pool's consumption,
 // measured over the bounded set.
 //
-// It is the difference of two Measures rather than a hand-rolled union, and
-// that is the design decision worth keeping. Measure's free-region walk already
-// computes the union of overlapping CIDRs against the parents correctly,
-// including the awkward cases — blocks nested inside one another, blocks
-// straddling a parent boundary, blocks outside the pool entirely. A second
-// implementation of that union is a second thing to get wrong, and it would be
+// consumptionDelta takes the difference of two Measures rather than computing
+// a union by hand. That choice is worth keeping.
+//
+// Measure's free-region walk already computes the union of overlapping CIDRs
+// against the parents correctly, including the awkward cases:
+//
+//   - blocks nested inside one another
+//   - blocks straddling a parent boundary
+//   - blocks lying outside the pool entirely
+//
+// A second implementation of that union is a second thing to get wrong, and it
+// would be
 // wrong only in the rare shapes, which is where nobody looks.
 //
 // The cost is two walks over `overlapping`, not over the pool. For a pool with
@@ -94,11 +104,11 @@ func consumptionDelta(parents, overlapping []net.IPNet, block net.IPNet) (*big.I
 	}
 	delta := new(big.Int).Sub(after.Consumed, before.Consumed)
 	if delta.Sign() < 0 {
-		// Not reachable: adding a block cannot reduce consumption. Clamped
-		// rather than returned negative because a negative delta applied to a
-		// running total is the one outcome that corrupts it permanently, and a
-		// pool reading slightly empty is recoverable where a poisoned total is
-		// not.
+		// Not reachable: adding a block cannot reduce consumption.
+		//
+		// Clamped rather than returned negative. A negative delta applied to a
+		// running total corrupts that total permanently. A pool reading
+		// slightly empty is recoverable; a poisoned total is not.
 		return new(big.Int), nil
 	}
 	return delta, nil

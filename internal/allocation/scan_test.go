@@ -16,7 +16,7 @@ import (
 // It returns the number of blocks actually handed over, which is the figure the
 // whole exercise is about — a set-based search "examines" every block by
 // definition, and the point of a Scan is that this number is smaller.
-func runScan(t *testing.T, s *Scan, all []net.IPNet, page int) (net.IPNet, error, int) {
+func runScan(t *testing.T, s *Scan, all []net.IPNet, page int) (net.IPNet, int, error) {
 	t.Helper()
 	fed := 0
 	for !s.Done() {
@@ -46,7 +46,7 @@ func runScan(t *testing.T, s *Scan, all []net.IPNet, page int) (net.IPNet, error
 		for start := 0; start < len(span) && !s.Done(); start += page {
 			end := min(start+page, len(span))
 			if err := s.Feed(span[start:end]); err != nil {
-				return net.IPNet{}, err, fed
+				return net.IPNet{}, fed, err
 			}
 			fed += end - start
 			delivered = end
@@ -57,7 +57,7 @@ func runScan(t *testing.T, s *Scan, all []net.IPNet, page int) (net.IPNet, error
 		}
 	}
 	block, err := s.Result()
-	return block, err, fed
+	return block, fed, err
 }
 
 func sortBlocks(bs []net.IPNet) {
@@ -115,7 +115,7 @@ func TestScanAgreesWithWholeSetSearch(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s seed %d: NewScan: %v", f.name, seed, err)
 			}
-			got, gotErr, _ := runScan(t, s, ordered, 1+rng.Intn(8))
+			got, _, gotErr := runScan(t, s, ordered, 1+rng.Intn(8))
 
 			switch {
 			case wantErr != nil && gotErr == nil:
@@ -170,7 +170,7 @@ func TestScanFromFloorSkipsWhatItIsToldToSkip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewScan: %v", err)
 			}
-			got, gotErr, _ := runScan(t, s, existing, 4)
+			got, _, gotErr := runScan(t, s, existing, 4)
 			if tc.want == "" {
 				if gotErr == nil {
 					t.Fatalf("expected exhaustion above the floor, got %v", got)
@@ -211,7 +211,7 @@ func TestScanFirstFreeIsAnAddressNotABlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScan: %v", err)
 	}
-	got, gotErr, _ := runScan(t, s, existing, 2)
+	got, _, gotErr := runScan(t, s, existing, 2)
 	if gotErr != nil {
 		t.Fatalf("unexpected error: %v", gotErr)
 	}
@@ -272,7 +272,7 @@ func TestScanIgnoresBlocksAboveTheParent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScan: %v", err)
 	}
-	got, gotErr, _ := runScan(t, s, blocks, 8)
+	got, _, gotErr := runScan(t, s, blocks, 8)
 	if gotErr == nil {
 		t.Fatalf("parent is fully allocated; scan handed out %v", got)
 	}
@@ -308,7 +308,7 @@ func TestScanExaminesOnlyWhatItNeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewScan: %v", err)
 	}
-	got, gotErr, fed := runScan(t, s, existing, 16)
+	got, fed, gotErr := runScan(t, s, existing, 16)
 	if gotErr != nil {
 		t.Fatalf("unexpected error: %v", gotErr)
 	}

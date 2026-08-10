@@ -3,25 +3,24 @@ package allocation
 // First-fit without the whole set.
 //
 // FindFirstAvailableBlock and Allocate take every allocation in the pool as a
-// slice. That is the honest shape for a library with no database under it, and
-// it is why allocation cost is quadratic in pool occupancy: the caller loads N
-// rows to hand out allocation N+1. Measured — see
-// internal/allocator/allocation_scaling_postgres_test.go — a pool at 4,000
-// allocations reads 4,050 heap tuples per claim and allocates 10 MB of Go heap
-// doing it, both rising in step with occupancy.
+// slice. That shape is honest for a library with no database under it, and it
+// is why allocation cost grows with pool occupancy: the caller loads N rows to
+// hand out allocation N+1. A pool holding 4,000 allocations reads 4,050 heap
+// tuples per claim and allocates 10 MB of Go heap doing it. Both figures rise
+// in step with occupancy. See
+// internal/allocator/allocation_scaling_postgres_test.go.
 //
-// Scan inverts the flow. Instead of being given the set, it names the smallest
-// span it still needs to know about, consumes blocks in ascending address
-// order, and stops as soon as the answer is decided. A caller with an ordered
-// index over the allocations can then fetch a page at a time and stop early, so
-// the work is proportional to what the search EXAMINES rather than to what
-// exists.
+// Scan inverts the flow. Scan names the smallest span it still needs, consumes
+// blocks in ascending address order, and stops as soon as the answer is
+// decided. A caller holding an ordered index over the allocations fetches one
+// page at a time and stops early. Work then scales with what the search
+// EXAMINES rather than with what exists.
 //
-// It answers exactly what FirstFit answers, and nothing else. BestFit and
-// LeastUtilized are defined over the whole pool — "the smallest region that
-// fits" and "the emptiest parent" cannot be known from a prefix of the
-// allocations — so they keep the set-based path and keep its cost. That is not
-// an omission to be fixed later; it is what those strategies mean.
+// Scan answers what FirstFit answers, and nothing else. BestFit and
+// LeastUtilized are defined over the whole pool: no prefix of the allocations
+// determines "the smallest region that fits" or "the emptiest parent". Both
+// strategies therefore keep the set-based path and its cost. That limit is
+// what the strategies mean, not an omission to fix later.
 //
 // # This is not yet on the hot path, and what it still needs
 //
@@ -29,16 +28,18 @@ package allocation
 // swapping the call, and the two missing pieces are worth stating here rather
 // than in a task nobody will find:
 //
-//  1. An index ordered by (pool_key, allocated_cidr). The one that exists is
-//     (pool_key, scope_digest) INCLUDE (allocated_cidr), and an INCLUDE column
-//     cannot order a scan — so today's caller has no way to deliver blocks
-//     ascending without sorting them, which means loading them all.
+//  1. An index ordered by (pool_key, allocated_cidr). The index that exists is
+//     (pool_key, scope_digest) INCLUDE (allocated_cidr). An INCLUDE column
+//     cannot order a scan. Today's caller therefore cannot deliver blocks in
+//     ascending order without sorting them, and sorting means loading them
+//     all.
 //
-//  2. A persisted floor per (pool, address space). WITHOUT ONE, A BOUNDED
-//     SEARCH IS STILL LINEAR IN THE COMMON CASE: a pool filled sequentially has
-//     its first free block at the end, so a scan from the base examines every
-//     allocation to reach it. The scan removes the Go-side cost and leaves the
-//     exponent. FirstFree exists to be persisted as that floor.
+//  2. A persisted floor per (pool, address space). WITHOUT SUCH A FLOOR, A
+//     BOUNDED SEARCH STAYS LINEAR IN THE COMMON CASE. A pool filled
+//     sequentially holds its first free block at the end, so a scan from the
+//     base examines every allocation to reach it. Scan removes the Go-side
+//     cost and leaves the exponent. FirstFree exists to be persisted as that
+//     floor.
 //
 // And a third thing that is not this package's to fix: the capacity recompute
 // runs on the same path and measures every allocation in the pool after every
@@ -52,9 +53,11 @@ package allocation
 // FindFirstAvailableBlockWithReservations materialises reserved positions and
 // appends them to the set. A Scan's caller is reading rows, and in this service
 // reservations ARE rows (purpose='Reservation'), so they arrive through Feed
-// like anything else. Adding a Reservation parameter would let a caller that
-// already supplies them supply them twice, which is silent: the second copy
-// changes no answer, right up until the day reservations stop being
+// like anything else.
+//
+// Adding a Reservation parameter would let a caller that already supplies the
+// blocks supply them twice. That mistake stays silent, because the second copy
+// changes no answer. It stays silent right up until reservations stop being
 // materialised and the two sources disagree.
 
 import (
@@ -70,8 +73,8 @@ var ErrScanClosed = errors.New("scan has already decided")
 
 // ErrScanOutOfOrder is returned when a block arrives below the one before it.
 //
-// The scan's whole advantage rests on ascending order — it advances a cursor
-// and never looks back, so a block arriving late is a block it has already
+// The scan's advantage rests on ascending order. Scan advances a cursor and
+// never looks back, so a block arriving late is a block it has already
 // stepped over, and the address it covers would be handed out. This errors
 // rather than sorting: a caller whose query lost its ordering must be told,
 // because sorting here would hide it and reintroduce the whole-set cost that
@@ -89,10 +92,12 @@ type Scan struct {
 
 	pIdx int // index into parents of the span being scanned
 	bits int // address width of parents[pIdx]
-	// pEnd is the last address of parents[pIdx]. The set-based path gets the
-	// equivalent for free from filterWithin; a streaming one has to check it
-	// per block, and not checking it hands out a block past the end of the
-	// pool when a row sits above the parent.
+	// pEnd is the last address of parents[pIdx].
+	//
+	// The set-based path gets the equivalent free from filterWithin. A
+	// streaming path must check every block instead. Skipping the check hands
+	// out a block past the end of the pool whenever a row sits above the
+	// parent.
 	pEnd *big.Int
 
 	// cursor is the lowest address in parents[pIdx] not yet known to be taken.
@@ -188,17 +193,19 @@ func (s *Scan) feedOne(block net.IPNet) error {
 	}
 	s.last = start
 
-	// Blocks starting above the parent constrain nothing — the same rule
-	// filterWithin applies on the set-based path. A caller's query is by pool,
-	// and a pool's rows are not guaranteed to lie inside the parent it is being
-	// searched against: a pool with several CIDRs has rows above each of them.
+	// Blocks starting above the parent constrain nothing. filterWithin applies
+	// the same rule on the set-based path.
 	//
-	// This return is also what bounds every fit to the parent. tryFit's upper
-	// limit is either this block's start minus one or, from End, the parent's
-	// last address — so with stray blocks turned away here, no fit can be
-	// proposed past the end of the parent, and tryFit needs no clamp of its own.
-	// One was written and removed: deleting it changed no test, because this
-	// return had already made it unreachable.
+	// A caller queries by pool, and a pool's rows need not lie inside the
+	// parent currently being searched. A pool with several CIDRs holds rows
+	// above each of them.
+	//
+	// This return also bounds every fit to the parent. tryFit's upper limit is
+	// either this block's start minus one, or the parent's last address when
+	// End supplies it. Turning stray blocks away here therefore means no fit
+	// can be proposed past the end of the parent, and tryFit needs no clamp of
+	// its own. One was written and removed: deleting it changed no test,
+	// because this return had already made it unreachable.
 	if start.Cmp(s.pEnd) > 0 {
 		return nil
 	}
@@ -256,12 +263,15 @@ func (s *Scan) Result() (net.IPNet, error) {
 // FirstFree is the lowest free address the scan saw at or above its floor, or
 // nil when it saw none.
 //
-// This is the value worth caching as the next search's floor. It is the first
-// free ADDRESS, not the first address a block of this size fits at: a /28
-// search steps over a free /30, and recording where the /28 landed would skip
-// that /30 for every later search, including the ones it would have suited.
-// That distinction is the whole reason this is a separate accessor rather than
-// being derived from Result.
+// FirstFree returns the value worth caching as the next search's floor.
+//
+// The value is the first free ADDRESS, not the first address a block of this
+// size fits at. A /28 search steps over a free /30. Recording where the /28
+// landed would skip that /30 for every later search, including searches the
+// /30 would have suited.
+//
+// That distinction is why FirstFree is a separate accessor rather than
+// something derived from Result.
 func (s *Scan) FirstFree() net.IP {
 	if !s.firstFreeFound {
 		return nil

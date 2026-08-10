@@ -149,13 +149,18 @@ func addressCount(cidr net.IPNet) *big.Int {
 }
 
 // UtilizationPercent returns the allocated share of the parents' total address
-// space as an integer in [0, 100], computed with arbitrary-precision
-// arithmetic so it is accurate for IPv6 spaces larger than an int64. An empty
-// pool reports 0.
+// space, as an integer in [0, 100]. An empty pool reports 0.
 //
-// DO NOT USE THIS TO REPORT A POOL'S UTILIZATION. It sums the allocations, so
-// an address covered by several of them counts once per allocation and an
-// allocation lying outside the parents counts even though it consumes nothing.
+// UtilizationPercent uses arbitrary-precision arithmetic, so the result stays
+// accurate for IPv6 spaces wider than an int64.
+//
+// DO NOT USE UtilizationPercent TO REPORT A POOL'S UTILIZATION. It SUMS the
+// allocations, which produces two errors:
+//
+//   - An address covered by several allocations counts once per allocation.
+//   - An allocation lying outside the parents counts, though it consumes
+//     nothing.
+//
 // A pool where eight holders legitimately share one address — the same address
 // in eight networks — reports eight times its real occupancy. Use Measure, or
 // the figure Allocate already returns, both of which derive utilization from
@@ -179,10 +184,11 @@ func addressCount(cidr net.IPNet) *big.Int {
 //   - arch_probe_test.go: the ten-second QEMU discriminator, kept deliberately
 //     so nobody re-diagnoses emulated-amd64 heap corruption as an allocator bug.
 //
-// The rest are its own unit test and two benchmarks. So the honest summary is
-// not "dead" but "deliberately unreachable from production and load-bearing in
-// tests" — which is what an exported symbol with no production callers looks
-// like when it is doing its job.
+// The rest are its own unit test and two benchmarks.
+//
+// So the honest summary is not "dead". It is "deliberately unreachable from
+// production, and load-bearing in tests". That is what an exported symbol with
+// no production callers looks like when it is doing its job.
 func UtilizationPercent(parents, existing []net.IPNet) int {
 	total := new(big.Int)
 	for _, p := range parents {
@@ -396,9 +402,10 @@ func splitRegionIntoAlignedCIDRs(start, end *big.Int, totalBits int) []net.IPNet
 // KEPT ONLY FOR THE PRE-CLASS-MODEL ALLOCATOR, AND GOING AWAY WITH IT.
 //
 // Nothing in the new engine above calls these. They survive because the
-// allocator on main still does, and this change is deliberately additive: it
-// adds the engine the class model will use without altering a line of the
-// behaviour shipping today.
+// allocator on main still calls them.
+//
+// This change is deliberately additive. It adds the engine the class model
+// will use without altering a line of the behaviour shipping today.
 //
 // Finding the largest free aligned block costs a walk of every free region, and
 // a pool with N scattered allocations has ~N of them. Measure() above therefore

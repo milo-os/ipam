@@ -1,20 +1,23 @@
 package allocation
 
-// Reservations withhold positions at the edges of a pool. A pool reserves
-// `leading` blocks at the start of its lowest parent range and `trailing`
-// blocks at the end of its highest, each block being one unit of
-// unitPrefixLen bits. Runs spill across parents when one range cannot supply
-// the whole count.
+// Reservations withhold positions at the edges of a pool.
 //
-// The blocks this file returns are exactly the blocks the allocator would
-// otherwise hand out at those positions — same size, same alignment — so a
-// caller can persist them as ordinary allocations and let the existing
-// overlap logic exclude them. Nothing here knows what a pool, a class, or a
-// scope is; it takes CIDRs and integers and returns CIDRs.
+// A pool reserves `leading` blocks at the start of its lowest parent range and
+// `trailing` blocks at the end of its highest. Each block spans one unit of
+// unitPrefixLen bits. A run spills into the next range when one range cannot
+// supply the whole count.
 //
-// Results are deterministic: parents are ordered by address internally, so
-// the same inputs yield the same blocks in the same order regardless of the
-// order the caller supplies its ranges in.
+// These functions return the same blocks the allocator would otherwise hand
+// out at those positions, at the same size and alignment. A caller can
+// therefore persist each block as an ordinary allocation, and the existing
+// overlap logic excludes it from future searches.
+//
+// This file knows nothing about pools, classes or scopes. It takes CIDRs and
+// integers, and returns CIDRs.
+//
+// Results are deterministic. These functions sort parents by address
+// internally, so the same inputs yield the same blocks in the same order
+// whatever order the caller supplies its ranges in.
 
 import (
 	"errors"
@@ -38,10 +41,10 @@ var (
 //
 // The zero value reserves nothing.
 //
-// Leading and Trailing are counts of blocks that will be materialised, so
-// callers accepting them from an API must bound them; this package validates
-// them against the parents' capacity, but a large IPv6 parent has capacity for
-// more blocks than any process can hold.
+// CALLERS ACCEPTING THESE COUNTS FROM AN API MUST BOUND THEM. Leading and
+// Trailing each count blocks the caller will materialise. This package
+// validates both against the parents' capacity, but a large IPv6 parent has
+// capacity for more blocks than any process can hold.
 type Reservation struct {
 	// UnitPrefixLength is the prefix length of one reserved block. It must be
 	// at least as long as every parent's own prefix length.
@@ -68,16 +71,18 @@ func (r Reservation) BlocksIn(parents []net.IPNet) ([]net.IPNet, error) {
 // blocks, counted in units of unitPrefixLen, so the caller can materialise
 // each as a real allocation held by the pool.
 //
-// `leading` counts from the start of the lowest parent and `trailing` from the
-// end of the highest, both by address, spilling into the next range when one
-// cannot supply the whole count. Results are ascending by address: the leading
-// blocks first, then the trailing ones. The function is deterministic — the
-// same inputs always produce the same blocks, whatever order `parents` arrives
-// in — so a caller may materialise them once at pool-provision time and
-// recompute them later for comparison.
+// `leading` counts from the start of the lowest parent by address. `trailing`
+// counts from the end of the highest. Each run spills into the next range when
+// one range cannot supply the whole count.
 //
-// With leading and trailing both zero the result is nil and nothing else is
-// validated: reserving nothing is always a no-op.
+// Results ascend by address: the leading blocks first, then the trailing ones.
+//
+// ReservedBlocks is deterministic. The same inputs always produce the same
+// blocks, whatever order `parents` arrives in, so a caller can materialise the
+// blocks once at pool-provision time and recompute them later to compare.
+//
+// When leading and trailing are both zero, ReservedBlocks returns nil and
+// validates nothing else. Reserving nothing is always a no-op.
 //
 // Errors:
 //   - ErrNoParent if parents is empty.
@@ -208,8 +213,10 @@ func sortedDisjointParents(parents []net.IPNet) ([]net.IPNet, int, error) {
 }
 
 // IsBlockAvailable reports whether the exact block `want` fits inside one of
-// the parents and overlaps nothing in existing. This is the specific-address
-// path — a claim naming an address rather than a size, which cannot go through
+// the parents and overlaps nothing in existing.
+//
+// IsBlockAvailable serves the specific-address path: a claim naming an address
+// rather than a size. Such a claim cannot go through
 // FindFirstAvailableBlock.
 //
 // `want` must be contained whole: a block straddling the edge of a parent is
