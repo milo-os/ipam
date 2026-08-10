@@ -3,12 +3,8 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"fmt"
-	"net"
-	"os/exec"
 	"strings"
 	"testing"
-	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,11 +14,14 @@ import (
 
 	"go.miloapis.com/ipam/pkg/apis/ipam/install"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+
+	"go.miloapis.com/ipam/internal/testdb"
 )
 
-// postgresImage is the image used for the ephemeral test database. Pinned to a
-// minor version so the test exercises the same Postgres family as production.
-const postgresImage = "postgres:16-alpine"
+// The Postgres image is no longer pinned here. internal/testdb pins it once for
+// the whole repo, which moves these tests from 16-alpine to 17-alpine — the
+// family the service actually deploys, and the one the migration tests already
+// used. Two pins that disagreed was the smaller half of the same problem.
 
 // schemaDDL mirrors the relevant parts of migrations/001_initial_schema.sql:
 // the RV sequence, the durable object table, and the prunable changelog with
@@ -73,60 +72,24 @@ func newIPPool(name string) runtime.Object {
 	return p
 }
 
-// startEphemeralPostgres boots a throwaway PostgreSQL container on a free
-// localhost port, applies schemaDDL, and returns an open *sql.DB. The
-// container (and connection) are torn down via t.Cleanup. The test is skipped
-// — never failed — when Docker is unavailable so the suite stays green on
-// machines and CI lanes without a Docker daemon.
+// startEphemeralPostgres returns an open *sql.DB on a private database with
+// schemaDDL applied.
+//
+// It used to start a Postgres container per test. internal/testdb now owns
+// backend selection for the whole repo, so at most one container is started per
+// package and the skip condition is stated in one place.
+//
+// A private DATABASE rather than a private schema, which is the exception
+// testdb.PrivateDatabase exists for: the store opens a LISTEN connection, and
+// notification channel names are scoped to the database rather than the schema.
 func startEphemeralPostgres(t *testing.T) *sql.DB {
 	t.Helper()
 
-	docker, err := exec.LookPath("docker")
-	if err != nil {
-		t.Skip("docker not on PATH; skipping Postgres integration test")
-	}
-	if out, err := exec.Command(docker, "info").CombinedOutput(); err != nil {
-		t.Skipf("docker daemon not available; skipping Postgres integration test: %v\n%s", err, out)
-	}
-
-	port := freePort(t)
-	args := []string{
-		"run", "-d", "--rm",
-		"-p", fmt.Sprintf("127.0.0.1:%d:5432", port),
-		"-e", "POSTGRES_PASSWORD=postgres",
-		"-e", "POSTGRES_USER=postgres",
-		"-e", "POSTGRES_DB=postgres",
-		// data on tmpfs + fsync off keeps the throwaway DB fast.
-		"--tmpfs", "/var/lib/postgresql/data",
-		postgresImage,
-		"-c", "fsync=off", "-c", "full_page_writes=off",
-	}
-	out, err := exec.Command(docker, args...).CombinedOutput()
-	if err != nil {
-		t.Skipf("failed to start postgres container: %v\n%s", err, out)
-	}
-	containerID := strings.TrimSpace(string(out))
-	t.Cleanup(func() {
-		_ = exec.Command(docker, "rm", "-f", containerID).Run()
-	})
-
-	dsn := fmt.Sprintf("host=127.0.0.1 port=%d user=postgres password=postgres dbname=postgres sslmode=disable", port)
-	db, err := sql.Open("pgx", dsn)
+	db, err := sql.Open("pgx", testdb.PrivateDatabase(t, "ipam_store_"+testDBName(t)))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if err := db.Ping(); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("postgres container did not become ready within 30s")
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
 
 	if _, err := db.ExecContext(context.Background(), schemaDDL); err != nil {
 		t.Fatalf("apply schema: %v", err)
@@ -134,12 +97,21 @@ func startEphemeralPostgres(t *testing.T) *sql.DB {
 	return db
 }
 
-func freePort(t *testing.T) int {
+// testDBName derives a unique, legal identifier from the test name.
+func testDBName(t *testing.T) string {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("find free port: %v", err)
+	var b strings.Builder
+	for _, r := range strings.ToLower(t.Name()) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
 	}
-	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port
+	return b.String()
 }
+
+// TestMain removes the throwaway Postgres container testdb starts when
+// IPAM_TEST_POSTGRES_DSN is unset. It is shared by every test in the package,
+// so no single test can own its teardown.
+func TestMain(m *testing.M) { testdb.TestMain(m) }

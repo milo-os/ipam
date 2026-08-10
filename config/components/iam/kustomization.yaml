@@ -4,6 +4,37 @@
 #
 # This is created as a component so it can be included with other
 # kustomizations.
+#
+# ---------------------------------------------------------------------------
+# NO TEST IN THIS REPO EXERCISES WHAT THIS COMPONENT GRANTS. Read this before
+# trusting a green suite to tell you the permissions are right.
+# ---------------------------------------------------------------------------
+#
+# Every e2e and load suite runs against a plain Kubernetes ClusterRole created
+# by the test setup — `perf-class-user`, in test/load/src/setup-classes.js — not
+# against these Roles. The apiserver's SubjectAccessReview is answered by
+# kube-apiserver's RBAC, which knows nothing about iam.miloapis.com Roles, so
+# the suites authorize through a permission model that is not the one that
+# ships. The two can disagree indefinitely and everything stays green.
+#
+# They did disagree, from the class-model migration until 2026-08-08. The
+# service checks "use" on ipclasses/<name> (internal/access/class.go); this
+# component granted ipam.miloapis.com/ippools.use — the pre-class-model gate,
+# read by nothing — and granted ipclasses nothing at all, not even get/list.
+# In a real Milo deployment every consumer claim would have been denied and no
+# tenant could have listed a class to discover what to name. Locally, all suites
+# passed, because perf-class-user grants ipclasses.use directly.
+#
+# The failure is invisible to an obvious-looking consistency check. Verifying
+# that every permission the Roles grant is registered on a ProtectedResource
+# passes on the broken manifests too — both files were consistently wrong,
+# ippools.use being registered *and* granted while ipclasses.use was neither.
+# Two sides of a check derived from the same assumption prove nothing. A guard
+# that works has to compare these manifests against the SAR the CODE issues.
+#
+# So when you change an authorization check in internal/access/, change this
+# component in the same commit, and do not expect any test to fail if you
+# forget.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 

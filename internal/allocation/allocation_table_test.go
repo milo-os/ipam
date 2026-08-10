@@ -288,10 +288,10 @@ func TestCIDRPool_Allocate_DelegatesToFinder(t *testing.T) {
 		wantErr  error
 	}{
 		{
-			name:     "first_fit_default",
-			ranges:   []string{"10.0.0.0/24"},
-			prefix:   25,
-			want:     "10.0.0.0/25",
+			name:   "first_fit_default",
+			ranges: []string{"10.0.0.0/24"},
+			prefix: 25,
+			want:   "10.0.0.0/25",
 		},
 		{
 			name:     "best_fit_routes_through_pool",
@@ -302,12 +302,12 @@ func TestCIDRPool_Allocate_DelegatesToFinder(t *testing.T) {
 			want:     "10.0.1.0/24",
 		},
 		{
-			name:    "exhausted_propagates_error",
-			ranges:  []string{"10.0.0.0/30"},
+			name:     "exhausted_propagates_error",
+			ranges:   []string{"10.0.0.0/30"},
 			existing: []string{"10.0.0.0/30"},
 			strategy: FirstFit,
 			prefix:   30,
-			wantErr: ErrPoolExhausted,
+			wantErr:  ErrPoolExhausted,
 		},
 	}
 	for _, c := range cases {
@@ -456,4 +456,3 @@ func parseCIDRs(t *testing.T, ss []string) []net.IPNet {
 	}
 	return out
 }
-

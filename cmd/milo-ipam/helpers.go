@@ -3,9 +3,9 @@ package main
 import (
 	"crypto/rand"
 	"fmt"
+	"sort"
 	"strings"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -41,6 +41,42 @@ func orDash(s string) string {
 	return s
 }
 
+// orDashList renders a string list as a comma-joined cell, em-dash when empty.
+func orDashList(items []string) string {
+	if len(items) == 0 {
+		return "—"
+	}
+	return strings.Join(items, ",")
+}
+
+// scopeRolesCell renders a list of scope role names, substituting an explanatory
+// phrase when the list is empty (an empty UniqueWithin is meaningful, not blank).
+func scopeRolesCell(roles []string, whenEmpty string) string {
+	if len(roles) == 0 {
+		return whenEmpty
+	}
+	return strings.Join(roles, ", ")
+}
+
+// quoteAll wraps each element in double quotes, for listing names in prose.
+func quoteAll(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, s := range items {
+		out = append(out, `"`+s+`"`)
+	}
+	return out
+}
+
+// sortedKeys returns a map's keys in stable order.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // refOrNil returns a *LocalRef for a non-empty name, else nil.
 func refOrNil(name string) *ipamv1alpha1.LocalRef {
 	if name == "" {
@@ -61,8 +97,10 @@ func parseFamily(s string) (ipamv1alpha1.IPFamily, error) {
 	}
 }
 
-// parseStrategy validates an allocation strategy string against the API enum.
-func parseStrategy(s string) (ipamv1alpha1.Strategy, error) {
+// parseStrategy validates a POOL's allocation strategy — which free block is
+// taken from inside the pool. BestFit is valid here and not on a class: see
+// ipamv1alpha1.AllocationStrategy.
+func parseStrategy(s string) (ipamv1alpha1.AllocationStrategy, error) {
 	switch strings.ToLower(s) {
 	case "firstfit", "first-fit", "first":
 		return ipamv1alpha1.FirstFit, nil
@@ -75,16 +113,10 @@ func parseStrategy(s string) (ipamv1alpha1.Strategy, error) {
 	}
 }
 
-// parseLabelSelector converts a "k=v,k2=v2" string into a *LabelSelector,
-// returning an empty (match-everything) selector on a parse error so that the
-// server can perform its own validation rather than the plugin guessing.
-func parseLabelSelector(s string) *metav1.LabelSelector {
-	sel, err := metav1.ParseToLabelSelector(s)
-	if err != nil || sel == nil {
-		return &metav1.LabelSelector{}
-	}
-	return sel
-}
+// int32Ptr returns a pointer to n. Optional numeric API fields are pointers so
+// "not requested" is distinguishable from "requested zero" — for prefix length
+// the difference is "use the class default" versus "give me a /0".
+func int32Ptr(n int32) *int32 { return &n }
 
 // renderMachine handles the machine output formats (json, yaml, name). It
 // returns done=true when it produced output for the requested format, so the

@@ -127,9 +127,23 @@ func classifyError(err error) *cliError {
 	code := httpStatusCode(err)
 	switch code {
 	case 403:
+		// classifyError is reached from every verb on every noun, so the fix here
+		// must hold for all of them. It used to explain that "a pool that exists
+		// but isn't shared into this project reports forbidden, not found" —
+		// printed verbatim on a denied claim, where it is about the wrong noun,
+		// and asserting a per-project sharing mechanism for a cluster-scoped kind.
+		// It also told the reader to "verify the active org/project", which reads
+		// as a pointer at --org/--project; those select a control plane on the
+		// datum transport and do nothing at all on a kubeconfig, so as a remedy
+		// they are a coin flip.
+		//
+		// The server's own message names the user, the verb, the resource and the
+		// scope, which is the whole of what the caller can act on. Say what the
+		// code means and stop.
 		return newCLIError(exitForbidden, fmt.Sprintf("not authorized: %s", apiMessage(err))).
-			withFix("verify the active org/project and your RBAC. A pool that exists but\n" +
-				"isn't shared into this project reports forbidden, not found.").
+			withFix("the message above names the identity, the verb and the scope that were\n" +
+				"       refused. A denial is authorization, never absence: the object may well\n" +
+				"       exist. Grant that identity the access, or ask someone who can.").
 			withCause(err)
 	case 404:
 		return newCLIError(exitNotFound, apiMessage(err)).withCause(err)
@@ -146,8 +160,13 @@ func classifyError(err error) *cliError {
 	msg := err.Error()
 	if isConnectionError(msg) {
 		return newCLIError(exitUnavailable, fmt.Sprintf("cannot reach the IPAM API: %s", msg)).
-			withFix("check connectivity and that you are logged in (datumctl login), or\n" +
-				"that --kubeconfig / KUBECONFIG points at a reachable cluster.").
+			// Continuation lines carry seven spaces so they align under the "Fix:  "
+			// label; without them the block renders flush left and stops reading as
+			// one paragraph. classifyError is transport-blind, so both candidates
+			// are offered as alternatives rather than one being asserted.
+			withFix("check connectivity, then whichever applies: that you are logged in\n" +
+				"       (datumctl login), or that --kubeconfig / KUBECONFIG points at a\n" +
+				"       reachable cluster.").
 			withCause(err)
 	}
 	return newCLIError(exitError, msg).withCause(err)
@@ -177,50 +196,46 @@ func apiMessage(err error) string {
 	return err.Error()
 }
 
-// exhaustionError renders the signature IPAM failure (HTTP 507) with the full
-// remediation context the proposal calls for: the requested length, the
-// largest block that is actually available, current utilization, and a concrete
-// next command. poolName/family/requested describe the claim; cap (which may be
-// zero-valued if the pool could not be re-fetched) supplies utilization.
-func exhaustionError(poolName string, family string, requested int, util float64, largestFree int, cause error) *cliError {
+// exhaustionError renders the signature IPAM failure (HTTP 507). Under the class
+// model the caller never named a pool, so the message has to work backwards: it
+// names the class and the scope that were asked for, then the pools that back
+// that class and how full they are, because "which pool ran out" is the first
+// thing the reader needs and the one thing the request did not say.
+func exhaustionError(className, scope string, poolLines []string, cause error) *cliError {
 	var b strings.Builder
-	fmt.Fprintf(&b, "pool %q has no free /%d block (requested length %d).", poolName, requested, requested)
-	if largestFree > 0 {
-		fmt.Fprintf(&b, "\n       Largest available block is /%d", largestFree)
-		if util > 0 {
-			fmt.Fprintf(&b, "; utilization is %.0f%%.", util)
-		} else {
-			b.WriteString(".")
-		}
-	} else if util > 0 {
-		fmt.Fprintf(&b, "\n       Utilization is %.0f%%.", util)
-	}
-
-	var fix string
-	if largestFree > requested {
-		fix = fmt.Sprintf("request a smaller prefix (--length %d) or free space:", largestFree)
+	if className != "" {
+		fmt.Fprintf(&b, "no address is available for class %q", className)
 	} else {
-		fix = "free space in the pool or pick a different pool:"
+		b.WriteString("no address is available for the default class")
 	}
-	fix += fmt.Sprintf("\n       datumctl ipam prefix list --pool %s", poolName)
+	if scope != "" && scope != "—" {
+		fmt.Fprintf(&b, " in scope %s", scope)
+	}
+	b.WriteString(".")
+	if len(poolLines) > 0 {
+		b.WriteString("\n       Pools backing this class:")
+		for _, line := range poolLines {
+			b.WriteString("\n         " + line)
+		}
+	}
 
+	fix := "free space in the pools above, or have an operator add capacity by offering\n" +
+		"       another pool to the class:"
+	if className != "" {
+		fix += fmt.Sprintf("\n       datumctl ipam class show %s", className)
+	} else {
+		fix += "\n       datumctl ipam class list"
+	}
 	return newCLIError(exitExhausted, b.String()).withFix(fix).withCause(cause)
 }
 
-// noMatchingPoolError renders the "selector matched nothing" / "named pool not
-// visible" failure with the pools that do exist nearby.
-func noMatchingPoolError(ref string, selector string, candidates []string) *cliError {
-	var b strings.Builder
-	if selector != "" {
-		fmt.Fprintf(&b, "no pool matches selector %q in the active project.", selector)
-	} else {
-		fmt.Fprintf(&b, "pool %q is not visible in the active project.", ref)
-	}
-	ce := newCLIError(exitNotFound, b.String())
+// noMatchingPoolError renders the "named pool not visible" failure with the
+// pools that do exist nearby. Pools are an operator surface now — a claim never
+// names one — so this is reached from `pool` commands, not the claim path.
+func noMatchingPoolError(ref string, candidates []string) *cliError {
+	ce := newCLIError(exitNotFound, fmt.Sprintf("pool %q is not visible in the active project.", ref))
 	if len(candidates) > 0 {
-		ce = ce.withFix("pools that are visible here:\n       " + strings.Join(candidates, "\n       "))
-	} else {
-		ce = ce.withFix("list visible pools:\n       datumctl ipam pool list")
+		return ce.withFix("pools that are visible here:\n       " + strings.Join(candidates, "\n       "))
 	}
-	return ce
+	return ce.withFix("list visible pools:\n       datumctl ipam pool list")
 }

@@ -26,15 +26,21 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		v1alpha1.IPClaimList{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_IPClaimList(ref),
 		v1alpha1.IPClaimSpec{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref),
 		v1alpha1.IPClaimStatus{}.OpenAPIModelName():       schema_pkg_apis_ipam_v1alpha1_IPClaimStatus(ref),
+		v1alpha1.IPClass{}.OpenAPIModelName():             schema_pkg_apis_ipam_v1alpha1_IPClass(ref),
+		v1alpha1.IPClassList{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_IPClassList(ref),
+		v1alpha1.IPClassSpec{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref),
+		v1alpha1.IPClassStatus{}.OpenAPIModelName():       schema_pkg_apis_ipam_v1alpha1_IPClassStatus(ref),
 		v1alpha1.IPPool{}.OpenAPIModelName():              schema_pkg_apis_ipam_v1alpha1_IPPool(ref),
 		v1alpha1.IPPoolList{}.OpenAPIModelName():          schema_pkg_apis_ipam_v1alpha1_IPPoolList(ref),
 		v1alpha1.IPPoolSpec{}.OpenAPIModelName():          schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref),
 		v1alpha1.IPPoolStatus{}.OpenAPIModelName():        schema_pkg_apis_ipam_v1alpha1_IPPoolStatus(ref),
 		v1alpha1.LocalRef{}.OpenAPIModelName():            schema_pkg_apis_ipam_v1alpha1_LocalRef(ref),
-		v1alpha1.NamespacedRef{}.OpenAPIModelName():       schema_pkg_apis_ipam_v1alpha1_NamespacedRef(ref),
 		v1alpha1.ObjectRef{}.OpenAPIModelName():           schema_pkg_apis_ipam_v1alpha1_ObjectRef(ref),
 		v1alpha1.PoolCapacity{}.OpenAPIModelName():        schema_pkg_apis_ipam_v1alpha1_PoolCapacity(ref),
-		v1alpha1.PoolSelector{}.OpenAPIModelName():        schema_pkg_apis_ipam_v1alpha1_PoolSelector(ref),
+		v1alpha1.PrefixLengthRange{}.OpenAPIModelName():   schema_pkg_apis_ipam_v1alpha1_PrefixLengthRange(ref),
+		v1alpha1.ReservationSpec{}.OpenAPIModelName():     schema_pkg_apis_ipam_v1alpha1_ReservationSpec(ref),
+		v1alpha1.RoutingSpec{}.OpenAPIModelName():         schema_pkg_apis_ipam_v1alpha1_RoutingSpec(ref),
+		v1alpha1.ScopeRef{}.OpenAPIModelName():            schema_pkg_apis_ipam_v1alpha1_ScopeRef(ref),
 		resource.Quantity{}.OpenAPIModelName():            schema_apimachinery_pkg_api_resource_Quantity(ref),
 		v1.APIGroup{}.OpenAPIModelName():                  schema_pkg_apis_meta_v1_APIGroup(ref),
 		v1.APIGroupList{}.OpenAPIModelName():              schema_pkg_apis_meta_v1_APIGroupList(ref),
@@ -127,7 +133,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocation(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "IPAllocation records a CIDR carved out of an IPPool by an IPClaim.",
+				Description: "IPAllocation records an address or block handed out of an IPPool. It is created by the system, never by a consumer.\n\nAn allocation may outlive the claim that created it: a claim released under ReclaimPolicy Retain leaves its allocation in place with ClaimRef cleared, still held and still counted against its holder, until something releases it explicitly.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -237,12 +243,60 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationSpec(ref common.ReferenceCallback
 							Ref:     ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
 						},
 					},
+					"className": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClassName is the class this allocation was handed out under. Empty on reservations, which belong to a pool rather than to a class.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"purpose": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Purpose distinguishes a claim-bound allocation from a pool-held reservation.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"claimRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClaimRef names the claim currently bound to this allocation. Nil on reservations, and nil on a retained allocation whose claim has been deleted — which is what makes retention visible rather than inferred.",
+							Ref:         ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
+						},
+					},
+					"scope": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Scope is the address space this allocation belongs to, keyed by role: the claim's scope projected onto the class's UniqueWithin. Two allocations may hold the same address only if their scopes differ.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1alpha1.ScopeRef{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"reclaimPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReclaimPolicy is the effective policy for this allocation, resolved from the class and any claim override at bind time. It is recorded here because the allocation outlives the claim that chose it.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"ownerRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "OwnerRef is the opaque consumer object this allocation is held for. It survives claim deletion under Retain, so a retained address still has an attributable holder for quota and for cleanup.",
+							Ref:         ref(v1alpha1.ObjectRef{}.OpenAPIModelName()),
+						},
+					},
 				},
 				Required: []string{"ipFamily", "poolRef"},
 			},
 		},
 		Dependencies: []string{
-			v1alpha1.LocalRef{}.OpenAPIModelName()},
+			v1alpha1.LocalRef{}.OpenAPIModelName(), v1alpha1.ObjectRef{}.OpenAPIModelName(), v1alpha1.ScopeRef{}.OpenAPIModelName()},
 	}
 }
 
@@ -262,6 +316,20 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref common.ReferenceCallba
 						SchemaProps: spec.SchemaProps{
 							Type:   []string{"string"},
 							Format: "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is the single address form of AllocatedCIDR, set when the class hands out host addresses rather than blocks.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"scopeDigest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ScopeDigest is the canonical digest of spec.scope, computed by the server — the value uniqueness is enforced on.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"conditions": {
@@ -297,7 +365,8 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaim(ref common.ReferenceCallback) common.
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Type: []string{"object"},
+				Description: "IPClaim is a long-lived request for an address, bound to one allocation for as long as it exists. A claim names a class and carries the scope it was made for; it never names a pool, a CIDR, or a region.\n\nClaims are created by the platform on a consumer's behalf, with a deterministic name derived from the thing being addressed — which is what makes the claim the durable identity a replacement instance finds again.",
+				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
 						SchemaProps: spec.SchemaProps{
@@ -393,48 +462,67 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) com
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
+					"className": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClassName is the class of address being requested. Empty selects the default class for IPFamily, which must then be set.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"ipFamily": {
 						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
+							Description: "IPFamily selects the default class when ClassName is empty. It is ignored — and must agree, if set — when ClassName names a class, since a class already fixes its family.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address names a specific address to bind. Omitted, the allocator chooses.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"prefixLength": {
 						SchemaProps: spec.SchemaProps{
-							Description: "PrefixLength is the requested sub-prefix size in bits. Must be a valid mask length for the chosen ipFamily (0-32 for IPv4, 0-128 for IPv6).",
-							Default:     0,
+							Description: "PrefixLength is the requested block size in bits. Omitted, the class's DefaultPrefixLength applies. Must fall within the class's AllowedPrefixLengths.",
 							Type:        []string{"integer"},
 							Format:      "int32",
 						},
 					},
-					"poolSelector": {
+					"scope": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref(v1alpha1.PoolSelector{}.OpenAPIModelName()),
-						},
-					},
-					"poolRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref(v1alpha1.NamespacedRef{}.OpenAPIModelName()),
+							Description: "Scope carries the references this claim is made for, keyed by role. The allocator uses them for two things: resolving which pool to draw from, and deciding which allocations this one must not collide with.\n\nA claim omitting a role its class names in UniqueWithin, or one its parent chain needs to resolve a pool, is rejected rather than falling back to a wider comparison — a wider comparison would look correct while refusing addresses the narrow one was meant to allow, surfacing as unexplained exhaustion rather than as a missing field.\n\nImmutable: a claim whose network or location changed after allocation is incoherent.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1alpha1.ScopeRef{}.OpenAPIModelName()),
+									},
+								},
+							},
 						},
 					},
 					"reclaimPolicy": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "ReclaimPolicy overrides the class default for this claim.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"ownerRef": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref(v1alpha1.ObjectRef{}.OpenAPIModelName()),
+							Description: "OwnerRef is the opaque consumer object this claim is made for.",
+							Ref:         ref(v1alpha1.ObjectRef{}.OpenAPIModelName()),
 						},
 					},
 				},
-				Required: []string{"ipFamily", "prefixLength"},
 			},
 		},
 		Dependencies: []string{
-			v1alpha1.NamespacedRef{}.OpenAPIModelName(), v1alpha1.ObjectRef{}.OpenAPIModelName(), v1alpha1.PoolSelector{}.OpenAPIModelName()},
+			v1alpha1.ObjectRef{}.OpenAPIModelName(), v1alpha1.ScopeRef{}.OpenAPIModelName()},
 	}
 }
 
@@ -454,6 +542,19 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimStatus(ref common.ReferenceCallback) c
 						SchemaProps: spec.SchemaProps{
 							Type:   []string{"string"},
 							Format: "",
+						},
+					},
+					"address": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Address is the single address form of AllocatedCIDR, set when the class hands out host addresses rather than blocks.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"poolRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "PoolRef names the pool the allocation was drawn from. It is resolved by the allocator, not requested — this is status precisely because the consumer does not choose it.",
+							Ref:         ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
 						},
 					},
 					"boundAllocationRef": {
@@ -490,11 +591,349 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimStatus(ref common.ReferenceCallback) c
 	}
 }
 
+func schema_pkg_apis_ipam_v1alpha1_IPClass(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "IPClass is the policy object a consumer names to get an address. It carries only what the allocator needs to hand one out: which space it comes from, and what it must not collide with. Nothing on a class selects an allocation — a claim binds one when it is created.\n\nConsumers name a class and never a pool, a CIDR, a prefix length, or a region. Those are operator concerns and stay on this side of the boundary.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ObjectMeta{}.OpenAPIModelName()),
+						},
+					},
+					"spec": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1alpha1.IPClassSpec{}.OpenAPIModelName()),
+						},
+					},
+					"status": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1alpha1.IPClassStatus{}.OpenAPIModelName()),
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v1alpha1.IPClassSpec{}.OpenAPIModelName(), v1alpha1.IPClassStatus{}.OpenAPIModelName(), v1.ObjectMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClassList(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"apiVersion": {
+						SchemaProps: spec.SchemaProps{
+							Description: "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"metadata": {
+						SchemaProps: spec.SchemaProps{
+							Default: map[string]interface{}{},
+							Ref:     ref(v1.ListMeta{}.OpenAPIModelName()),
+						},
+					},
+					"items": {
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1alpha1.IPClass{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"items"},
+			},
+		},
+		Dependencies: []string{
+			v1alpha1.IPClass{}.OpenAPIModelName(), v1.ListMeta{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"ipFamily": {
+						SchemaProps: spec.SchemaProps{
+							Description: "IPFamily is the single address family this class hands out. Required and immutable. Dual-stack is two classes, never one.",
+							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"parentClassName": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ParentClassName is the class whose allocations this one carves from. Empty means allocations come from the pools that offer this class directly via IPPool.spec.classNames.\n\nImmutable: changing it strands every existing allocation outside its declared ancestry.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"poolPer": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "PoolPer names the scope roles that determine how many pools this class provisions: one pool per distinct combination of these references. It appears only on classes named as a parent by some other class, because only a parent provisions pools — a leaf class binds allocations directly.\n\nThis is a constraint, not a lookup. It backs a unique index, so two simultaneous claims observing no pool cannot both create one.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"uniqueWithin": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "UniqueWithin states what defines one independent address space: two allocations may hold the same address if, and only if, they differ in one of these references. Empty — the default and the strictest — means one space platform-wide.\n\nSetting it wider than the parent already requires is safe and wasteful. Setting it narrower is how two holders end up with one address, which shared per-location IPv4 tenant space wants and nothing else does.\n\nImmutable: this field states the guarantee, and the allocator's search follows from it.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"allowedPrefixLengths": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AllowedPrefixLengths bounds the sizes a claim of this class may request.",
+							Ref:         ref(v1alpha1.PrefixLengthRange{}.OpenAPIModelName()),
+						},
+					},
+					"defaultPrefixLength": {
+						SchemaProps: spec.SchemaProps{
+							Description: "DefaultPrefixLength is the size used when a claim asks for none.",
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"reservations": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Reservations are applied to every pool this class provisions for its children. It exists because a cascade-provisioned pool has no author to state reservations on it: the subnet a claim conjures on first use is built by the allocator, so \"reserve the first /96 of each subnet for the gateway\" can only be said here, on the class that provisions subnets.\n\nOperator-authored pools state their own reservations on the pool instead. A pool that carries both keeps its own — the pool is the more specific statement, and an operator who wrote a reservation by hand meant it.\n\nMeaningful only alongside PoolPer, since a class that provisions no pools has nothing to apply this to.",
+							Ref:         ref(v1alpha1.ReservationSpec{}.OpenAPIModelName()),
+						},
+					},
+					"routing": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Routing describes what the network does with addresses of this class.",
+							Default:     map[string]interface{}{},
+							Ref:         ref(v1alpha1.RoutingSpec{}.OpenAPIModelName()),
+						},
+					},
+					"strategy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Strategy selects WHICH POOL serves a claim when several back this class. Not to be confused with IPPool.spec.allocation.strategy, which selects which free block is taken from inside the chosen pool.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"reclaimPolicy": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ReclaimPolicy is the default disposition of an allocation when its claim is deleted. A claim may override it.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"retentionLease": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RetentionLease bounds how long an allocation of this class may stay retained after its claim is deleted, before the service releases it.\n\nUnset means no expiry: a retained address is held until something releases it explicitly. That is the default deliberately — shipping a lease that defaults to on would reclaim addresses in existing deployments that nobody asked to have reclaimed.\n\nA claim cannot override this. A claim already overrides ReclaimPolicy; letting the holder also set its own expiry hands the scarce-space decision back to the party that wants to consume it, and retention the holder can extend indefinitely is not a lease.\n\nThe effective lease is the shorter of this and the pool's MaxRetentionLease.",
+							Ref:         ref(v1.Duration{}.OpenAPIModelName()),
+						},
+					},
+					"visibility": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Visibility controls who may name this class on a claim.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"backingProjects": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "BackingProjects names the projects whose pools may back this class, in addition to the platform project — which may always back it and need not be listed.\n\nThis is the class *consenting* to be backed, and it is the half that IPPool.spec.classNames cannot supply. That field is a pool volunteering itself, written by the pool's owner; without a matching statement from the class side, any tenant able to create an IPPool in their own project could list a popular class name on it and start receiving other tenants' claims. They would learn that each claim happened, choose the address it received, and hold the range it came from. Consent has to come from the class because the class is the thing being consumed.\n\nEmpty — the default — means the platform project alone, which is fail-closed and is exactly the behaviour every existing class had when discovery searched only platform-authored pools.\n\nEnforced in two places on purpose. IPPool writes are rejected when the pool's project is not listed, so an operator gets an error naming the field rather than a pool that silently serves nobody. Discovery applies the same rule at read time, which is the authoritative one: consent is revocable, and a write-time check alone would let every pool that passed validation once keep serving forever after the project was removed here.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"provisioner": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Provisioner names the component responsible for realising allocations of this class, for classes whose addresses require action beyond bookkeeping. Empty means the IPAM service itself.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"parameters": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Parameters carries provisioner-specific configuration, opaque to IPAM.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"ipFamily"},
+			},
+		},
+		Dependencies: []string{
+			v1alpha1.PrefixLengthRange{}.OpenAPIModelName(), v1alpha1.ReservationSpec{}.OpenAPIModelName(), v1alpha1.RoutingSpec{}.OpenAPIModelName(), v1.Duration{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_IPClassStatus(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Type: []string{"object"},
+				Properties: map[string]spec.Schema{
+					"phase": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"offeringPools": {
+						SchemaProps: spec.SchemaProps{
+							Description: "OfferingPools is the number of pools backing this class. Zero means every claim naming this class fails, which is worth surfacing before a consumer discovers it.\n\nIt counts the pools offering the ROOT of this class's chain, which for a class with a parentClassName is not this class. Only the root is backed by operator-authored pools; every class below it is served out of the level above, and no pool ever names it. Counting this class directly would report zero for a chain whose claims all succeed.\n\nThe server computes it on read, so it does NOT appear in WATCH events: no event fires when a pool changes the count, because nothing writes to the class. Read it with GET or LIST. A controller written to reconcile on changes to this field would never wake up.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"provisionedPools": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ProvisionedPools is the number of pools this class has provisioned for its children. Meaningful only when PoolPer is set.",
+							Default:     0,
+							Type:        []string{"integer"},
+							Format:      "int32",
+						},
+					},
+					"requiredScopeRoles": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "atomic",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "RequiredScopeRoles is the resolved set of scope roles a claim of this class must supply: this class's UniqueWithin unioned with every PoolPer along its parent chain. The server resolves it because a client otherwise has to walk ParentClassName upward and union by hand — several GETs to validate one field — and because a claim missing a role is rejected rather than widened, so knowing the set in advance is the difference between a clear client-side error and a round trip.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"conditions": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-map-keys": []interface{}{
+									"type",
+								},
+								"x-kubernetes-list-type": "map",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Type: []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1.Condition{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Dependencies: []string{
+			v1.Condition{}.OpenAPIModelName()},
+	}
+}
+
 func schema_pkg_apis_ipam_v1alpha1_IPPool(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "IPPool is an allocatable address space. Root pools declare a CIDR directly; child pools carve a sub-prefix from a parent pool.",
+				Description: "IPPool is an allocatable address space. Root pools declare a CIDR directly; child pools carve a sub-prefix from a parent pool.\n\nA pool is durable infrastructure. Operators author root pools and offer them to classes; the allocator provisions child pools on demand, triggered by a claim but not owned by one — a pool outlives the claim that caused it.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -593,8 +1032,9 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) comm
 				Properties: map[string]spec.Schema{
 					"cidr": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "CIDR is the range a root pool hands out from. A child pool leaves it empty: its range is carved from its parent and reported in status.allocatedCIDR.\n\nTwo ROOT pools of the same tenant may not overlap, and a create that would overlap is refused with 409. The reason is not tidiness: address uniqueness is enforced *within a pool*, so two roots over one range hand the same address to unrelated claims and nothing downstream notices. See internal/registry/ipam/ippool/rootoverlap.go.\n\nOverlap *inside* a pool is a different thing and is legitimate — that is what IPClass.spec.uniqueWithin is for, and two networks sharing a per-location range are expected to hold the same address.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"ipFamily": {
@@ -605,13 +1045,67 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) comm
 					},
 					"parentPoolRef": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
+							Description: "ParentPoolRef names the pool this one is carved from. Empty on root pools, which declare a CIDR instead.",
+							Ref:         ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
 						},
 					},
 					"prefixLength": {
 						SchemaProps: spec.SchemaProps{
 							Type:   []string{"integer"},
 							Format: "int32",
+						},
+					},
+					"classNames": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "ClassNames are the classes this pool offers itself to. A claim naming one of these classes may draw from this pool, subject to family and scope agreement. Operator-authored pools set this; it is how capacity is published to consumers without naming them.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: "",
+										Type:    []string{"string"},
+										Format:  "",
+									},
+								},
+							},
+						},
+					},
+					"classRef": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ClassRef names the class that provisioned this pool, set by the allocator on pools it creates during a cascade and empty on operator-authored pools. It records which class's configuration this pool was built from.",
+							Ref:         ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
+						},
+					},
+					"scope": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Scope is the combination of references this pool exists for, keyed by role. On a cascade-provisioned pool it is the projection of the triggering claim's scope onto the provisioning class's PoolPer. On an operator-authored pool it declares the pool's own constraints — a pool with scope.location set serves only claims from that location.\n\nThis map backs the unique index that makes concurrent provisioning safe.",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Default: map[string]interface{}{},
+										Ref:     ref(v1alpha1.ScopeRef{}.OpenAPIModelName()),
+									},
+								},
+							},
+						},
+					},
+					"reservations": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Reservations withholds positions at the edges of this pool. See ReservationSpec — reserved positions become real allocations held by the pool, not invisible holes.",
+							Ref:         ref(v1alpha1.ReservationSpec{}.OpenAPIModelName()),
+						},
+					},
+					"maxRetentionLease": {
+						SchemaProps: spec.SchemaProps{
+							Description: "MaxRetentionLease caps how long any allocation drawn from this pool may stay retained, whatever the class asks for. The effective lease is the shorter of the two.\n\nThe cap lives here because the pool is the thing that runs out. A class declaring a long lease on scarce public space is asking the pool to bear a cost the class does not pay, so the ceiling belongs on the object that owns the scarcity rather than on the one that wants to consume it.\n\nUnset means the class's lease applies unchanged.",
+							Ref:         ref(v1.Duration{}.OpenAPIModelName()),
 						},
 					},
 					"allocation": {
@@ -630,7 +1124,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) comm
 			},
 		},
 		Dependencies: []string{
-			v1alpha1.AllocationSpec{}.OpenAPIModelName(), v1alpha1.LocalRef{}.OpenAPIModelName()},
+			v1alpha1.AllocationSpec{}.OpenAPIModelName(), v1alpha1.LocalRef{}.OpenAPIModelName(), v1alpha1.ReservationSpec{}.OpenAPIModelName(), v1alpha1.ScopeRef{}.OpenAPIModelName(), v1.Duration{}.OpenAPIModelName()},
 	}
 }
 
@@ -659,26 +1153,25 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolStatus(ref common.ReferenceCallback) co
 							Format:      "",
 						},
 					},
+					"scopeDigest": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ScopeDigest is the canonical digest of spec.scope, computed by the server. It is the value the uniqueness index is built on; surfacing it makes \"why did these two claims land in different pools\" answerable without reading the database.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"capacity": {
 						SchemaProps: spec.SchemaProps{
 							Default: map[string]interface{}{},
 							Ref:     ref(v1alpha1.PoolCapacity{}.OpenAPIModelName()),
 						},
 					},
-					"largestFreePrefix": {
-						SchemaProps: spec.SchemaProps{
-							Description: "largestFreePrefix is the prefix length of the largest free aligned block currently available (e.g. 45 for a free /45). Zero when the pool is exhausted or its capacity is not yet computed. This is the family-agnostic signal for remaining headroom; the integer capacity fields saturate for very large address spaces.",
-							Default:     0,
-							Type:        []string{"integer"},
-							Format:      "int32",
-						},
-					},
 					"utilizationPercent": {
 						SchemaProps: spec.SchemaProps{
-							Description: "utilizationPercent is the allocated share of the pool's address space, 0–100, computed with arbitrary-precision arithmetic so it is accurate for both IPv4 and IPv6.",
+							Description: "utilizationPercent is the allocated share of the pool's address space, 0–100, computed with arbitrary-precision arithmetic so it is accurate for both IPv4 and IPv6, and rounded to four decimal places.\n\nA float because an integer percent is useless at the scale pools are sized for: 256 addresses out of a /12 is 0.024%, which truncated to 0 and read as \"nothing allocated\" on a pool holding sixteen claims. Four decimals keeps a single address in a /12 visible.\n\nKubernetes API conventions discourage floating point because it does not round-trip reliably across every serializer. That applies to this field and is accepted deliberately: IPAM is an aggregated apiserver serving JSON, the alternative encodings (a scaled integer such as per-million, or a resource.Quantity) are materially harder to read for the audience that reads this field, and the exact address counts in capacity remain available for anyone who needs a number that cannot drift.",
 							Default:     0,
-							Type:        []string{"integer"},
-							Format:      "int32",
+							Type:        []string{"number"},
+							Format:      "double",
 						},
 					},
 					"conditions": {
@@ -731,34 +1224,6 @@ func schema_pkg_apis_ipam_v1alpha1_LocalRef(ref common.ReferenceCallback) common
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_NamespacedRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
-	return common.OpenAPIDefinition{
-		Schema: spec.Schema{
-			SchemaProps: spec.SchemaProps{
-				Description: "NamespacedRef references a named resource with an optional cross-project pointer. ProjectRef nil means the reference resolves in the caller's own project (or the platform scope for non-tenant requests).",
-				Type:        []string{"object"},
-				Properties: map[string]spec.Schema{
-					"name": {
-						SchemaProps: spec.SchemaProps{
-							Default: "",
-							Type:    []string{"string"},
-							Format:  "",
-						},
-					},
-					"projectRef": {
-						SchemaProps: spec.SchemaProps{
-							Ref: ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
-						},
-					},
-				},
-				Required: []string{"name"},
-			},
-		},
-		Dependencies: []string{
-			v1alpha1.LocalRef{}.OpenAPIModelName()},
-	}
-}
-
 func schema_pkg_apis_ipam_v1alpha1_ObjectRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
@@ -793,6 +1258,13 @@ func schema_pkg_apis_ipam_v1alpha1_ObjectRef(ref common.ReferenceCallback) commo
 							Format:  "",
 						},
 					},
+					"uid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "UID pins this reference to one specific instance of the named object. Unlike ScopeRef.UID it takes no part in allocation identity — it exists so that \"who holds this address\" stays answerable after the holder has been deleted and recreated under the same name, which is exactly the case an operator hits during an incident.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 				},
 				Required: []string{"apiGroup", "kind", "name"},
 			},
@@ -804,89 +1276,157 @@ func schema_pkg_apis_ipam_v1alpha1_PoolCapacity(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PoolCapacity reports the address-count view of an IPPool. The counts are exact for IPv4. For address spaces larger than an int64 (e.g. wide IPv6 prefixes) Total saturates to the maximum int64 and Allocated/Available are clamped to non-negative values rather than overflowing; consumers needing an accurate IPv6 view should read UtilizationPercent and LargestFreePrefix.",
+				Description: "PoolCapacity reports the address-count view of an IPPool. The counts are exact for IPv4. For address spaces larger than an int64 (e.g. wide IPv6 prefixes) Total saturates to the maximum int64 and Allocated/Available are clamped to non-negative values rather than overflowing; consumers needing an accurate IPv6 view should read UtilizationPercent and LargestFreePrefix. PoolCapacity reports a pool's address counts EXACTLY, as decimal strings.\n\nStrings because these are not int64 quantities. A /20 of IPv6 holds 2^108 addresses — thirty-three digits — and the previous int64 fields saturated at 9223372036854775807, which is not an address count but a ceiling. A pool reported `total: 9223372036854775807, allocated: 9007199254740991`, and neither figure was true: a client dividing them got a number that meant nothing, which is why utilizationPercent had to exist as the only trustworthy signal for IPv6.\n\nThe cost is that a client wanting a percentage from these must do arbitrary-precision arithmetic. utilizationPercent is retained precisely so that most clients do not have to: it is the same measurement, already reduced. Use the counts when you need exactness, the percentage when you need a number to show someone.\n\nDecimal digits only — no sign, no exponent, no units. An empty string means the figure has not been computed, which is distinct from \"0\".",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"total": {
 						SchemaProps: spec.SchemaProps{
-							Default: 0,
-							Type:    []string{"integer"},
-							Format:  "int64",
+							Type:   []string{"string"},
+							Format: "",
 						},
 					},
 					"allocated": {
 						SchemaProps: spec.SchemaProps{
-							Default: 0,
-							Type:    []string{"integer"},
-							Format:  "int64",
+							Type:   []string{"string"},
+							Format: "",
 						},
 					},
 					"available": {
 						SchemaProps: spec.SchemaProps{
-							Default: 0,
-							Type:    []string{"integer"},
-							Format:  "int64",
+							Type:   []string{"string"},
+							Format: "",
 						},
 					},
 				},
-				Required: []string{"total", "allocated", "available"},
 			},
 		},
 	}
 }
 
-func schema_pkg_apis_ipam_v1alpha1_PoolSelector(ref common.ReferenceCallback) common.OpenAPIDefinition {
+func schema_pkg_apis_ipam_v1alpha1_PrefixLengthRange(ref common.ReferenceCallback) common.OpenAPIDefinition {
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PoolSelector picks a parent IPPool by labels, optionally scoped to a specific project for cross-project shared pools.",
+				Description: "PrefixLengthRange bounds the sizes a claim of a class may request. A fixed-size class sets Min and Max equal.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
-					"matchLabels": {
+					"min": {
 						SchemaProps: spec.SchemaProps{
-							Description: "matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels map is equivalent to an element of matchExpressions, whose key field is \"key\", the operator is \"In\", and the values array contains only \"value\". The requirements are ANDed.",
-							Type:        []string{"object"},
-							AdditionalProperties: &spec.SchemaOrBool{
-								Allows: true,
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-									},
-								},
-							},
+							Default: 0,
+							Type:    []string{"integer"},
+							Format:  "int32",
 						},
 					},
-					"matchExpressions": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "atomic",
-							},
-						},
+					"max": {
 						SchemaProps: spec.SchemaProps{
-							Description: "matchExpressions is a list of label selector requirements. The requirements are ANDed.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: map[string]interface{}{},
-										Ref:     ref(v1.LabelSelectorRequirement{}.OpenAPIModelName()),
-									},
-								},
-							},
+							Default: 0,
+							Type:    []string{"integer"},
+							Format:  "int32",
 						},
 					},
-					"projectRef": {
+				},
+				Required: []string{"min", "max"},
+			},
+		},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_ReservationSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ReservationSpec withholds positions at the edges of a pool, counted in units of UnitPrefixLength. Each reserved position becomes a real allocation held by the pool, so reserved space has an owner, appears in utilization, and can be programmed. It is inventory, not an invisible hole.\n\nReservations live on the pool rather than on a class because the pool is the thing being carved: one reservation per pool, not one per address space carved from it. Classes with no parent — which have no provisioning class to host the field — are covered by the same mechanism as classes that do.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"leading": {
 						SchemaProps: spec.SchemaProps{
-							Ref: ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
+							Type:   []string{"integer"},
+							Format: "int32",
+						},
+					},
+					"trailing": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"integer"},
+							Format: "int32",
+						},
+					},
+					"unitPrefixLength": {
+						SchemaProps: spec.SchemaProps{
+							Description: "UnitPrefixLength is the block size a reserved position occupies. It must be set whenever Leading or Trailing is non-zero; the pool cannot infer it, since pools serve classes of differing allocation sizes.",
+							Type:        []string{"integer"},
+							Format:      "int32",
 						},
 					},
 				},
 			},
 		},
-		Dependencies: []string{
-			v1alpha1.LocalRef{}.OpenAPIModelName(), v1.LabelSelectorRequirement{}.OpenAPIModelName()},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_RoutingSpec(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "RoutingSpec states advertisement inside a location and beyond it separately, because the two are frequently opposite: a per-instance address is a distinct route within its location and must never appear outside it — only the covering block leaves.\n\nAn aggregate must be originated with a discard route. A class advertising an aggregate it cannot fully resolve blackholes the unallocated space inside it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"internal": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+					"external": {
+						SchemaProps: spec.SchemaProps{
+							Type:   []string{"string"},
+							Format: "",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_ScopeRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ScopeRef identifies one participant in a claim's scope — the network a claim is made for, the location it lives in, or anything else a class names as a role. The allocator never interprets these; it compares them.\n\nRefs are opaque by construction: the service imports no consumer types and resolves nothing. A name is enough to distinguish spaces, because every claim is already scoped to a project and a name is unique within one.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiGroup": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"kind": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"uid": {
+						SchemaProps: spec.SchemaProps{
+							Description: "UID pins this reference to one specific instance of the named object. When set it participates in scope identity, so an object deleted and recreated under the same name is a *different* address space and gets fresh allocations rather than inheriting its predecessor's.\n\nSuppliers should set it. Omitting it makes identity name-based, which lets a recreated object inherit — occasionally desirable, and the reason this is a field rather than a rule.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+				},
+				Required: []string{"apiGroup", "kind", "name"},
+			},
+		},
 	}
 }
 

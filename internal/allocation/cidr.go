@@ -46,12 +46,15 @@ type CIDRPool struct {
 	Ranges   []net.IPNet
 	Existing []net.IPNet
 	Strategy Strategy
+	// Reservation withholds positions at the edges of every range. The zero
+	// value withholds nothing.
+	Reservation Reservation
 }
 
 // Allocate returns the next free aligned sub-block of prefixLen bits using
-// the pool's strategy.
+// the pool's strategy, skipping any reserved edge positions.
 func (p *CIDRPool) Allocate(prefixLen int) (*net.IPNet, error) {
-	return FindFirstAvailableBlock(p.Ranges, p.Existing, prefixLen, p.Strategy)
+	return FindFirstAvailableBlockWithReservations(p.Ranges, p.Existing, prefixLen, p.Strategy, p.Reservation)
 }
 
 // Release returns a copy of the existing allocations with cidr removed.
@@ -127,88 +130,6 @@ func (p *CIDRPool) FragmentationPct() float64 {
 	return 1.0 - (largestF / totalF)
 }
 
-// FindFirstAvailableBlock locates a free sub-block of prefixLen bits across
-// the given parents, honouring the given strategy.
-func FindFirstAvailableBlock(parents, existing []net.IPNet, prefixLen int, s Strategy) (*net.IPNet, error) {
-	if len(parents) == 0 {
-		return nil, ErrNoParent
-	}
-	if s == "" {
-		s = FirstFit
-	}
-
-	type candidate struct {
-		cidr        net.IPNet
-		regionSize  *big.Int // size of the surrounding free region
-		parentIndex int
-		parentFree  *big.Int // free addresses remaining in parent
-	}
-	var candidates []candidate
-
-	for idx, parent := range parents {
-		ones, bits := parent.Mask.Size()
-		if prefixLen < ones || prefixLen > bits {
-			// Cannot fit a block this size in (or split this finely from) parent.
-			continue
-		}
-		within := filterWithin(parent, existing)
-		regions := freeRegions(parent, within)
-		size := blockSize(prefixLen, bits)
-		parentFree := new(big.Int)
-		for _, r := range regions {
-			rs := new(big.Int).Sub(new(big.Int).Add(r.end, big.NewInt(1)), r.start)
-			parentFree.Add(parentFree, rs)
-		}
-		for _, region := range regions {
-			start := alignUp(region.start, prefixLen, bits)
-			end := new(big.Int).Sub(new(big.Int).Add(start, size), big.NewInt(1))
-			if end.Cmp(region.end) > 0 {
-				continue
-			}
-			regionSize := new(big.Int).Sub(new(big.Int).Add(region.end, big.NewInt(1)), region.start)
-			candidates = append(candidates, candidate{
-				cidr:        makeCIDR(start, prefixLen, bits),
-				regionSize:  regionSize,
-				parentIndex: idx,
-				parentFree:  new(big.Int).Set(parentFree),
-			})
-			if s == FirstFit {
-				// Early exit — first free block is sufficient.
-				cidr := candidates[len(candidates)-1].cidr
-				return &cidr, nil
-			}
-		}
-	}
-
-	if len(candidates) == 0 {
-		return nil, ErrPoolExhausted
-	}
-
-	switch s {
-	case BestFit:
-		best := 0
-		for i := 1; i < len(candidates); i++ {
-			if candidates[i].regionSize.Cmp(candidates[best].regionSize) < 0 {
-				best = i
-			}
-		}
-		c := candidates[best].cidr
-		return &c, nil
-	case LeastUtilized:
-		best := 0
-		for i := 1; i < len(candidates); i++ {
-			if candidates[i].parentFree.Cmp(candidates[best].parentFree) > 0 {
-				best = i
-			}
-		}
-		c := candidates[best].cidr
-		return &c, nil
-	default:
-		c := candidates[0].cidr
-		return &c, nil
-	}
-}
-
 // CIDRsOverlap reports whether two CIDRs share any address.
 func CIDRsOverlap(a, b net.IPNet) bool {
 	if !sameFamily(a.IP, b.IP) {
@@ -273,6 +194,37 @@ func LargestFreePrefixLen(parents, existing []net.IPNet) (int, bool) {
 // space as an integer in [0, 100], computed with arbitrary-precision
 // arithmetic so it is accurate for IPv6 spaces larger than an int64. An empty
 // pool reports 0.
+//
+// DO NOT USE THIS TO REPORT A POOL'S UTILIZATION. It sums the allocations, so
+// an address covered by several of them counts once per allocation and an
+// allocation lying outside the parents counts even though it consumes nothing.
+// A pool where eight holders legitimately share one address — the same address
+// in eight networks — reports eight times its real occupancy. Use Measure, or
+// the figure Allocate already returns, both of which derive utilization from
+// free space and count each address once.
+//
+// It survives as the reference implementation the benchmarks measure against,
+// and as the thing whose disagreement with Measure is worth a test. It has no
+// callers outside this package's own tests, and it should not gain one.
+//
+// # Do not delete it, and here is what deleting it costs
+//
+// "No production callers" has already been mistaken for "dead code" once, in a
+// task filed to remove this function. Deleting it does not compile — seven test
+// call sites depend on it — and two of them are the point:
+//
+//   - allocate_test.go, TestMeasure_CountsSharedAddressOnce:
+//     asserts Measure reports 6% where this reports 50%. That contrast IS the
+//     regression proof for the over-reporting defect. Remove the summing
+//     implementation and the test degrades to "Measure returns 6", which is
+//     equally true of an implementation that returns 6 for the wrong reason.
+//   - arch_probe_test.go: the ten-second QEMU discriminator, kept deliberately
+//     so nobody re-diagnoses emulated-amd64 heap corruption as an allocator bug.
+//
+// The rest are its own unit test and two benchmarks. So the honest summary is
+// not "dead" but "deliberately unreachable from production and load-bearing in
+// tests" — which is what an exported symbol with no production callers looks
+// like when it is doing its job.
 func UtilizationPercent(parents, existing []net.IPNet) int {
 	total := new(big.Int)
 	for _, p := range parents {
@@ -346,6 +298,18 @@ func cidrLastAddr(cidr net.IPNet) *big.Int {
 	return new(big.Int).Sub(new(big.Int).Add(first, size), big.NewInt(1))
 }
 
+// cidrBounds returns the first and last address of cidr, deriving the last
+// from the first rather than recomputing it. cidrFirstAddr masks and converts
+// the address, so calling both accessors separately does that work twice for
+// every allocation in a pool.
+func cidrBounds(cidr net.IPNet) (start, end *big.Int) {
+	ones, bits := cidr.Mask.Size()
+	start = cidrFirstAddr(cidr)
+	end = new(big.Int).Add(start, blockSize(ones, bits))
+	end.Sub(end, big.NewInt(1))
+	return start, end
+}
+
 func cidrSize(cidr net.IPNet) *big.Int {
 	ones, bits := cidr.Mask.Size()
 	return blockSize(ones, bits)
@@ -397,11 +361,19 @@ func filterWithin(parent net.IPNet, cs []net.IPNet) []net.IPNet {
 
 // freeRegions returns the maximal free address ranges inside parent, sorted
 // ascending by start.
+//
+// Each entry's bounds are converted to big.Int once, before the sort, rather
+// than inside the comparator. Comparing on the fly re-derived both bounds on
+// every comparison, making the conversion cost n·log n instead of n and
+// dominating the allocation profile of every caller.
 func freeRegions(parent net.IPNet, within []net.IPNet) []ipRange {
-	sorted := make([]net.IPNet, len(within))
-	copy(sorted, within)
+	sorted := make([]ipRange, len(within))
+	for i, e := range within {
+		start, end := cidrBounds(e)
+		sorted[i] = ipRange{start: start, end: end}
+	}
 	sort.Slice(sorted, func(i, j int) bool {
-		return cidrFirstAddr(sorted[i]).Cmp(cidrFirstAddr(sorted[j])) < 0
+		return sorted[i].start.Cmp(sorted[j].start) < 0
 	})
 
 	parentStart := cidrFirstAddr(parent)
@@ -410,8 +382,8 @@ func freeRegions(parent net.IPNet, within []net.IPNet) []ipRange {
 	cursor := new(big.Int).Set(parentStart)
 	var regions []ipRange
 	for _, e := range sorted {
-		eStart := cidrFirstAddr(e)
-		eEnd := cidrLastAddr(e)
+		eStart := e.start
+		eEnd := e.end
 		if eEnd.Cmp(parentStart) < 0 || eStart.Cmp(parentEnd) > 0 {
 			continue
 		}
@@ -442,8 +414,18 @@ func largestAlignedBlock(start, end *big.Int, totalBits int) (net.IPNet, bool) {
 	if start.Cmp(end) > 0 {
 		return net.IPNet{}, false
 	}
-	// Try smaller prefix lengths (larger blocks) first.
-	for p := 0; p <= totalBits; p++ {
+	// Try smaller prefix lengths (larger blocks) first, skipping those whose
+	// block is wider than the region: if blockSize > span then even a block
+	// starting at `start` ends past `end`, so no alignment can save it. On a
+	// fragmented pool most regions are small, so this starts the walk within a
+	// step or two of the answer instead of at /0.
+	span := new(big.Int).Sub(end, start)
+	span.Add(span, big.NewInt(1))
+	first := totalBits - (span.BitLen() - 1)
+	if first < 0 {
+		first = 0
+	}
+	for p := first; p <= totalBits; p++ {
 		size := blockSize(p, totalBits)
 		aligned := alignUp(start, p, totalBits)
 		blockEnd := new(big.Int).Sub(new(big.Int).Add(aligned, size), big.NewInt(1))

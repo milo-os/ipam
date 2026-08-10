@@ -71,7 +71,17 @@ func (r *RESTOptionsGetter) GetRESTOptions(resource schema.GroupResource, exampl
 				// DefaultEventFreshDuration). It's the minimum duration of
 				// changelog events the storage promises to keep — clients
 				// resuming a watch within this window can replay missed
-				// events. Our changelog retention is 24h, well above this.
+				// events, and clients resuming from further back are told to
+				// relist with a 410 Gone (see checkResumePointRetained in
+				// internal/watch).
+				//
+				// The real promise is watch.defaultChangelogRetention, which
+				// is 5 minutes — not the 24h this comment claimed until the
+				// retention was cut to avoid index-bloat write amplification.
+				// 5m still clears the 75s floor, so the value below was never
+				// wrong; only the margin was, by 288x. Anyone widening this
+				// must raise the retention to match, because the storage
+				// cannot keep a promise the pruner has already deleted.
 				EventsHistoryWindow: 75 * time.Second,
 			},
 			GroupResource: resource,

@@ -20,6 +20,10 @@ func (c *FakeIpamV1alpha1) IPClaims(namespace string) v1alpha1.IPClaimInterface 
 	return newFakeIPClaims(c, namespace)
 }
 
+func (c *FakeIpamV1alpha1) IPClasses() v1alpha1.IPClassInterface {
+	return newFakeIPClasses(c)
+}
+
 func (c *FakeIpamV1alpha1) IPPools() v1alpha1.IPPoolInterface {
 	return newFakeIPPools(c)
 }

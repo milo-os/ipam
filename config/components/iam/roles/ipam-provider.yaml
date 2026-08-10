@@ -4,11 +4,13 @@ metadata:
   name: ipam.miloapis.com-provider
   annotations:
     kubernetes.io/display-name: IPAM Provider
-    kubernetes.io/description: "Manage address pools and grant cross-project use of shared pools"
+    kubernetes.io/description: "Manage address pools and offer them to classes"
 spec:
   launchStage: Beta
-  # Providers manage pools and read everything (claims/allocations) so they can
-  # see what is consuming each pool, but they do not own consumer claims.
+  # Providers manage pools and read everything (classes, claims, allocations) so
+  # they can see what is consuming each pool, but they do not own consumer claims
+  # and they do not author classes — a class is platform policy, and pool
+  # management is deliberately the weaker of the two privileges.
   inheritedRoles:
     - name: ipam.miloapis.com-viewer
   includedPermissions:
@@ -16,6 +18,24 @@ spec:
     - ipam.miloapis.com/ippools.update
     - ipam.miloapis.com/ippools.patch
     - ipam.miloapis.com/ippools.delete
-    # "use" authorises consumers of a shared pool; providers grant it on the
-    # pools they want to admit cross-project allocation from.
-    - ipam.miloapis.com/ippools.use
+
+    # ippools.use was here and has been removed rather than left in place.
+    #
+    # It was the pre-class-model gate: a claim named a pool, so a provider
+    # granting "use" on a pool admitted cross-project allocation from it. Under
+    # the class model a claim names a class, the allocator resolves the pool, and
+    # nothing in the service issues that SAR any more — the checker that read it
+    # (PoolAccessChecker, internal/access/sar.go) has been deleted along with the
+    # file. Keeping it would have registered a permission that grants nothing
+    # while reading as though it grants sharing.
+    #
+    # internal/access/iam_manifest_guard_test.go now fails if it comes back.
+    #
+    # How a provider shares a pool now: list the class on the pool
+    # (IPPool.spec.classNames), and have a platform operator grant
+    # ipclasses.use on that class to the consumers. Note the asymmetry that
+    # makes this safe — a pool volunteers itself to a class and the class does
+    # not consent, so only platform-scoped pools are searchable by class
+    # discovery (see DiscoverPool in internal/allocator/cascade.go). A provider
+    # authoring a project-scoped pool cannot volunteer it into another tenant's
+    # claims.

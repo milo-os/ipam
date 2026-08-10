@@ -17,10 +17,22 @@ spec:
     - patch
     - delete
     - updateStatus
-    # "use" is the verb checked by the IPAM PoolAccessChecker (see
-    # internal/access/sar.go) when a consumer claims from a shared pool.
-    # Granting it on a pool implicitly authorises cross-project allocation.
-    - use
+    # "use" is deliberately NOT registered on pools any more.
+    #
+    # It used to be the cross-project gate: a claim named a pool, so the pool was
+    # the thing to authorize, and PoolAccessChecker (internal/access/sar.go)
+    # issued a SAR for "use" on ippools/<name>. Under the class model a claim
+    # names a CLASS and the allocator resolves the pool, so the pool is no longer
+    # anything a caller can ask for by name. Both the checker and the file are
+    # gone; the gate is now "use" on ipclasses/<name>, in internal/access/class.go,
+    # and it is registered on the ipclass ProtectedResource instead.
+    #
+    # Do not restore it to authorise pool sharing. It would register a permission
+    # no code path reads, which is worse than absent: a grant that appears to
+    # admit cross-project allocation and admits nothing, so an operator who
+    # believes they have shared a pool has not, and finds out from a denied claim.
+    # Pool sharing is expressed by which classes a pool offers itself to
+    # (IPPool.spec.classNames) plus the class grant, not by a verb on the pool.
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

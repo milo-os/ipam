@@ -4,12 +4,21 @@ vars:
   ROOT_DIR: '{{.TASKFILE_DIR}}/../..'
   K6_SRC_DIR: '{{.ROOT_DIR}}/test/load/src'
   RESULTS_DIR: '{{.ROOT_DIR}}/test/load/results'
-  KUBECONFIG: '{{.KUBECONFIG | default ".test-infra/kubeconfig"}}'
+  # ABSOLUTE, via ROOT_DIR. This include is mounted with `dir: ./test/load`,
+  # so a relative default resolved to test/load/.test-infra/kubeconfig — which
+  # does not exist. kubectl then silently fell back to localhost:8080, every
+  # call was refused, and tasks that did not check exit codes reported success
+  # having done nothing. A cleanup run that way left 3 classes and 19,193 pools
+  # behind and printed "cascade fixtures removed."
+  #
+  # This affects EVERY kubectl-using task in this file, not just cleanup.
+  KUBECONFIG: '{{.KUBECONFIG | default (printf "%s/.test-infra/kubeconfig" .ROOT_DIR)}}'
   PROXY_PORT: '{{.PROXY_PORT | default "8001"}}'
   IPAM_API_URL: '{{.IPAM_API_URL | default "http://localhost:8001"}}'
-  # PROJECT_COUNT drives setup loops AND the cleanup teardown loops below.
-  # Must match the value used in setup-pools.js so cleanup hits every
-  # per-project resource that setup created.
+  # PROJECT_COUNT drives the setup loops that grant each perf project `use` on
+  # the perf classes. It no longer drives cleanup: the fixtures are a fixed set
+  # of cluster-scoped classes and pools named in lib/fixtures.js, not one set
+  # per project, so cleanup enumerates them by name instead of by count.
   PROJECT_COUNT: '{{.PROJECT_COUNT | default "5"}}'
 
 tasks:
@@ -20,7 +29,7 @@ tasks:
     silent: true
 
   validate:
-    desc: Lint all k6 scripts with k6 inspect
+    desc: 'PARSE-ONLY check (k6 inspect). Proves nothing about the server — see the note it prints.'
     silent: true
     cmds:
       - |
@@ -29,6 +38,16 @@ tasks:
           echo "ERROR: k6 not installed. brew install k6 (macOS) or see https://k6.io/docs/get-started/installation/" >&2
           exit 1
         fi
+        echo "NOTE: k6 inspect PARSES JavaScript. It does not contact the server, so"
+        echo "      it cannot tell you a claim body is one the API will reject. Fifteen"
+        echo "      scripts passed this command while sending specs built from fields"
+        echo "      the class model deleted. A green 'validate' means the file is valid"
+        echo "      JavaScript and nothing more."
+        echo ""
+        echo "      The check that catches a wrong body is running the scenario: every"
+        echo "      one of them now creates a canary object in setup() and aborts the"
+        echo "      run if the server refuses it."
+        echo ""
         for f in {{.K6_SRC_DIR}}/*.js; do
           name=$(basename "$f")
           if k6 inspect "$f" >/dev/null 2>&1; then
@@ -78,15 +97,15 @@ tasks:
           | KUBECONFIG={{.KUBECONFIG}} kubectl apply -n ipam-system -f -
 
   k6:run:
-    desc: 'Trigger a single TestRun. Vars: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput'
+    desc: 'Trigger a single TestRun. Vars: TEST=setup|throughput|concurrent|authz|shared|exhaustion|reads|scale|mixed-load|watch-latency|cascade-setup|cascade-cold|cascade-herd|cascade-mixed'
     silent: true
     cmds:
       - |
         set -e
         TEST="{{.TEST | default "throughput"}}"
         case "$TEST" in
-          setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput) ;;
-          *) echo "ERROR: TEST must be one of: setup, throughput, asn-throughput, exhaustion, reads, scale, address-concurrent, mixed-load, concurrent, cross-project-throughput, watch-latency, ipv6-throughput" >&2; exit 1 ;;
+          setup|throughput|concurrent|authz|shared|exhaustion|reads|scale|mixed-load|watch-latency|cascade-setup|cascade-cold|cascade-herd|cascade-mixed) ;;
+          *) echo "ERROR: TEST must be one of: setup, throughput, concurrent, authz, shared, exhaustion, reads, scale, mixed-load, watch-latency, cascade-setup, cascade-cold, cascade-herd, cascade-mixed" >&2; exit 1 ;;
         esac
         KUBECONFIG={{.KUBECONFIG}} kubectl delete testrun.k6.io/ipam-perf-${TEST} -n ipam-system --ignore-not-found
         KUBECONFIG={{.KUBECONFIG}} kubectl apply -f {{.ROOT_DIR}}/config/components/k6-performance-tests/testruns/${TEST}.yaml
@@ -96,7 +115,7 @@ tasks:
         echo "  kubectl logs -n ipam-system -l k6_cr=ipam-perf-${TEST} -f"
 
   k6:logs:
-    desc: 'Tail logs from a TestRun. Vars: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load|concurrent|cross-project-throughput|watch-latency|ipv6-throughput'
+    desc: 'Tail logs from a TestRun. Vars: TEST=setup|throughput|concurrent|authz|shared|exhaustion|reads|scale|mixed-load|watch-latency|cascade-setup|cascade-cold|cascade-herd|cascade-mixed'
     silent: true
     cmds:
       - |
@@ -108,8 +127,50 @@ tasks:
     cmds:
       - KUBECONFIG={{.KUBECONFIG}} kubectl proxy --port={{.PROXY_PORT}}
 
+  fixture-names:
+    desc: 'Print fixture names from lib/fixtures.js. Vars: WHAT=classes|pools'
+    silent: true
+    cmds:
+      - |
+        # The single source of truth for what the perf suite creates is
+        # lib/fixtures.js, and this task is how everything else reads it.
+        #
+        # It exists because the alternative — a hand-maintained list in the
+        # cleanup target — drifts silently, and the way that drift surfaces is a
+        # cleanup reporting success having left a pool behind, which changes the
+        # next run's numbers for a reason nobody can see. The catalog's header
+        # comment has described this task since the catalog was written; for a
+        # while it described something that did not exist, which is worse than
+        # describing nothing because it stopped people looking.
+        #
+        # A fixture with no `poolName` (a container class, which is refused
+        # before pool resolution) contributes a class and no pool. That falls
+        # out of the regex rather than needing a special case.
+        python3 - "{{.WHAT | default "classes"}}" <<'PY'
+        import re, sys
+        want = sys.argv[1]
+        src = open("{{.ROOT_DIR}}/test/load/lib/fixtures.js").read()
+        key = "className" if want == "classes" else "poolName"
+        names = re.findall(key + r": '([A-Za-z0-9][A-Za-z0-9-]*)'", src)
+        # Refuse to print an empty list. A caller that deletes what this prints
+        # would otherwise delete nothing and report success — the exact silent
+        # non-failure this task was added to remove.
+        if not names:
+            sys.stderr.write(
+                "ERROR: parsed 0 %s from lib/fixtures.js.\n"
+                "  Either the catalog moved or its shape changed. Refusing to\n"
+                "  print an empty list, because a cleanup driven by one would\n"
+                "  delete nothing and report success.\n" % want)
+            sys.exit(1)
+        seen = set()
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                print(n)
+        PY
+
   setup:
-    desc: 'Provision pools/namespaces for performance testing. Vars: PROJECT_COUNT, NAMESPACE_COUNT, SETUP_VUS'
+    desc: 'Provision the flat class fixtures every non-cascade scenario uses. Vars: PROJECT_COUNT, NAMESPACE_COUNT'
     silent: true
     cmds:
       - |
@@ -118,41 +179,402 @@ tasks:
           -e IPAM_API_URL={{.IPAM_API_URL}} \
           -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
           -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
-          -e SETUP_VUS={{.SETUP_VUS | default "1"}} \
-          --summary-export={{.RESULTS_DIR}}/setup.json \
-          {{.K6_SRC_DIR}}/setup-pools.js
+          --summary-export={{.RESULTS_DIR}}/setup-classes.json \
+          {{.K6_SRC_DIR}}/setup-classes.js
 
-  scale-setup:
-    desc: 'Provision 1000-project scale test pools (20 parallel VUs)'
+  # ----- Cascade (class model) -----
+  #
+  # cascade-setup must run once before the three below. RUN_ID defaults to a
+  # timestamp so each run uses scopes nothing has touched; pass it explicitly
+  # to reproduce a run exactly.
+
+  cascade-setup:
+    desc: 'Provision the class chain + root pool for the cascade scenarios'
     silent: true
     cmds:
       - |
         mkdir -p {{.RESULTS_DIR}}
         k6 run \
           -e IPAM_API_URL={{.IPAM_API_URL}} \
-          -e NAMESPACE_COUNT=100 \
-          -e PROJECT_COUNT=1000 \
-          -e SETUP_VUS=20 \
-          --summary-export={{.RESULTS_DIR}}/scale-setup.json \
-          {{.K6_SRC_DIR}}/setup-pools.js
+          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          --summary-export={{.RESULTS_DIR}}/cascade-setup.json \
+          {{.K6_SRC_DIR}}/setup-cascade.js
 
-  scale-throughput:
-    desc: 'Throughput test at 1000-project scale. Vars: VUS (default 100), DURATION (default 2m)'
+  cascade-cold:
+    desc: 'Cold cascade: every claim into a fresh scope. Latency REPORTED, not gated. Vars: VUS, DURATION, RUN_ID'
     silent: true
     cmds:
       - |
         mkdir -p {{.RESULTS_DIR}}
+        # RUN_ID must be per-RUN, not per-VU: k6 runs a script's init context
+        # once per VU, so a script-side Date.now() default differs between VUs
+        # and breaks any scenario whose VUs must agree on a scope name.
+        RUN_ID="{{.RUN_ID}}"; [ -n "${RUN_ID}" ] || RUN_ID="r$(date +%s)"
         k6 run \
           -e IPAM_API_URL={{.IPAM_API_URL}} \
-          -e NAMESPACE_COUNT=100 \
-          -e PROJECT_COUNT=1000 \
-          -e VUS={{.VUS | default "100"}} \
+          -e VUS={{.VUS | default "10"}} \
           -e DURATION={{.DURATION | default "2m"}} \
-          --summary-export={{.RESULTS_DIR}}/scale-throughput.json \
-          {{.K6_SRC_DIR}}/prefix-claim-throughput.js
+          -e RUN_ID="${RUN_ID}" \
+          --summary-export={{.RESULTS_DIR}}/cascade-cold.json \
+          {{.K6_SRC_DIR}}/cascade-cold.js
+
+  cascade-herd:
+    desc: 'Herd: HERD simultaneous first-claims into one new scope. Vars: HERD (default 150), ROUNDS, RUN_ID'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        # HERD defaults to 150 deliberately. The SQL-layer benchmark behind
+        # this found the candidate upsert strategies indistinguishable at 24
+        # callers and 8.7x apart at 200 — a smaller herd hides the effect.
+        RUN_ID="{{.RUN_ID}}"; [ -n "${RUN_ID}" ] || RUN_ID="r$(date +%s)"
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e HERD={{.HERD | default "150"}} \
+          -e ROUNDS={{.ROUNDS | default "3"}} \
+          {{if .MIN_CONCURRENCY}}-e MIN_CONCURRENCY={{.MIN_CONCURRENCY}}{{end}} \
+          -e RUN_ID="${RUN_ID}" \
+          --summary-export={{.RESULTS_DIR}}/cascade-herd.json \
+          {{.K6_SRC_DIR}}/cascade-herd.js
+
+  cascade-mixed:
+    desc: 'Mixed 10/90 cold/warm; p95 gate applies to the WARM subset only. Vars: VUS, DURATION, COLD_PERCENT, RUN_ID'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        RUN_ID="{{.RUN_ID}}"; [ -n "${RUN_ID}" ] || RUN_ID="r$(date +%s)"
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e VUS={{.VUS | default "20"}} \
+          -e DURATION={{.DURATION | default "3m"}} \
+          -e COLD_PERCENT={{.COLD_PERCENT | default "10"}} \
+          -e WARM_SCOPES={{.WARM_SCOPES | default "20"}} \
+          -e RUN_ID="${RUN_ID}" \
+          --summary-export={{.RESULTS_DIR}}/cascade-mixed.json \
+          {{.K6_SRC_DIR}}/cascade-mixed.js
+
+  cascade:
+    desc: 'Run all three cascade scenarios in order (setup, cold, herd, mixed)'
+    silent: true
+    cmds:
+      - task: cascade-setup
+      - task: cascade-cold
+      - task: cascade-herd
+      - task: cascade-mixed
+
+  cascade-cleanup:
+    desc: 'Remove everything the cascade scenarios created: claims, provisioned pools, classes, RBAC'
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+
+        # KUBECONFIG is exported ONCE and every command below is a plain
+        # `kubectl`. There is deliberately no `eval` anywhere in this task.
+        #
+        # The previous version built a command string (K="KUBECONFIG=... kubectl")
+        # and ran it via `eval`. That works for a direct invocation and fails
+        # silently under xargs: `xargs eval ...` execs `eval` as a BINARY, and
+        # it is a shell builtin, so xargs reports "eval: No such file or
+        # directory" and deletes nothing. The steps that used xargs — claims
+        # and provisioned pools — silently did nothing, while the steps that
+        # called eval directly — classes and RBAC — worked. A real run left
+        # 6,847 pools and 3,423 claims while deleting all 3 classes.
+        export KUBECONFIG="{{.KUBECONFIG}}"
+
+        # Prove the cluster is reachable BEFORE claiming to have cleaned it.
+        if ! kubectl version --request-timeout=10s >/dev/null 2>&1; then
+          echo "ERROR: cannot reach the cluster." >&2
+          echo "  KUBECONFIG=${KUBECONFIG}" >&2
+          echo "" >&2
+          echo "  Nothing was deleted. Refusing to report success for work that" >&2
+          echo "  did not happen — a cleanup that cannot tell you it did nothing" >&2
+          echo "  is worse than one that fails." >&2
+          exit 1
+        fi
+
+        # AND SEE THE CATALOG (#65, #84). Same blindness as load:cleanup had:
+        # since platform-as-a-project a plain kubeconfig carries no
+        # iam.miloapis.com/parent-name, so it has no keyspace and lists ZERO
+        # pools and ZERO classes. This task would then delete nothing, count
+        # zero survivors through the same blind client, and report success.
+        # That matters more here than for the flat fixtures: a cascade run
+        # leaves THOUSANDS of provisioned pools, and "cascade fixtures removed"
+        # over 6,872 surviving pools is the worst possible lie for this task to
+        # tell.
+        PLATFORM_KUBECONFIG="$(mktemp -t ipam-platform-kubeconfig.XXXXXX)"
+        trap 'rm -f "${PLATFORM_KUBECONFIG}"' EXIT
+        if ! sh "{{.ROOT_DIR}}/test/e2e/lib/gen-platform-kubeconfig.sh" "${PLATFORM_KUBECONFIG}" >/dev/null 2>&1 \
+           || ! grep -q 'iam.miloapis.com/parent-name' "${PLATFORM_KUBECONFIG}"; then
+          echo "ERROR: could not generate a platform-impersonating kubeconfig," >&2
+          echo "  or it carries no parent-name extra. Nothing was deleted —" >&2
+          echo "  without it this task cannot see the pools it is meant to remove." >&2
+          exit 1
+        fi
+
+        # TWO IDENTITIES, AND THE OBVIOUS ONE IS BACKWARDS FOR THIS TASK.
+        #
+        # An unimpersonated caller is NOT blind. It carries no parent, so its
+        # keyspace IS the unprefixed one, and it sees exactly what the platform
+        # identity cannot. Measured on this cluster, same command, same moment:
+        #
+        #     unimpersonated  6872 pools   <- cascade-PROVISIONED, unprefixed
+        #     as platform       38 pools   <- operator-authored, project/milo-platform
+        #
+        # The split is clean: every pool whose name ends in eight hex characters
+        # of scope digest — every pool the CASCADE created — is unprefixed, and
+        # everything authored through the API is not.
+        #
+        # THE OBVIOUS CONCLUSION FROM THAT SPLIT IS WRONG, and it is stated here
+        # positively because three of us reached it independently, so deleting
+        # the sentence would just let the next reader re-derive it. It is NOT
+        # that the provisioning path was never converted. cascade.go builds its
+        # key with tenant.Identity{Name: project}.ResourceKey(...), which
+        # prefixes correctly for any non-empty project and always has; a probe
+        # against the current binary produces project/<p>/... keys with a
+        # non-empty owner_project. The only input that yields an unprefixed key
+        # is project == "" — an untenanted caller.
+        #
+        # So these are RESIDUE: 6,872 objects written in a ~20-second window at
+        # 13:43 UTC on 2026-08-09 by a binary two deploys old, before the
+        # untenanted-write gate closed. The keyspace is shut; the count is
+        # fixed, not growing.
+        #
+        # So the DEFAULT identity stays unimpersonated, because that is where
+        # the thousands of pools are. Only the objects authored through the API
+        # — the classes and the root pool — need the platform identity, and they
+        # use kplat below. Switching the whole task to the platform identity
+        # (which this file briefly did) would have made it blind to 6,872 of the
+        # 6,910 objects it exists to delete, while still reporting success.
+        #
+        # The unimpersonated pass is correct TODAY and becomes dead once the
+        # residue is gone — #88, which `correctness` is reclaiming. Revisit when
+        # that lands, not #63: #63 closed as a documentation task, and pointing
+        # here at a closed ticket for a conversion that already happened is how
+        # this comment misled in the first place.
+        kplat() { KUBECONFIG="${PLATFORM_KUBECONFIG}" kubectl "$@"; }
+
+        # The unimpersonated sweep of the PRE-#65 unprefixed keyspace. It is
+        # kept because a cluster that predates platform-as-a-project still
+        # homes these objects there, and there it is the only identity that can
+        # see them.
+        #
+        # But since the untenanted-write gate shipped (#85/#92), that delete no
+        # longer 404s on a current cluster — it 403s. So every GREEN cascade
+        # teardown printed
+        #
+        #     Error from server (Forbidden): unknown (delete ippools ...)
+        #
+        # directly beneath the line saying the same object had been deleted.
+        # A red error on the success path is not free: this is the task whose
+        # job is to tell you honestly that it deleted nothing, and training a
+        # reader to skip its errors costs exactly that. So Forbidden — the one
+        # response that means "current cluster, nothing here to sweep" — is
+        # swallowed, and every other failure still prints.
+        klegacy() {
+          err="$(kubectl "$@" 2>&1 >/dev/null)" || true
+          case "${err}" in
+            ''|*Forbidden*) : ;;
+            *) printf '%s\n' "${err}" >&2 ;;
+          esac
+        }
+
+        # ORDER IS FORCED BY THE SCHEMA, not by preference:
+        #   claims first    — a claim holds an allocation, and a pool with
+        #                     allocations against it cannot be deleted
+        #                     (ipam_cidr_allocations.pool_key is ON DELETE
+        #                     RESTRICT, and the pool delete guard refuses).
+        #   subnet pools    — a /64 carved per (network, location).
+        #   network pools   — a /48 per network; each subnet's carve is held
+        #                     against its network pool.
+        #   root pool       — holds the network pools' carves.
+        #   classes LAST    — see the note above the class step.
+        #
+        # Deleting in the wrong order does not corrupt anything; it fails with
+        # a 409 naming what still holds the pool, which is the guard working.
+
+        echo "==> claims created by the cascade scenarios"
+        for ns in $(kubectl get ns -o name 2>/dev/null | grep '^namespace/ipam-perf-' | sed 's|^namespace/||' || true); do
+          names=$(kubectl get ipclaim.ipam.miloapis.com -n "$ns" -o name 2>/dev/null \
+                  | grep -E '/(cold|herd|mixed|warmup)-' || true)
+          if [ -n "$names" ]; then
+            echo "$names" | xargs -r kubectl delete -n "$ns" --ignore-not-found --wait=false || true
+          fi
+        done
+
+        # Cascade-provisioned pools carry the label the allocator stamps on
+        # every pool it creates (internal/allocator/prefix.go,
+        # labelProvisionedBy). Selecting on it is what turns teardown from one
+        # `kubectl` PROCESS per pool into one process per cascade level: a
+        # 5,194-pool run spawned 5,194 processes, and process startup — not the
+        # server — was ~170ms of the ~15 minutes.
+        #
+        # `kubectl delete -l` still issues one DELETE per object; what it stops
+        # doing is paying for a fresh binary, a fresh TLS handshake and fresh
+        # discovery each time. That is the whole of the win claimed here, and
+        # the server-side cost per pool is unchanged.
+        #
+        # NOT spec.classRef, which teardown used to read. classRef names the
+        # class a pool draws from and an operator may set it on a pool they
+        # authored, so it cannot distinguish "the cascade made this" from "a
+        # human pointed this at the same class". The label only ever comes from
+        # the allocator.
+        LABEL_PROVISIONED_BY="ipam.miloapis.com/provisioned-by-class"
+
+        # Server-side selection; this is what the delete and the drain use.
+        pools_labelled() {
+          kubectl get ippool.ipam.miloapis.com \
+            -l "${LABEL_PROVISIONED_BY}=$1" -o name 2>/dev/null | sed 's|.*/||' || true
+        }
+
+        # The INDEPENDENT instrument, kept deliberately: it reads a different
+        # field, through a different code path, so it can contradict the label
+        # selector. Used for the positive control below and for the final
+        # survivor count. Do not "simplify" it to call pools_labelled — a check
+        # whose two sides come from the same query cannot catch the failure it
+        # exists for.
+        pools_for_class() {
+          kubectl get ippool.ipam.miloapis.com -o json 2>/dev/null \
+            | python3 -c "import json,sys; d=json.loads(sys.stdin.read() or '{}'); print('\n'.join(i['metadata']['name'] for i in d.get('items',[]) if ((i.get('spec') or {}).get('classRef') or {}).get('name')=='$1'))" || true
+        }
+
+        # POSITIVE CONTROL — run once, before anything is deleted.
+        #
+        # A label selector that matches nothing deletes nothing and exits 0.
+        # That is byte-for-byte the same outcome as a cluster with nothing to
+        # clean, so without this the first cleanup after someone drops the label
+        # would report success over a full cluster. Ask the independent
+        # instrument whether pools exist; if they do and the selector finds
+        # none, the selector is broken, not the cluster clean.
+        for c in perf-subnet-v6 perf-net-v6; do
+          by_ref=$(pools_for_class "$c" | grep -c . || true)
+          by_label=$(pools_labelled "$c" | grep -c . || true)
+          if [ "$by_ref" -gt 0 ] && [ "$by_label" -eq 0 ]; then
+            echo "ERROR: ${by_ref} pool(s) name class ${c} in spec.classRef, but the" >&2
+            echo "  label selector ${LABEL_PROVISIONED_BY}=${c} matches none of them." >&2
+            echo "" >&2
+            echo "  Nothing was deleted. The allocator is not stamping the teardown" >&2
+            echo "  label (internal/allocator/prefix.go), so a label-selector delete" >&2
+            echo "  would have removed nothing and reported success." >&2
+            exit 1
+          fi
+        done
+
+        delete_pools_for_class() {
+          local class="$1"
+          local n
+          n=$(pools_labelled "$class" | grep -c . || true)
+          if [ "$n" -gt 0 ]; then
+            echo "    ${n} pool(s) provisioned by ${class}"
+            kubectl delete ippool.ipam.miloapis.com \
+              -l "${LABEL_PROVISIONED_BY}=${class}" --ignore-not-found --wait=false || true
+          else
+            echo "    none provisioned by ${class}"
+          fi
+        }
+
+        # Wait for a level's deletes to actually land before starting the next
+        # one. The deletes above are --wait=false, so without this the network
+        # pass starts issuing while the subnet pools are still terminating and
+        # races its own previous step: every subnet still present holds a carve
+        # against its network pool, and the network delete comes back 409
+        #   cannot delete IPPool with 1 active allocation(s)
+        # naming exactly one allocation — the child's. proving measured 7 such
+        # conflicts on a 5,194-pool cluster, and a second cleanup pass over the
+        # leftovers hit ZERO, which is what proves the ORDER is right and the
+        # synchronisation was not.
+        #
+        # Draining per level, rather than dropping --wait=false, is deliberate:
+        # --wait=false is what keeps thousands of per-object deletes from
+        # serialising on each object's finalisation, and teardown is already
+        # the slowest part of a cascade run.
+        drain_pools_for_class() {
+          local class="$1" deadline=$(( $(date +%s) + ${DRAIN_TIMEOUT:-300} )) remaining
+          while :; do
+            # Label selector, not pools_for_class: this runs every 2s and the
+            # classRef instrument LISTs every pool in the cluster to filter in
+            # python. The positive control above has already established the two
+            # agree.
+            remaining=$(pools_labelled "$class" | grep -c . || true)
+            # Written as an `if`, not `[ ... ] && break`: under `set -e` a
+            # standalone AND-list whose left side is false fails the script.
+            if [ "$remaining" -eq 0 ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              # Not fatal: the next level will 409 on whatever is still held,
+              # and the final survivor count reports it. Failing here would
+              # abandon the levels we can still make progress on.
+              echo "    WARNING: ${remaining} ${class} pool(s) still terminating after ${DRAIN_TIMEOUT:-300}s;" >&2
+              echo "             continuing — expect 409s on the next level." >&2
+              break
+            fi
+            sleep 2
+          done
+        }
+
+        echo "==> pools provisioned by the cascade (leaf level first)"
+        delete_pools_for_class perf-subnet-v6
+        drain_pools_for_class perf-subnet-v6
+        delete_pools_for_class perf-net-v6
+        drain_pools_for_class perf-net-v6
+
+        echo "==> root pool"
+        # Authored through the API by setup-cascade, so it lives in the platform
+        # keyspace on a post-#65 cluster and in the unprefixed one before that.
+        # Both are attempted; the one that does not apply is a no-op.
+        kplat delete ippool.ipam.miloapis.com perf-cascade-root --ignore-not-found || true
+        klegacy delete ippool.ipam.miloapis.com perf-cascade-root --ignore-not-found
+
+        # Count what survived BEFORE touching the classes.
+        left=$(kubectl get ippool.ipam.miloapis.com -o json 2>/dev/null \
+          | python3 -c "import json,sys; d=json.loads(sys.stdin.read() or '{}'); print('\n'.join(i['metadata']['name'] for i in d.get('items',[]) if ((i.get('spec') or {}).get('classRef') or {}).get('name','').startswith('perf-')))" || true)
+        pools_left=$(printf '%s' "$left" | grep -c . || true)
+
+        # Classes go LAST, and only if the pools they name are actually gone.
+        #
+        # A class is the only human-readable label on a few thousand pool names
+        # derived from scope digests. Deleting it while its pools survive hands
+        # someone an orphaned set with nothing to identify it by. Retry still
+        # works either way — delete_pools_for_class reads classRef off the POOL
+        # — but the intermediate state is much harder to reason about.
+        if [ "${pools_left}" -eq 0 ]; then
+          echo "==> classes"
+          for c in perf-endpoint-v6 perf-subnet-v6 perf-net-v6; do
+            kplat delete ipclass.ipam.miloapis.com "$c" --ignore-not-found || true
+            klegacy delete ipclass.ipam.miloapis.com "$c" --ignore-not-found
+          done
+
+          echo "==> class-consumption RBAC"
+          kubectl get clusterrolebinding -o name 2>/dev/null \
+            | grep '^clusterrolebinding.rbac.authorization.k8s.io/perf-cascade-class-user-' \
+            | xargs -r kubectl delete --ignore-not-found || true
+          kubectl delete clusterrole perf-cascade-class-user --ignore-not-found || true
+        else
+          echo "==> classes and RBAC kept — pools still reference them"
+        fi
+
+        classes_left=$({ kplat get ipclass.ipam.miloapis.com -o name 2>/dev/null; kubectl get ipclass.ipam.miloapis.com -o name 2>/dev/null; } | sort -u \
+          | grep -c 'perf-\(net\|subnet\|endpoint\)-v6' || true)
+
+        echo ""
+        if [ "${pools_left}" -gt 0 ] || [ "${classes_left}" -gt 0 ]; then
+          echo "INCOMPLETE: ${pools_left} cascade pool(s) and ${classes_left} class(es) remain." >&2
+          if [ -n "$left" ]; then
+            printf '%s\n' "$left" | head -20 | sed 's/^/  /' >&2
+            [ "${pools_left}" -gt 20 ] && echo "  ... and $((pools_left - 20)) more" >&2
+          fi
+          echo "" >&2
+          cat "{{.ROOT_DIR}}/test/load/CLEANUP-INCOMPLETE.md" >&2
+          echo "  Delete the claim and re-run. Exiting non-zero so a script" >&2
+          echo "  calling this does not continue as though the cluster were clean." >&2
+          exit 1
+        fi
+        echo "cascade fixtures removed (0 pools, 0 classes remain)."
 
   throughput:
-    desc: 'Measure prefix-claim creation throughput. Vars: VUS, DURATION, PROJECT_COUNT, NAMESPACE_COUNT'
+    desc: 'Claim throughput, both families. Vars: VUS, DURATION, FAMILIES (v4,v6)'
     silent: true
     cmds:
       - |
@@ -163,11 +585,12 @@ tasks:
           -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
           -e VUS={{.VUS | default "10"}} \
           -e DURATION={{.DURATION | default "2m"}} \
-          --summary-export={{.RESULTS_DIR}}/prefix-throughput.json \
-          {{.K6_SRC_DIR}}/prefix-claim-throughput.js
+          -e FAMILIES={{.FAMILIES | default "v4,v6"}} \
+          --summary-export={{.RESULTS_DIR}}/claim-throughput.json \
+          {{.K6_SRC_DIR}}/claim-throughput.js
 
-  asn-throughput:
-    desc: 'Measure ASN-claim creation throughput via classRef. Vars: VUS, DURATION'
+  concurrent:
+    desc: 'Concurrent-claim uniqueness, blocks and host addresses. Vars: VUS, DURATION, BATCH, ROUNDS'
     silent: true
     cmds:
       - |
@@ -175,29 +598,111 @@ tasks:
         k6 run \
           -e IPAM_API_URL={{.IPAM_API_URL}} \
           -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
+          -e VUS={{.VUS | default "50"}} \
+          -e DURATION={{.DURATION | default "1m"}} \
+          -e BATCH={{.BATCH | default "50"}} \
+          -e ROUNDS={{.ROUNDS | default "3"}} \
+          --summary-export={{.RESULTS_DIR}}/concurrent-claims.json \
+          {{.K6_SRC_DIR}}/concurrent-claims.js
+
+  shared:
+    desc: 'Shared address space: N networks drawing host addresses from one pool. Vars: NETWORKS, PER_NETWORK, ROUNDS, SWEEP_STEPS, SWEEP_BUCKET, RUN_ID'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        # RUN_ID must be per-RUN, not per-VU. Every network name this scenario
+        # uses must be one no earlier run touched: a reused network still holds
+        # that run's allocations, so its "first free address" is not the pool's
+        # and the identical-set assertion fails for a reason that has nothing to
+        # do with the server.
+        RUN_ID="{{.RUN_ID}}"; [ -n "${RUN_ID}" ] || RUN_ID="r$(date +%s)"
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NETWORKS={{.NETWORKS | default "10"}} \
+          -e PER_NETWORK={{.PER_NETWORK | default "5"}} \
+          -e ROUNDS={{.ROUNDS | default "3"}} \
+          -e SWEEP_STEPS={{.SWEEP_STEPS | default "16"}} \
+          -e SWEEP_BUCKET={{.SWEEP_BUCKET | default "128"}} \
+          {{if .MIN_CONCURRENCY}}-e MIN_CONCURRENCY={{.MIN_CONCURRENCY}}{{end}} \
+          -e RUN_ID="${RUN_ID}" \
+          --summary-export={{.RESULTS_DIR}}/shared-space.json \
+          {{.K6_SRC_DIR}}/shared-space.js
+
+  reserved:
+    desc: 'A reservation is withheld from EVERY address space (#94). Vars: NETWORKS, PER_NETWORK, ROUNDS, MIN_CONCURRENCY, RUN_ID'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        # RUN_ID must be per-RUN for the same reason `shared` needs it: every
+        # network here is a fresh address space, and a reused one already holds
+        # an allocation, so its first claim is not the pool's first claimable
+        # address and the exact-address assertion fails for a reason that has
+        # nothing to do with the server.
+        RUN_ID="{{.RUN_ID}}"; [ -n "${RUN_ID}" ] || RUN_ID="r$(date +%s)"
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NETWORKS={{.NETWORKS | default "8"}} \
+          -e PER_NETWORK={{.PER_NETWORK | default "4"}} \
+          -e ROUNDS={{.ROUNDS | default "2"}} \
+          {{if .MIN_CONCURRENCY}}-e MIN_CONCURRENCY={{.MIN_CONCURRENCY}}{{end}} \
+          -e RUN_ID="${RUN_ID}" \
+          --summary-export={{.RESULTS_DIR}}/reserved-space.json \
+          {{.K6_SRC_DIR}}/reserved-space.js
+
+  carve:
+    desc: 'A carve is withheld from EVERY address space in its parent (#101). Vars: NETWORKS, PER_NETWORK, ROUNDS, MIN_CONCURRENCY, RUN_ID'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        # RUN_ID must be per-RUN, for the same reason `reserved` needs it: every
+        # network is a fresh address space, and a reused one already holds an
+        # allocation, so its first claim is not the first address above the
+        # carve and the exact-address assertion fails for a reason that has
+        # nothing to do with the server.
+        RUN_ID="{{.RUN_ID}}"; [ -n "${RUN_ID}" ] || RUN_ID="r$(date +%s)"
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
+          -e NETWORKS={{.NETWORKS | default "8"}} \
+          -e PER_NETWORK={{.PER_NETWORK | default "4"}} \
+          -e ROUNDS={{.ROUNDS | default "2"}} \
+          {{if .MIN_CONCURRENCY}}-e MIN_CONCURRENCY={{.MIN_CONCURRENCY}}{{end}} \
+          -e RUN_ID="${RUN_ID}" \
+          --summary-export={{.RESULTS_DIR}}/carved-space.json \
+          {{.K6_SRC_DIR}}/carved-space.js
+
+  authz:
+    desc: 'Class-consumption authorization as an impersonated tenant (allow + all three deny gates). Vars: VUS, DURATION'
+    silent: true
+    cmds:
+      - |
+        mkdir -p {{.RESULTS_DIR}}
+        k6 run \
+          -e IPAM_API_URL={{.IPAM_API_URL}} \
           -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
           -e VUS={{.VUS | default "10"}} \
-          -e DURATION={{.DURATION | default "2m"}} \
-          --summary-export={{.RESULTS_DIR}}/asn-throughput.json \
-          {{.K6_SRC_DIR}}/asn-claim-throughput.js
+          -e DURATION={{.DURATION | default "1m"}} \
+          --summary-export={{.RESULTS_DIR}}/class-authorization.json \
+          {{.K6_SRC_DIR}}/class-authorization.js
 
-  address-concurrent:
-    desc: 'Stress-test host-address (IPClaim /32) concurrency + uniqueness. Vars: VUS, DURATION, POOL_CIDR'
+  contention:
+    desc: 'Many tenants contending on ONE flat pool - the regime #64 created. Vars: TENANTS, PER_TENANT, ROUNDS'
     silent: true
     cmds:
       - |
         mkdir -p {{.RESULTS_DIR}}
         k6 run \
           -e IPAM_API_URL={{.IPAM_API_URL}} \
-          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
-          -e VUS={{.VUS | default "10"}} \
-          -e DURATION={{.DURATION | default "2m"}} \
-          -e POOL_CIDR={{.POOL_CIDR | default "10.60.0.0/24"}} \
-          --summary-export={{.RESULTS_DIR}}/address-concurrent.json \
-          {{.K6_SRC_DIR}}/host-prefix-claim-concurrent.js
+          -e TENANTS={{.TENANTS | default "5"}} \
+          -e PER_TENANT={{.PER_TENANT | default "10"}} \
+          -e ROUNDS={{.ROUNDS | default "3"}} \
+          --summary-export={{.RESULTS_DIR}}/tenant-contention.json \
+          {{.K6_SRC_DIR}}/tenant-contention.js
 
   exhaustion:
-    desc: 'Measure deny-path latency under pool exhaustion'
+    desc: 'Deny-path latency against a full pool. Vars: VUS, DURATION'
     silent: true
     cmds:
       - |
@@ -206,11 +711,11 @@ tasks:
           -e IPAM_API_URL={{.IPAM_API_URL}} \
           -e VUS={{.VUS | default "20"}} \
           -e DURATION={{.DURATION | default "1m"}} \
-          --summary-export={{.RESULTS_DIR}}/exhaustion.json \
+          --summary-export={{.RESULTS_DIR}}/pool-exhaustion.json \
           {{.K6_SRC_DIR}}/pool-exhaustion.js
 
   reads:
-    desc: 'Measure read-path latency'
+    desc: 'Read-path latency. Vars: NAMESPACE_COUNT, PROJECT_COUNT, SEED_CLAIMS'
     silent: true
     cmds:
       - |
@@ -218,11 +723,13 @@ tasks:
         k6 run \
           -e IPAM_API_URL={{.IPAM_API_URL}} \
           -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
-          --summary-export={{.RESULTS_DIR}}/reads.json \
+          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
+          -e SEED_CLAIMS={{.SEED_CLAIMS | default "20"}} \
+          --summary-export={{.RESULTS_DIR}}/read-latency.json \
           {{.K6_SRC_DIR}}/read-latency.js
 
   mixed:
-    desc: 'Simulate mixed read+write production traffic (writes + reads + burst + spike). Vars: NAMESPACE_COUNT, PROJECT_COUNT'
+    desc: 'Reads and writes concurrently. Vars: NAMESPACE_COUNT, PROJECT_COUNT, SEED_CLAIMS'
     silent: true
     cmds:
       - |
@@ -231,71 +738,26 @@ tasks:
           -e IPAM_API_URL={{.IPAM_API_URL}} \
           -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
           -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
-          --summary-export={{.RESULTS_DIR}}/mixed.json \
+          -e SEED_CLAIMS={{.SEED_CLAIMS | default "20"}} \
+          --summary-export={{.RESULTS_DIR}}/mixed-load.json \
           {{.K6_SRC_DIR}}/mixed-load.js
 
-  concurrent:
-    desc: 'Concurrent burst + uniqueness IPClaim test. Vars: VUS, DURATION'
-    silent: true
-    cmds:
-      - |
-        mkdir -p {{.RESULTS_DIR}}
-        k6 run \
-          -e IPAM_API_URL={{.IPAM_API_URL}} \
-          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
-          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
-          -e VUS={{.VUS | default "50"}} \
-          -e DURATION={{.DURATION | default "1m"}} \
-          --summary-export={{.RESULTS_DIR}}/concurrent.json \
-          {{.K6_SRC_DIR}}/concurrent-claims.js
-
-  cross-project:
-    desc: 'Cross-project IPClaim throughput. Vars: VUS, DURATION'
-    silent: true
-    cmds:
-      - |
-        mkdir -p {{.RESULTS_DIR}}
-        k6 run \
-          -e IPAM_API_URL={{.IPAM_API_URL}} \
-          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
-          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
-          -e VUS={{.VUS | default "10"}} \
-          -e DURATION={{.DURATION | default "2m"}} \
-          --summary-export={{.RESULTS_DIR}}/cross-project-throughput.json \
-          {{.K6_SRC_DIR}}/cross-project-claim-throughput.js
-
   watch-latency:
-    desc: 'Measure watch event lag (TTFB-anchored). Vars: ITERATIONS, WATCH_TIMEOUT'
+    desc: 'Watch delivery and a lag upper bound. Vars: DURATION, WATCH_TIMEOUT, CREATE_INTERVAL'
     silent: true
     cmds:
       - |
         mkdir -p {{.RESULTS_DIR}}
         k6 run \
           -e IPAM_API_URL={{.IPAM_API_URL}} \
-          -e ITERATIONS={{.ITERATIONS | default "30"}} \
-          -e WATCH_TIMEOUT={{.WATCH_TIMEOUT | default "5"}} \
+          -e DURATION={{.DURATION | default "1m"}} \
+          -e WATCH_TIMEOUT={{.WATCH_TIMEOUT | default "2"}} \
+          -e CREATE_INTERVAL={{.CREATE_INTERVAL | default "1"}} \
           --summary-export={{.RESULTS_DIR}}/watch-latency.json \
           {{.K6_SRC_DIR}}/watch-latency.js
 
-  ipv6-throughput:
-    desc: 'IPv6 /48 prefix-claim throughput across 5 projects (PRIMARY load test). Vars: VUS, DURATION, PROJECT_COUNT'
-    silent: true
-    cmds:
-      - |
-        mkdir -p {{.RESULTS_DIR}}
-        k6 run \
-          -e IPAM_API_URL={{.IPAM_API_URL}} \
-          -e NAMESPACE_COUNT={{.NAMESPACE_COUNT | default "10"}} \
-          -e PROJECT_COUNT={{.PROJECT_COUNT | default "5"}} \
-          -e VUS={{.VUS | default "50"}} \
-          -e DURATION={{.DURATION | default "2m"}} \
-          -e CROSS_RATIO={{.CROSS_RATIO | default "0.1"}} \
-          -e CLAIM_PREFIX_LENGTH={{.CLAIM_PREFIX_LENGTH | default "48"}} \
-          --summary-export={{.RESULTS_DIR}}/ipv6-throughput.json \
-          {{.K6_SRC_DIR}}/ipv6-claim-throughput.js
-
   scale:
-    desc: 'Walk through prefix-length depths and measure latency'
+    desc: 'Prefix-length and occupancy sweeps. Vars: PREFIX_STEPS, SAMPLES, DENSITY_MAX, BUCKET'
     silent: true
     cmds:
       - |
@@ -303,72 +765,212 @@ tasks:
         k6 run \
           -e IPAM_API_URL={{.IPAM_API_URL}} \
           -e PREFIX_STEPS={{.PREFIX_STEPS | default "20,22,24,26,28"}} \
-          --summary-export={{.RESULTS_DIR}}/scale.json \
-          --out json={{.RESULTS_DIR}}/scale-raw.json \
+          -e SAMPLES={{.SAMPLES | default "64"}} \
+          -e DENSITY_MAX={{.DENSITY_MAX | default "512"}} \
+          -e BUCKET={{.BUCKET | default "64"}} \
+          --summary-export={{.RESULTS_DIR}}/pool-scale.json \
           {{.K6_SRC_DIR}}/pool-scale.js
 
   cleanup:
-    desc: 'Delete all perf namespaces and pool resources. Var: PROJECT_COUNT (default 5)'
+    desc: 'Remove the flat class fixtures, their claims, and the perf namespaces. Var: PROJECT_COUNT'
     silent: true
     cmds:
       - |
-        set -e
-        PROJECT_COUNT={{.PROJECT_COUNT}}
-        LAST=$((PROJECT_COUNT - 1))
+        set -euo pipefail
 
-        echo "Deleting IPClaims and IPAllocations in every perf namespace..."
-        for ns in $(KUBECONFIG={{.KUBECONFIG}} kubectl get ns -o name | grep '^namespace/ipam-perf-' | sed 's|^namespace/||'); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete ipclaim.ipam.miloapis.com --all -n ${ns} --ignore-not-found --wait=false || true
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete ipallocation.ipam.miloapis.com --all -n ${ns} --ignore-not-found --wait=false || true
+        # KUBECONFIG exported once, every command a plain `kubectl`, no eval.
+        # See the long note in cascade-cleanup: building a command string and
+        # running it through `xargs eval` silently deletes nothing, because
+        # eval is a shell builtin and xargs execs a binary.
+        export KUBECONFIG="{{.KUBECONFIG}}"
+
+        # Prove the cluster is reachable BEFORE claiming to have cleaned it.
+        if ! kubectl version --request-timeout=10s >/dev/null 2>&1; then
+          echo "ERROR: cannot reach the cluster (KUBECONFIG=${KUBECONFIG})." >&2
+          echo "  Nothing was deleted. Refusing to report success for work that" >&2
+          echo "  did not happen." >&2
+          exit 1
+        fi
+
+        # THE CATALOG IS IN THE PLATFORM PROJECT, AND A PLAIN KUBECONFIG CANNOT
+        # SEE IT (#65, #84).
+        #
+        # Since platform-as-a-project there is no unprefixed keyspace. The
+        # IPClass catalog and the pools backing it live in the project named by
+        # --platform-project, and a caller is the platform only if it carries
+        # iam.miloapis.com/parent-name. An ordinary kubeconfig carries no
+        # parent, so it has no keyspace and lists ZERO classes and ZERO pools.
+        #
+        # That is exactly what this task did after #65 landed: it derived the
+        # right names, issued deletes that matched nothing, counted zero
+        # survivors through the same blind client, and printed "cleanup
+        # complete". Measured: 9 classes and 8 pools in the database, 0 and 0
+        # through the API, success reported. A cleanup that cannot see what it
+        # is deleting reports the same thing whether it worked or did nothing.
+        #
+        # gen-platform-kubeconfig.sh emits a kubeconfig whose context
+        # impersonates the platform project. e2e-platform-operator is bound to
+        # cluster-admin, so the same context also does the ordinary Kubernetes
+        # work below (namespaces, RBAC).
+        PLATFORM_KUBECONFIG="$(mktemp -t ipam-platform-kubeconfig.XXXXXX)"
+        trap 'rm -f "${PLATFORM_KUBECONFIG}"' EXIT
+        if ! sh "{{.ROOT_DIR}}/test/e2e/lib/gen-platform-kubeconfig.sh" "${PLATFORM_KUBECONFIG}" >/dev/null 2>&1; then
+          echo "ERROR: could not generate a platform-impersonating kubeconfig." >&2
+          echo "  Nothing was deleted. Without it this task is blind to the" >&2
+          echo "  catalog and would report success having deleted nothing." >&2
+          exit 1
+        fi
+        # Verify the instrument before trusting it: the generated config must
+        # actually carry the parent-name extra. A kubeconfig that silently lost
+        # it looks identical to one that works, right up to the empty result.
+        if ! grep -q 'iam.miloapis.com/parent-name' "${PLATFORM_KUBECONFIG}"; then
+          echo "ERROR: the generated kubeconfig carries no parent-name extra," >&2
+          echo "  so it is not the platform and cannot see the catalog." >&2
+          exit 1
+        fi
+        export KUBECONFIG="${PLATFORM_KUBECONFIG}"
+
+        # The fixture names come from lib/fixtures.js and are listed ONCE here.
+        # Keep the two in step: a pool missing from this list survives cleanup,
+        # holds its allocations, and quietly changes what the next run measures.
+        # DERIVED from lib/fixtures.js via `task load:fixture-names`, never typed
+        # here. The catalog's header has always said the list was derived; for a
+        # while that was false and the list was hand-maintained, which is worse
+        # than saying nothing because it stopped the next person checking. It
+        # stayed in sync only because whoever added perf-shared-v4 read this file
+        # anyway. A fixture added without touching this task would have survived
+        # cleanup and silently changed the next run's numbers.
+        #
+        # A container class contributes a class and no pool — it has no poolName
+        # in the catalog, so that falls out of the derivation rather than needing
+        # a special case here.
+        CLASSES=$(task -t "{{.ROOT_DIR}}/test/load/Taskfile.yaml" fixture-names WHAT=classes)
+        POOLS=$(task -t "{{.ROOT_DIR}}/test/load/Taskfile.yaml" fixture-names WHAT=pools)
+        if [ -z "$CLASSES" ] || [ -z "$POOLS" ]; then
+          echo "ERROR: could not derive fixture names from lib/fixtures.js." >&2
+          echo "  Nothing was deleted. Refusing to run a cleanup over an empty" >&2
+          echo "  list — it would delete nothing and report success." >&2
+          exit 1
+        fi
+        echo "==> deriving from lib/fixtures.js: $(echo $CLASSES | wc -w | tr -d ' ') class(es), $(echo $POOLS | wc -w | tr -d ' ') pool(s)"
+
+        # Count what is VISIBLE before deleting anything. "Deleted nothing
+        # because it was already clean" and "deleted nothing because I cannot
+        # see it" produce identical output otherwise, and the second is the bug
+        # this task shipped with.
+        # COUNT THE THING YOU ARE ABOUT TO ASSERT ABOUT. This counter decides
+        # whether the run reports "nothing was visible to delete", and the task
+        # deletes CLAIMS as well as classes and pools — so omitting claims makes
+        # the control blind to exactly one of the three kinds it acts on. That
+        # is #84 in miniature, inside #84's own fix. Not theoretical: an
+        # unimpersonated `kubectl get ipclaim -A` returned 0 while 3,436 claims
+        # were mid-deletion, and was read as the phase having finished.
+        visible_before=0
+        for c in $CLASSES; do kubectl get ipclass.ipam.miloapis.com "$c" >/dev/null 2>&1 && visible_before=$((visible_before + 1)); done
+        for p in $POOLS;   do kubectl get ippool.ipam.miloapis.com  "$p" >/dev/null 2>&1 && visible_before=$((visible_before + 1)); done
+        claims_before=$(kubectl get ipclaim.ipam.miloapis.com -A -o name 2>/dev/null | grep -c . || true)
+        visible_before=$((visible_before + claims_before))
+        echo "==> visible before deleting: ${visible_before} fixture object(s) (${claims_before} claim(s))"
+
+        # ORDER IS FORCED BY THE SCHEMA: claims hold allocations, and a pool
+        # with allocations against it refuses to delete
+        # (ipam_cidr_allocations.pool_key is ON DELETE RESTRICT). Claims first,
+        # then pools, then the classes the pools name.
+        echo "==> claims in the perf namespaces"
+        for ns in $(kubectl get ns -o name 2>/dev/null | grep '^namespace/ipam-perf-' | sed 's|^namespace/||' || true); do
+          kubectl delete ipclaim.ipam.miloapis.com --all -n "$ns" --ignore-not-found --wait=false || true
         done
 
-        echo "Deleting perf namespaces..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl get ns -o name | grep '^namespace/ipam-perf-' | xargs -r KUBECONFIG={{.KUBECONFIG}} kubectl delete --wait=false || true
-
-        echo "Deleting per-project IPv4 IPPools (perf-prefix-0..${LAST})..."
-        for n in $(seq 0 ${LAST}); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-prefix-${n} --ignore-not-found || true
+        # Wait for the claims to actually go before deleting pools. Without
+        # this the pool deletes race the claim finalisation and come back 409
+        # naming an allocation that is on its way out.
+        echo "==> waiting for claims to drain"
+        deadline=$(( $(date +%s) + ${DRAIN_TIMEOUT:-180} ))
+        while :; do
+          # Counted through the SAME client that issued the deletes, which is
+          # the platform identity here — so it sees platform-owned claims and
+          # not tenant-owned ones. That is the right instrument for what this
+          # task deletes, but it means "0 remaining" means "none that I can
+          # see". CLEANUP-INCOMPLETE.md carries the database query for the rest.
+          remaining=$(kubectl get ipclaim.ipam.miloapis.com -A -o name 2>/dev/null | grep -c . || true)
+          if [ "$remaining" -eq 0 ]; then break; fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "    WARNING: ${remaining} claim(s) still terminating; expect 409s below." >&2
+            break
+          fi
+          sleep 2
         done
 
-        echo "Deleting per-project IPv6 IPPools (perf-ipv6-prefix-0..${LAST})..."
-        for n in $(seq 0 ${LAST}); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-ipv6-prefix-${n} --ignore-not-found || true
+        # POOLS ARE DELETED IN REVERSE, AND SINCE #101 THAT IS LOAD-BEARING.
+        #
+        # The catalog lists a parent before the pool carved out of it, because
+        # setup must create them in that order. Deletion is the other way round:
+        # a parent with a live carve refuses to delete (the carve is a row
+        # against it, and ipam_cidr_allocations.pool_key is ON DELETE RESTRICT),
+        # so a forward pass leaves the parent behind and the survivor check
+        # below fails the run.
+        #
+        # The second pass exists because reverse order is only guaranteed
+        # correct for the pairs this file declares adjacently. A retry costs one
+        # round trip per surviving pool and covers any nesting the catalog grows
+        # later; without it, a deeper chain would fail in a way that reads as a
+        # cluster problem rather than an ordering one.
+        echo "==> pools"
+        REVERSED=$(printf '%s\n' $POOLS | tail -r 2>/dev/null || printf '%s\n' $POOLS | tac)
+        for p in $REVERSED; do
+          kubectl delete ippool.ipam.miloapis.com "$p" --ignore-not-found || true
+        done
+        for p in $REVERSED; do
+          if kubectl get ippool.ipam.miloapis.com "$p" >/dev/null 2>&1; then
+            echo "    retrying $p (it held a carve when first attempted)"
+            kubectl delete ippool.ipam.miloapis.com "$p" --ignore-not-found || true
+          fi
         done
 
-        echo "Deleting per-project ASN pools (perf-asn-pool-0..${LAST})..."
-        for n in $(seq 0 ${LAST}); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-pool-${n} --ignore-not-found || true
+        echo "==> classes"
+        for c in $CLASSES; do
+          kubectl delete ipclass.ipam.miloapis.com "$c" --ignore-not-found || true
         done
 
-        echo "Deleting platform-level perf pool..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-prefix --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-pool --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpoolclass.ipam.miloapis.com perf-asn --ignore-not-found || true
+        echo "==> perf namespaces"
+        kubectl get ns -o name 2>/dev/null | grep '^namespace/ipam-perf-' \
+          | xargs -r kubectl delete --wait=false || true
 
-        echo "Deleting IPv4 shared cross-project pool + RBAC..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-shared-prefix --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-shared-pool-user --ignore-not-found || true
-        for n in $(seq 0 ${LAST}); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-shared-pool-user-ipam-perf-${n} --ignore-not-found || true
-        done
+        # Report what actually survived. A cleanup that cannot tell you it left
+        # something behind is worse than one that fails.
+        pools_left=$(for p in $POOLS; do kubectl get ippool.ipam.miloapis.com "$p" -o name 2>/dev/null || true; done | grep -c . || true)
+        classes_left=$(for c in $CLASSES; do kubectl get ipclass.ipam.miloapis.com "$c" -o name 2>/dev/null || true; done | grep -c . || true)
+        if [ "$pools_left" -gt 0 ] || [ "$classes_left" -gt 0 ]; then
+          echo "" >&2
+          echo "INCOMPLETE: ${pools_left} pool(s) and ${classes_left} class(es) remain." >&2
+          cat "{{.ROOT_DIR}}/test/load/CLEANUP-INCOMPLETE.md" >&2
+          exit 1
+        fi
 
-        echo "Deleting IPv6 shared cross-project pool + RBAC..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-ipv6-shared --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-ipv6-shared-pool-user --ignore-not-found || true
-        for n in $(seq 0 ${LAST}); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-ipv6-shared-pool-user-ipam-perf-${n} --ignore-not-found || true
-        done
+        # RBAC goes LAST, and only once the fixtures are actually gone.
+        #
+        # It used to be deleted before this check, which quietly removed the
+        # ability to finish the job: the recovery for a surviving pool is to
+        # delete its tenant claims by IMPERSONATING their owner, and the
+        # impersonated user gets its ipclaims verbs from perf-tenant-claimer.
+        # Deleting that first made the documented recovery return 403 — found by
+        # following CLEANUP-INCOMPLETE.md and watching step 2 fail.
+        echo "==> class-consumption RBAC"
+        kubectl get clusterrolebinding -o name 2>/dev/null \
+          | grep '^clusterrolebinding.rbac.authorization.k8s.io/perf-class-user-' \
+          | xargs -r kubectl delete --ignore-not-found || true
+        kubectl delete clusterrole perf-class-user --ignore-not-found || true
 
-        echo "Deleting exhaust pool + RBAC (pool-exhaustion.js setup leaks)..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-exhaust-pool --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrole perf-exhaust-pool-user --ignore-not-found || true
-        for n in $(seq 0 ${LAST}); do
-          KUBECONFIG={{.KUBECONFIG}} kubectl delete clusterrolebinding perf-exhaust-pool-user-ipam-perf-${n} --ignore-not-found || true
-        done
+        echo "==> impersonated-tenant RBAC"
+        kubectl delete clusterrolebinding perf-tenant-claimer --ignore-not-found || true
+        kubectl delete clusterrole perf-tenant-claimer --ignore-not-found || true
 
-        echo "Deleting per-test scratch pools..."
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpool.ipam.miloapis.com perf-asn-classref-pool --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete asnpoolclass.ipam.miloapis.com perf-asn-classref --ignore-not-found || true
-        KUBECONFIG={{.KUBECONFIG}} kubectl delete ippool.ipam.miloapis.com perf-host-claim-pool --ignore-not-found || true
-
-        echo "Cleanup complete."
+        if [ "${visible_before}" -eq 0 ]; then
+          echo "cleanup finished, but NOTHING WAS VISIBLE TO DELETE."
+          echo "  That is either an already-clean cluster or an identity problem,"
+          echo "  and this task cannot tell the two apart. Check the database,"
+          echo "  which is the only instrument that does not depend on who is asking:"
+          echo "    select kind, count(*) from ipam_objects where key like '%perf-%' group by kind;"
+        else
+          echo "cleanup complete (${visible_before} fixture object(s) removed, 0 remain)."
+        fi

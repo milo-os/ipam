@@ -14,7 +14,7 @@ import (
 )
 
 func newPoolTreeCommand(a *app) *cobra.Command {
-	var withPrefixes bool
+	var withAllocations bool
 	cmd := &cobra.Command{
 		Use:   "tree [name]",
 		Short: "Render the pool hierarchy as a tree",
@@ -23,7 +23,7 @@ func newPoolTreeCommand(a *app) *cobra.Command {
 every level. Pass a pool name to root the tree there; omit it to show all roots.
 The layout is computed client-side from data the API already returns.`,
 		Example: `  datumctl ipam pool tree
-  datumctl ipam pool tree prod-backbone --prefixes`,
+  datumctl ipam pool tree prod-backbone --allocations`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cs, ns, err := a.client()
 			if err != nil {
@@ -35,14 +35,15 @@ The layout is computed client-side from data the API already returns.`,
 			}
 			pools := list.Items
 
-			// Optionally gather claims as leaf prefixes under their pool.
-			leaves := map[string][]ipamv1alpha1.IPClaim{}
-			if withPrefixes {
-				if claims, cErr := cs.IpamV1alpha1().IPClaims(ns).List(context.Background(), metav1.ListOptions{}); cErr == nil {
-					for i := range claims.Items {
-						if r := claims.Items[i].Spec.PoolRef; r != nil {
-							leaves[r.Name] = append(leaves[r.Name], claims.Items[i])
-						}
+			// Optionally gather allocations as leaves under their pool. Allocations
+			// rather than claims: they are what actually occupies space in a pool,
+			// including reservations and retained addresses no claim points at.
+			leaves := map[string][]ipamv1alpha1.IPAllocation{}
+			if withAllocations {
+				if allocs, aErr := cs.IpamV1alpha1().IPAllocations(ns).List(context.Background(), metav1.ListOptions{}); aErr == nil {
+					for i := range allocs.Items {
+						poolName := allocs.Items[i].Spec.PoolRef.Name
+						leaves[poolName] = append(leaves[poolName], allocs.Items[i])
 					}
 				}
 			}
@@ -79,7 +80,7 @@ The layout is computed client-side from data the API already returns.`,
 			return tw.Flush()
 		},
 	}
-	cmd.Flags().BoolVar(&withPrefixes, "prefixes", false, "Include leaf prefixes (claims) under each pool")
+	cmd.Flags().BoolVar(&withAllocations, "allocations", false, "Include the allocations held under each pool")
 	return cmd
 }
 
@@ -130,13 +131,13 @@ func indexByParent(pools []ipamv1alpha1.IPPool) map[string][]ipamv1alpha1.IPPool
 }
 
 // printTreeNode renders one pool and recurses into its children and (optional)
-// leaf prefixes. prefix is the accumulated indentation; isLast controls the
+// leaf allocations. indent is the accumulated indentation; isLast controls the
 // connector glyph; isRoot suppresses a connector for top-level nodes.
 func (a *app) printTreeNode(
 	w io.Writer,
 	pool ipamv1alpha1.IPPool,
 	byParent map[string][]ipamv1alpha1.IPPool,
-	leaves map[string][]ipamv1alpha1.IPClaim,
+	leaves map[string][]ipamv1alpha1.IPAllocation,
 	indent string,
 	isLast bool,
 	isRoot bool,
@@ -167,28 +168,28 @@ func (a *app) printTreeNode(
 	_, _ = fmt.Fprintln(w, line)
 
 	children := byParent[pool.Name]
-	claims := leaves[pool.Name]
+	allocs := leaves[pool.Name]
 
 	for i := range children {
-		last := i == len(children)-1 && len(claims) == 0
+		last := i == len(children)-1 && len(allocs) == 0
 		a.printTreeNode(w, children[i], byParent, leaves, childIndent, last, false)
 	}
-	for i := range claims {
-		last := i == len(claims)-1
-		a.printPrefixLeaf(w, claims[i], childIndent, last)
+	for i := range allocs {
+		last := i == len(allocs)-1
+		a.printAllocationLeaf(w, &allocs[i], childIndent, last)
 	}
 }
 
-func (a *app) printPrefixLeaf(w io.Writer, claim ipamv1alpha1.IPClaim, indent string, isLast bool) {
+func (a *app) printAllocationLeaf(w io.Writer, al *ipamv1alpha1.IPAllocation, indent string, isLast bool) {
 	connector := "├─ "
 	if isLast {
 		connector = "└─ "
 	}
-	cidr := claim.Status.AllocatedCIDR
-	owner := "—"
-	if claim.Spec.OwnerRef != nil && claim.Spec.OwnerRef.Name != "" {
-		owner = claim.Spec.OwnerRef.Name
+	holder := formatObjectRef(al.Spec.OwnerRef)
+	if holder == "—" {
+		holder = allocationClaimName(al)
 	}
-	_, _ = fmt.Fprintf(w, "%s%s\t%s\t%s\t─\t(prefix · %s)\n",
-		indent+connector, claim.Name, orDash(cidr), orDash(string(claim.Spec.IPFamily)), owner)
+	_, _ = fmt.Fprintf(w, "%s%s\t%s\t%s\t─\t(%s · %s)\n",
+		indent+connector, al.Name, orDash(allocationAddress(al)),
+		orDash(string(al.Spec.IPFamily)), orDash(al.Spec.ClassName), holder)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,6 +20,14 @@ import (
 
 // FieldIndexes are the SQL expression indexes backing IPAllocation field
 // selectors declared in SelectableFields. Applied idempotently by SyncIndexes.
+// FieldIndexes are the SQL expression indexes backing IPAllocation field
+// selectors. Applied idempotently by SyncIndexes at startup.
+//
+// These must stay in step with migrations/002_class_model.sql. SyncIndexes runs
+// immediately after goose with CREATE INDEX IF NOT EXISTS, so an entry here for
+// an index the migration drops would recreate it seconds later and make the
+// migration a no-op — and a path the migration indexes but this list omits is
+// only indexed until someone rebuilds from Go.
 var FieldIndexes = []fieldindex.FieldIndex{
 	{
 		IndexName:  "idx_ipam_ipallocation_ip_family",
@@ -27,6 +36,25 @@ var FieldIndexes = []fieldindex.FieldIndex{
 	{
 		IndexName:  "idx_ipam_ipallocation_pool_ref_name",
 		Expression: `((ipam_data_to_jsonb(data) -> 'spec' -> 'poolRef' ->> 'name')) WHERE kind = 'IPAllocation'`,
+	},
+	{
+		// "Everything this class has handed out" — the class inventory, and the
+		// unit quota attributes usage to.
+		IndexName:  "idx_ipam_ipallocation_class_name",
+		Expression: `((ipam_data_to_jsonb(data) -> 'spec' ->> 'className')) WHERE kind = 'IPAllocation'`,
+	},
+	{
+		// "Which allocation is this claim bound to" on release, and — with the
+		// expression IS NULL — the retained-with-no-claim list a lease expiry
+		// sweep walks.
+		IndexName:  "idx_ipam_ipallocation_claim_ref_name",
+		Expression: `((ipam_data_to_jsonb(data) -> 'spec' -> 'claimRef' ->> 'name')) WHERE kind = 'IPAllocation'`,
+	},
+	{
+		// "Every allocation in this address space" — the inventory view, and the
+		// cross-check that the exclusion constraint and the object store agree.
+		IndexName:  "idx_ipam_ipallocation_scope_digest",
+		Expression: `((ipam_data_to_jsonb(data) -> 'status' ->> 'scopeDigest')) WHERE kind = 'IPAllocation'`,
 	},
 }
 
@@ -69,16 +97,53 @@ func (ipAllocationStrategy) AllowCreateOnUpdate() bool      { return false }
 func (ipAllocationStrategy) AllowUnconditionalUpdate() bool { return true }
 func (ipAllocationStrategy) Canonicalize(_ runtime.Object)  {}
 
+// ValidateUpdate freezes the whole spec.
+//
+// An IPAllocation is a RECORD of a completed allocation, not a request for one.
+// Every field in its spec is derived by the server at bind time from the claim
+// and its class, so no client has standing to edit any of it. The system's own
+// mutations — clearing claimRef under Retain, rebinding it on reclaim, the
+// lease sweeper's marks — write through allocator.updateObject inside the
+// allocation transaction and never reach this strategy, so freezing here costs
+// them nothing.
+//
+// # Why the whole spec, compared structurally, rather than a list of fields
+//
+// This used to name ipFamily and poolRef, which left className, purpose, scope,
+// claimRef, reclaimPolicy and ownerRef editable. spec.scope being editable is
+// what made status.scopeDigest able to go stale (#82), the same asymmetry #79
+// fixed on IPPool. A named list is a list someone has to remember to extend: add
+// a spec field and it is mutable by default, silently. A structural comparison
+// covers new fields the moment they exist.
+//
+// # Why freezing rather than recomputing the digest
+//
+// The obvious reading of #82 is to copy #79's fix — recompute status.scopeDigest
+// from spec.Scope in PrepareForUpdate. That would be wrong here, and the
+// difference is worth stating because the code shapes are identical.
+//
+// Nothing reads IPAllocation.Spec.Scope. Every digest in the service derives
+// from the CLAIM's scope: claim.Spec.Scope becomes uniqueDigest, which is
+// written to this object, to ipam_cidr_allocations.scope_digest, and to the
+// reclaim request. The stored column is what the exclusion constraint compares,
+// and it is what status.scopeDigest is documented to mean — "the value
+// uniqueness is enforced on". Recomputing status from a spec field nothing else
+// consults would make it disagree with that column: a confident wrong answer to
+// exactly the question asked during an incident, in place of a merely stale one.
+//
+// Applying a fix across a semantic boundary because the code shape matched is
+// how #64 happened. Freezing removes the staleness without inventing a second
+// source of truth.
 func (ipAllocationStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
 	n := obj.(*ipam.IPAllocation)
 	o := old.(*ipam.IPAllocation)
 	allErrs := validateIPAllocation(n)
-	specPath := field.NewPath("spec")
-	if n.Spec.IPFamily != o.Spec.IPFamily {
-		allErrs = append(allErrs, field.Forbidden(specPath.Child("ipFamily"), "spec.ipFamily is immutable"))
-	}
-	if n.Spec.PoolRef.Name != o.Spec.PoolRef.Name {
-		allErrs = append(allErrs, field.Forbidden(specPath.Child("poolRef"), "spec.poolRef is immutable"))
+
+	if !equality.Semantic.DeepEqual(n.Spec, o.Spec) {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec"),
+			"spec is immutable: an IPAllocation records an allocation the server "+
+				"already made. To release the address, delete the owning IPClaim; "+
+				"to force-release a retained one, delete the IPAllocation"))
 	}
 	return allErrs
 }
@@ -131,6 +196,9 @@ func SelectableFields(a *ipam.IPAllocation) fields.Set {
 	specific := fields.Set{
 		"spec.ipFamily":     string(a.Spec.IPFamily),
 		"spec.poolRef.name": a.Spec.PoolRef.Name,
+		// See the IPPool strategy: idx_ipam_ipallocation_scope_digest exists to
+		// serve this and nothing declared it.
+		"status.scopeDigest": a.Status.ScopeDigest,
 	}
 	return generic.MergeFieldsSets(objectMetaFields, specific)
 }

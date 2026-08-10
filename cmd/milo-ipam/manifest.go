@@ -12,7 +12,7 @@ import (
 
 const (
 	pluginName        = "ipam"
-	pluginDescription = "Manage IP address space (pools and prefixes) across the platform"
+	pluginDescription = "Manage IP address space (classes, claims, allocations, pools) across the platform"
 	// pluginAPIVersion is the version of the datumctl <-> plugin contract this
 	// binary speaks, not the IPAM API version.
 	pluginAPIVersion = 1

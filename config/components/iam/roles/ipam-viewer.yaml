@@ -8,6 +8,17 @@ metadata:
 spec:
   launchStage: Beta
   includedPermissions:
+    # Classes are readable by everyone who can claim, and that is load-bearing
+    # rather than a convenience. A claim names a class, so a consumer who cannot
+    # list classes has no way to discover what to name — the model is unusable
+    # even when the consumption gate would have passed. Reading a class is also
+    # how a consumer learns its address family and block size before asking.
+    #
+    # Read-only, and only read: authoring classes is a platform action. See the
+    # ipclass ProtectedResource for why it has no project parent.
+    - ipam.miloapis.com/ipclasses.list
+    - ipam.miloapis.com/ipclasses.get
+    - ipam.miloapis.com/ipclasses.watch
     - ipam.miloapis.com/ippools.list
     - ipam.miloapis.com/ippools.get
     - ipam.miloapis.com/ippools.watch

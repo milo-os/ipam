@@ -1,0 +1,63 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: ProtectedResource
+metadata:
+  name: ipam.miloapis.com-ipclass
+spec:
+  serviceRef:
+    name: "ipam.miloapis.com"
+  kind: IPClass
+  plural: ipclasses
+  singular: ipclass
+  permissions:
+    - list
+    - get
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+    - updateStatus
+    # "use" is the verb the class-consumption gate checks on every claim, in
+    # internal/access/class.go — a SubjectAccessReview for verb "use" on
+    # ipclasses/<name>. Without this registration the permission does not exist
+    # to be granted, and every claim against a shared- or consumer-visibility
+    # class is refused with "caller may not claim addresses of this class".
+    #
+    # This registration and ipam.miloapis.com-consumer's ipclasses.use grant are
+    # one mechanism in two files. Removing either breaks consumer claims.
+    - use
+
+# parentResources is deliberately absent, and this is a security boundary rather
+# than an omission.
+#
+# Declaring `resourcemanager.miloapis.com/Project` here — as ippool, ipclaim and
+# ipallocation all do — would let a PolicyBinding grant class permissions at a
+# project, so a tenant could author an IPClass. Do not add it to "let tenants
+# manage their own classes". Three things break:
+#
+#  1. A class is operator-authored policy about address space the tenant does
+#     not own. The whole premise of the model is that a consumer NAMES a class
+#     and never authors one, which is why IPClass is the one cluster-scoped
+#     resource here.
+#
+#  2. A tenant-authored class carrying the is-default-class annotation is
+#     resolved by OTHER tenants' claims, and by the platform's. The allocator's
+#     default-class lookup scans every IPClass in the database with no tenant
+#     predicate, while the registry's "at most one default per family" guard
+#     lists through the tenant-scoped store and therefore never sees the
+#     conflict it exists to prevent. One tenant can silently break every
+#     default-class claim in the cluster. Demonstrated 2026-08-08 against
+#     kind-test-infra; the asymmetry is real whether or not the grant exists,
+#     and omitting parentResources is what keeps it unreachable.
+#
+#  3. The class would be written under a project-scoped storage key, so it does
+#     not appear in `kubectl get ipclasses` for a platform operator. The object
+#     causing the outage is invisible to the person investigating it.
+#
+# Quota does the same thing for the same reason: quota.miloapis.com-claimcreationpolicy
+# and -grantcreationpolicy declare no parentResources, while allowancebucket —
+# an ordinary tenant-facing resource — declares Organization and Project. Policy
+# objects are platform-only; the things they govern are not.
+#
+# If classes ever genuinely need to be project-scoped, the fix is not this line.
+# It is to give the default-class lookup a tenant predicate first.

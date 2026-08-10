@@ -51,6 +51,26 @@ func (in IPClaimStatus) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IPClass) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPClass"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IPClassList) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPClassList"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IPClassSpec) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPClassSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in IPClassStatus) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPClassStatus"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in IPPool) OpenAPIModelName() string {
 	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.IPPool"
 }
@@ -76,11 +96,6 @@ func (in LocalRef) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
-func (in NamespacedRef) OpenAPIModelName() string {
-	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.NamespacedRef"
-}
-
-// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in ObjectRef) OpenAPIModelName() string {
 	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.ObjectRef"
 }
@@ -91,6 +106,21 @@ func (in PoolCapacity) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
-func (in PoolSelector) OpenAPIModelName() string {
-	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.PoolSelector"
+func (in PrefixLengthRange) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.PrefixLengthRange"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ReservationSpec) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.ReservationSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in RoutingSpec) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.RoutingSpec"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
+func (in ScopeRef) OpenAPIModelName() string {
+	return "com.miloapis.go.ipam.pkg.apis.ipam.v1alpha1.ScopeRef"
 }

@@ -82,9 +82,16 @@ func readDatumEnv() datumEnv {
 	}
 }
 
-// usable reports whether the Datum transport has everything it needs. We require
-// both an API host and a credentials helper; org/project may be empty for
-// platform-scoped callers.
+// usable reports whether the Datum transport has everything it needs. We
+// require both an API host and a credentials helper; org/project may be empty,
+// which makes the transport usable for the commands that do not address a
+// project's objects.
+//
+// An empty project is NOT "platform scope". Every IPAM object belongs to a
+// project, the platform's own included, and a request carrying no
+// iam.miloapis.com/parent-* extras addresses no keyspace: it lists nothing and
+// is refused on write. If a command needs to reach IPAM objects, it needs a
+// project — the platform's, if that is what is meant.
 func (d datumEnv) usable() bool {
 	return d.apiHost != "" && d.credHelper != ""
 }

@@ -6,6 +6,7 @@
 # configuration file in this directory.
 
 resources:
+  - ipclass.yaml
   - ippool.yaml
   - ipallocation.yaml
   - ipclaim.yaml

@@ -43,6 +43,39 @@ func TestClassifyErrorExitCodes(t *testing.T) {
 	}
 }
 
+// classifyError's fix text is printed for every noun and every verb, so it must
+// not name a remedy that only holds for one of them. The 403 fix used to explain
+// pool sharing — printed verbatim on a denied claim — and to point at the active
+// org/project, which selects a control plane on the datum transport and does
+// nothing at all on a kubeconfig.
+func TestClassifyErrorFixesAreTransportAndNounAgnostic(t *testing.T) {
+	banned := []string{"--project", "--org", "org/project", "shared into this project"}
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"forbidden", statusErr(403, metav1.StatusReasonForbidden, `ipclaims "p1" is forbidden`)},
+		{"unavailable", errors.New("dial tcp 1.2.3.4:443: connect: connection refused")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fix := classifyError(tc.err).fix
+			for _, b := range banned {
+				if strings.Contains(fix, b) {
+					t.Errorf("fix names %q, which is not a remedy on every transport:\n%s", b, fix)
+				}
+			}
+			// Continuation lines align under "Fix:  "; without the padding the
+			// block renders flush left and stops reading as one paragraph.
+			for _, line := range strings.Split(fix, "\n")[1:] {
+				if line != "" && !strings.HasPrefix(line, "       ") {
+					t.Errorf("continuation line is not indented to the Fix: block:\n%q", line)
+				}
+			}
+		})
+	}
+}
+
 func TestHTTPStatusCode(t *testing.T) {
 	if got := httpStatusCode(statusErr(507, "InsufficientStorage", "full")); got != 507 {
 		t.Fatalf("httpStatusCode = %d, want 507", got)
@@ -56,20 +89,23 @@ func TestHTTPStatusCode(t *testing.T) {
 }
 
 func TestExhaustionError(t *testing.T) {
-	ce := exhaustionError("env-pool", "IPv4", 22, 98, 24, nil)
+	// The caller named a class and a scope, never a pool, so the message has to
+	// work backwards to the pools that back the class.
+	ce := exhaustionError("tenant-endpoint-ipv4", "location=us-central-1 network=default",
+		[]string{"us-central-1-tenant  10.4.0.0/14  98% used"}, nil)
 	if ce.code != exitExhausted {
 		t.Fatalf("code = %d, want %d", ce.code, exitExhausted)
 	}
-	if !strings.Contains(ce.msg, "no free /22") {
-		t.Errorf("msg missing requested length: %q", ce.msg)
+	if !strings.Contains(ce.msg, "tenant-endpoint-ipv4") {
+		t.Errorf("msg missing class: %q", ce.msg)
 	}
-	if !strings.Contains(ce.msg, "/24") {
-		t.Errorf("msg missing largest available: %q", ce.msg)
+	if !strings.Contains(ce.msg, "location=us-central-1") {
+		t.Errorf("msg missing scope: %q", ce.msg)
 	}
-	if !strings.Contains(ce.msg, "98%") {
-		t.Errorf("msg missing utilization: %q", ce.msg)
+	if !strings.Contains(ce.msg, "us-central-1-tenant") || !strings.Contains(ce.msg, "98% used") {
+		t.Errorf("msg missing the pools backing the class: %q", ce.msg)
 	}
-	if !strings.Contains(ce.fix, "prefix list --pool env-pool") {
+	if !strings.Contains(ce.fix, "class show tenant-endpoint-ipv4") {
 		t.Errorf("fix missing remediation command: %q", ce.fix)
 	}
 }
@@ -101,7 +137,7 @@ func TestRenderExitSuccess(t *testing.T) {
 func TestRenderExitPrintsFixAndCode(t *testing.T) {
 	var errBuf strings.Builder
 	io := IOStreams{Out: &strings.Builder{}, ErrOut: &errBuf}
-	ce := exhaustionError("p", "IPv4", 22, 98, 24, nil)
+	ce := exhaustionError("tenant-endpoint-ipv4", "network=default", nil, nil)
 	code := renderExit(io, ce)
 	if code != exitExhausted {
 		t.Fatalf("code = %d, want %d", code, exitExhausted)

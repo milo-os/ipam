@@ -4,21 +4,55 @@ metadata:
   name: ipam.miloapis.com-admin
   annotations:
     kubernetes.io/display-name: IPAM Admin
-    kubernetes.io/description: "Full access to all IPAM resources"
+    kubernetes.io/description: "Full access to all IPAM resources, including authoring the class catalog"
 spec:
   launchStage: Beta
-  # Admin is the union of provider (pool CRUD + use) and consumer (claim CRUD),
-  # both of which inherit viewer (reads). On top it adds full management of the
-  # system-created IPAllocation records and the status subresource on every
-  # resource type.
+  # Admin is the union of provider (pool CRUD) and consumer (claim CRUD +
+  # ipclasses.use), both of which inherit viewer (reads). On top it adds the
+  # class catalog, full management of the system-created IPAllocation records,
+  # and the status subresource on every resource type.
   inheritedRoles:
     - name: ipam.miloapis.com-provider
     - name: ipam.miloapis.com-consumer
   includedPermissions:
-    - ipam.miloapis.com/ipallocations.create
-    - ipam.miloapis.com/ipallocations.update
-    - ipam.miloapis.com/ipallocations.patch
+    # Authoring the class catalog is an admin-only privilege and is the reason
+    # this role is meaningfully more than provider + consumer. A class fixes the
+    # shape of everything allocated under it — the pool chain, the block size,
+    # the uniqueness rule, the reservations — for every consumer that names it,
+    # and a class carrying the is-default-class annotation is resolved by claims
+    # that name no class at all, including the platform's own.
+    #
+    # Bind this at the platform, never at a project. The ipclass
+    # ProtectedResource declares no parentResources precisely so that a
+    # project-scoped binding of this role cannot exist; see that file for what
+    # breaks if someone adds one.
+    - ipam.miloapis.com/ipclasses.create
+    - ipam.miloapis.com/ipclasses.update
+    - ipam.miloapis.com/ipclasses.patch
+    - ipam.miloapis.com/ipclasses.delete
+    - ipam.miloapis.com/ipclasses.updateStatus
+
+    # ipallocations.create, .update and .patch were granted here until
+    # 2026-08-08 and are deliberately gone. They were never usable and granting
+    # them was actively misleading.
+    #
+    # An IPAllocation is a RECORD of an allocation the server already made, not
+    # a request for one. The object and the ipam_cidr_allocations row that
+    # actually holds the address are written together, in the claim's
+    # transaction. A hand-created allocation gets the object without the row: it
+    # names an address, holds nothing, blocks nothing, and reads to an auditor
+    # as a double allocation. An edited one desynchronises the object from the
+    # row that uniqueness is genuinely enforced on.
+    #
+    # The server now refuses both (internal/registry/ipam/ipallocation), so
+    # these grants would have produced a 403 from IPAM after RBAC allowed the
+    # verb — the same two-layer confusion that made the pre-class-model consumer
+    # role so hard to diagnose. See the note in ipam-consumer.yaml.
+    #
+    # To release an address: delete the owning IPClaim. To force-release a
+    # retained one: delete the IPAllocation — which is why .delete stays.
     - ipam.miloapis.com/ipallocations.delete
+
     - ipam.miloapis.com/ippools.updateStatus
     - ipam.miloapis.com/ipclaims.updateStatus
     - ipam.miloapis.com/ipallocations.updateStatus

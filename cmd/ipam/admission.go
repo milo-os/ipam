@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/admission"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -168,13 +171,230 @@ func consumerContextFilter(apiHandler http.Handler) http.Handler {
 		case id.Org() != "":
 			ctx = milorequest.WithOrganization(ctx, id.Org())
 		default:
-			// Platform-scoped (or unscoped) request: no project/org is set on
-			// the context. The platform-consumer guard admission plugin will
-			// fail-closed on quota-protected creates that reach this state.
+			// The request carries no project and no organization, so nothing is
+			// set on the context.
+			//
+			// This is NOT "platform-scoped", which is what this comment used to
+			// say. The platform is an ordinary project named by
+			// --platform-project and a platform caller lands in the first case
+			// above like any other tenant. Reaching here means the request named
+			// no tenant at all.
+			//
+			// For writes it is also unreachable: isUntenantedWrite above already
+			// refused this request. The platform-consumer guard remains as the
+			// fail-closed backstop for the quota path, since milo's quota plugin
+			// falls back to a loopback-root client rather than denying when it
+			// finds no consumer on the context.
 		}
 
 		apiHandler.ServeHTTP(w, req.WithContext(ctx))
 	})
+}
+
+// installRequestFilters installs every API-handler wrapper, in order, and is
+// the single place that decides which of them are conditional.
+//
+// It exists because that decision was previously spread across an `if
+// o.EnableQuota` block in Config(), and the untenanted-write gate was inside
+// it. The dev overlay sets ENABLE_QUOTA=false, so the gate was inert on every
+// dev cluster and in every e2e and load run — measured after it had supposedly
+// landed: an unimpersonated kubectl created an IPPool at an unprefixed key.
+//
+// Collecting them here makes "which filters are unconditional" a property of
+// one function that a test can assert, rather than a fact spread across a
+// branch. TestTenancyFiltersAreInstalledWithoutQuota pins it.
+//
+// Order matters and is the reverse of installation: the first installed runs
+// first. Platform project before the write gate, so the request is fully
+// described before anything judges it; the quota consumer context last,
+// immediately before dispatch.
+func installRequestFilters(genericConfig *genericapiserver.RecommendedConfig, platformProject string, enableQuota bool) {
+	// Unconditional: every request needs to know which project is the platform,
+	// whether or not quota is enforced.
+	installPlatformProjectFilter(genericConfig, platformProject)
+
+	// Unconditional, and for a stronger reason: tenancy is not a quota concern.
+	// Quota decides whether a project may have another address; this decides
+	// whether there is a project at all. A deployment that turns quota off is
+	// not asking to accept writes from nobody.
+	installUntenantedWriteFilter(genericConfig)
+
+	// Conditional: mirroring the tenant onto milo's request keys is meaningless
+	// without the quota plugin reading them.
+	if enableQuota {
+		installConsumerContextFilter(genericConfig)
+	}
+}
+
+// untenantedWriteFilter refuses a write from a caller carrying no project.
+//
+// # Why this is its own filter rather than part of consumerContextFilter
+//
+// It was part of it, and that made the gate inert wherever it matters most.
+// consumerContextFilter is installed only under --enable-quota, because
+// mirroring the tenant onto milo's request keys is meaningless without the
+// quota plugin reading them. The dev overlay sets ENABLE_QUOTA=false, so every
+// Chainsaw suite and every k6 run drove a server with no gate — and an
+// unimpersonated kubectl could still create an IPPool at an unprefixed key,
+// measured on the dev cluster after the fix had supposedly landed.
+//
+// The bitter part is that isUntenantedWrite's own comment identified this
+// hazard — "admission only installs alongside the quota plugin, so a server
+// without --enable-quota had no refusal at all" — as the reason NOT to put the
+// gate in admission. Moving it to the handler chain fixed that, and then
+// installing it inside the same `if o.EnableQuota` reintroduced it one level up.
+// Two lines earlier, installPlatformProjectFilter is unconditional with the
+// comment "every request needs to know which project is the platform, whether
+// or not quota is enforced". The same sentence applies to tenancy, and this
+// filter now gets the same treatment.
+//
+// Tenancy is not a quota concern. Quota decides whether a project may have
+// another address; tenancy decides whether there is a project at all. A
+// deployment that turns quota off is not asking to accept writes from nobody.
+func untenantedWriteFilter(apiHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if isUntenantedWrite(req, tenant.FromContext(req.Context())) {
+			rejectUntenantedWrite(w, req)
+			return
+		}
+		apiHandler.ServeHTTP(w, req)
+	})
+}
+
+// installUntenantedWriteFilter installs the write gate as an API-handler
+// wrapper. It must be installed UNCONDITIONALLY — see untenantedWriteFilter.
+//
+// Install it after installPlatformProjectFilter so the platform project is on
+// the context first; the gate does not need it today, but a filter that runs
+// before the request is fully described is a trap for whoever extends it.
+func installUntenantedWriteFilter(genericConfig *genericapiserver.RecommendedConfig) {
+	prev := genericConfig.BuildHandlerChainFunc
+	if prev == nil {
+		prev = genericapiserver.DefaultBuildHandlerChain
+	}
+	genericConfig.BuildHandlerChainFunc = func(apiHandler http.Handler, c *genericapiserver.Config) http.Handler {
+		return prev(untenantedWriteFilter(apiHandler), c)
+	}
+}
+
+// ipamAPIPrefix is the path prefix every request for an IPAM resource carries.
+// Discovery, healthz, readyz, metrics and openapi live outside it and are
+// deliberately untouched by the write gate — they are reads, and a monitoring
+// scrape has no project.
+const ipamAPIPrefix = "/apis/ipam.miloapis.com/"
+
+// isUntenantedWrite reports whether this request mutates an IPAM resource while
+// carrying no project.
+//
+// Every object this service stores belongs to a project, the platform's own
+// included. A caller with no project therefore has nowhere legitimate to write,
+// and before this gate the write succeeded — landing at an unprefixed key in a
+// keyspace no read path consults, and answering 201 Created for an object
+// nothing would ever find.
+//
+// The gate is here, in the handler chain, rather than in admission or in each
+// REST implementation. Admission only installs alongside the quota plugin, so a
+// server without --enable-quota had no refusal at all; and the four REST
+// implementations expose eleven separate write entrypoints between them, which
+// is a list someone has to remember to extend. This filter already runs after
+// authentication and before dispatch, and it sees every verb on every resource.
+//
+// Reads are intentionally not gated. An untenanted read already returns
+// nothing, which is the tenancy model working rather than failing — and it is
+// the documented answer to "why does my kubectl show zero pools".
+//
+// # Collection deletes are not gated either, and that is not a loophole
+//
+// Refusing them broke namespace deletion for the whole cluster. Kubernetes'
+// namespace controller must DELETE-collection every namespaced type before it
+// can drop the `kubernetes` finalizer, and it is a cluster-internal controller
+// carrying no project extras. Two refusals — ipclaims and ipallocations —
+// produced `NamespaceDeletionContentFailure: "Failed to delete all resource
+// types, 2 remaining: unknown, unknown"`, where "unknown" is the body of this
+// gate's own 403. Every namespace deletion hung forever, including namespaces
+// containing no IPAM objects at all, because the controller sweeps every type
+// regardless of contents.
+//
+// The exemption is narrow and rests on the same argument the read exemption
+// does: a caller with no project has no keyspace, so a collection delete
+// targets nothing and removes nothing. The 403 was pure cost — it prevented no
+// write, because there was no write to prevent. What #78 was actually about is
+// a NAMED write creating or altering an object at an unprefixed key, and that
+// stays refused.
+//
+// Deliberately keyed on RequestInfo rather than on the URL shape. The apiserver
+// has already parsed the request by the time this filter runs, so asking it is
+// exact; inferring "no name segment therefore a collection" from the path is
+// the kind of reimplementation that drifts from the thing it mirrors.
+func isUntenantedWrite(req *http.Request, id tenant.Identity) bool {
+	if id.Name != "" {
+		return false
+	}
+	if !strings.HasPrefix(req.URL.Path, ipamAPIPrefix) {
+		return false
+	}
+	if isCollectionDelete(req) {
+		return false
+	}
+	switch req.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+// isCollectionDelete reports whether this is a DELETE against a collection
+// rather than a named object — the verb the namespace controller issues when
+// tearing a namespace down.
+//
+// Falls back to the path when RequestInfo is absent, which happens only if this
+// filter is ever installed outside the apiserver's chain. The fallback errs
+// toward treating a delete as NAMED, so an unparseable request stays refused
+// rather than silently exempt.
+func isCollectionDelete(req *http.Request) bool {
+	if req.Method != http.MethodDelete {
+		return false
+	}
+	if info, ok := genericapirequest.RequestInfoFrom(req.Context()); ok {
+		return info.IsResourceRequest && info.Verb == "deletecollection"
+	}
+	// No RequestInfo: a collection delete has no name segment after the
+	// resource. Trailing slashes are tolerated; anything else is named.
+	trimmed := strings.TrimSuffix(req.URL.Path, "/")
+	parts := strings.Split(strings.TrimPrefix(trimmed, ipamAPIPrefix), "/")
+	// <version>/<resource> or <version>/namespaces/<ns>/<resource>
+	return len(parts) == 2 || len(parts) == 4
+}
+
+// rejectUntenantedWrite writes the 403 for a write that carries no project.
+//
+// It is a 403 rather than a 400 because this is an authorization statement: the
+// caller authenticated successfully and simply has no project to write into.
+// The message names the extra that carries the project, because the usual cause
+// is a kubeconfig that talks to IPAM directly instead of through Milo's front
+// gate — which is exactly how every pre-cutover e2e suite came to author its
+// catalog into a keyspace production would never have.
+func rejectUntenantedWrite(w http.ResponseWriter, req *http.Request) {
+	klog.V(2).InfoS("rejecting untenanted write",
+		"path", req.URL.Path, "verb", req.Method)
+
+	status := apierrors.NewForbidden(
+		schema.GroupResource{Group: "ipam.miloapis.com"}, "",
+		fmt.Errorf("writes must be scoped to a project: this request carries no %s "+
+			"extra, so it has no keyspace to write into. Route the request through "+
+			"Milo's front gate, or use the platform project's credentials for "+
+			"platform-owned objects", tenant.ExtraParentName),
+	).ErrStatus
+
+	body, err := json.Marshal(status)
+	if err != nil {
+		http.Error(w, "forbidden: writes must be scoped to a project", http.StatusForbidden)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	_, _ = w.Write(body)
 }
 
 // installConsumerContextFilter sets BuildHandlerChainFunc so the consumer
@@ -192,8 +412,8 @@ func installConsumerContextFilter(genericConfig *genericapiserver.RecommendedCon
 const platformConsumerGuardName = "IPAMPlatformConsumerGuard"
 
 // quotaProtectedResources is the set of IPAM resources whose creation is
-// subject to quota enforcement. A platform-scoped create of one of these with
-// no derivable consumer is rejected fail-closed (see platformConsumerGuard).
+// subject to quota enforcement. A create of one of these carrying no derivable
+// consumer is rejected fail-closed (see platformConsumerGuard).
 //
 // Only claims consume quota: pools are infrastructure objects and allocations
 // are system-created inside the claim transaction. Keeping this list explicit
@@ -205,9 +425,15 @@ var quotaProtectedResources = map[schema.GroupResource]struct{}{
 }
 
 // platformConsumerGuard is an IPAM-local validating admission plugin ordered
-// before the quota plugin. It enforces the platform "explicit consumer
-// required" rule: a CREATE of a quota-protected resource that carries no
-// project/org context (i.e. a platform-scoped request) is denied with 403.
+// before the quota plugin. It enforces the "explicit consumer required" rule: a
+// CREATE of a quota-protected resource that carries no project/org context is
+// denied with 403.
+//
+// "No project/org context" does not mean "the platform". A platform caller is
+// scoped to the project named by --platform-project and carries it like any
+// tenant; reaching this guard means the request named no tenant at all. The
+// name predates platform-as-a-project and is kept only because renaming an
+// admission plugin changes a string operators may have configured.
 //
 // Why a guard instead of context mutation: milo's quota plugin reads the
 // consumer from request context ONLY and, when none is present, falls back to a

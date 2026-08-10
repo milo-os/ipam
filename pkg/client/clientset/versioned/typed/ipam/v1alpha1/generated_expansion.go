@@ -6,4 +6,6 @@ type IPAllocationExpansion interface{}
 
 type IPClaimExpansion interface{}
 
+type IPClassExpansion interface{}
+
 type IPPoolExpansion interface{}

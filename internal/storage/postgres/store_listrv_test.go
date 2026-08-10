@@ -59,12 +59,16 @@ func TestGetList_ResourceVersionAfterChangelogPruned(t *testing.T) {
 		key  string
 	}{
 		{
-			name: "platform scope",
-			ctx:  func() context.Context { return context.Background() },
+			// The platform is an ordinary project, not the absence of one.
+			// This case used to pass context.Background() and write into the
+			// unprefixed keyspace — the very thing the write gate now refuses,
+			// and a population production would never have.
+			name: "platform project",
+			ctx:  func() context.Context { return withProject(context.Background(), "milo-platform") },
 			key:  "/ipam.miloapis.com/ippools",
 		},
 		{
-			name: "project scope",
+			name: "tenant project",
 			ctx:  func() context.Context { return withProject(context.Background(), "datum-cloud") },
 			key:  "/ipam.miloapis.com/ippools",
 		},
@@ -123,7 +127,9 @@ func TestGetList_ResourceVersionAfterChangelogPruned(t *testing.T) {
 // reflects ipam_objects even when the changelog is empty.
 func TestCurrentResourceVersion_AnchoredOnObjects(t *testing.T) {
 	s := newTestStore(t)
-	ctx := context.Background()
+	// Writes must be project-scoped: every object this service stores belongs
+	// to a project, so a test that writes needs one like any other caller.
+	ctx := withProject(context.Background(), "datum-cloud")
 
 	// Several creates so the surviving object's RV is well above the
 	// fallback value of 1 — this is what distinguishes "anchored on

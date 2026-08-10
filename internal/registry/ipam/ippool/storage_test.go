@@ -1,7 +1,7 @@
 package ippool
 
 import (
-	"math"
+	"math/big"
 	"net"
 	"testing"
 
@@ -31,10 +31,8 @@ func TestSetPoolStatusCapacity(t *testing.T) {
 		parents         []net.IPNet
 		allocations     []net.IPNet
 		wantFamily      ipam.IPFamily
-		wantUtilization int32
-		wantLargestFree int32
-		wantTotalAtMost int64 // 0 means "exact match against wantTotal"
-		wantTotal       int64
+		wantUtilization float64
+		wantTotal       string
 	}{
 		{
 			name:            "IPv4 child pool reports exact counts",
@@ -42,9 +40,8 @@ func TestSetPoolStatusCapacity(t *testing.T) {
 			parents:         []net.IPNet{mustCIDR(t, "10.0.0.0/16")},
 			allocations:     []net.IPNet{mustCIDR(t, "10.0.0.0/24"), mustCIDR(t, "10.0.1.0/25")},
 			wantFamily:      ipam.IPv4,
-			wantUtilization: 0, // 384 / 65536 rounds down to 0%
-			wantLargestFree: 17,
-			wantTotal:       65536,
+			wantUtilization: 0.5859, // 384 / 65536 — used to truncate to 0%
+			wantTotal:       "65536",
 		},
 		{
 			name:            "IPv4 half allocated",
@@ -53,8 +50,7 @@ func TestSetPoolStatusCapacity(t *testing.T) {
 			allocations:     []net.IPNet{mustCIDR(t, "10.0.0.0/25")},
 			wantFamily:      ipam.IPv4,
 			wantUtilization: 50,
-			wantLargestFree: 25,
-			wantTotal:       256,
+			wantTotal:       "256",
 		},
 		{
 			name:            "IPv6 wide pool does not overflow",
@@ -62,9 +58,8 @@ func TestSetPoolStatusCapacity(t *testing.T) {
 			parents:         []net.IPNet{mustCIDR(t, "2001:db8::/44")},
 			allocations:     []net.IPNet{mustCIDR(t, "2001:db8::/48")},
 			wantFamily:      ipam.IPv6,
-			wantUtilization: 6, // one /48 of sixteen /48s = 6.25% -> 6
-			wantLargestFree: 45,
-			wantTotalAtMost: math.MaxInt64,
+			wantUtilization: 6.25,                         // one /48 of sixteen /48s, exactly
+			wantTotal:       "19342813113834066795298816", // 2^84, a /44
 		},
 		{
 			name:            "IPv6 empty pool",
@@ -73,8 +68,7 @@ func TestSetPoolStatusCapacity(t *testing.T) {
 			allocations:     nil,
 			wantFamily:      ipam.IPv6,
 			wantUtilization: 0,
-			wantLargestFree: 40,
-			wantTotalAtMost: math.MaxInt64,
+			wantTotal:       "309485009821345068724781056", // 2^88, a /40
 		},
 	}
 
@@ -87,28 +81,26 @@ func TestSetPoolStatusCapacity(t *testing.T) {
 				t.Errorf("ipFamily: got %q, want %q", s.IPFamily, tt.wantFamily)
 			}
 			if s.UtilizationPercent != tt.wantUtilization {
-				t.Errorf("utilizationPercent: got %d, want %d", s.UtilizationPercent, tt.wantUtilization)
+				t.Errorf("utilizationPercent: got %g, want %g", s.UtilizationPercent, tt.wantUtilization)
 			}
 			if s.UtilizationPercent < 0 || s.UtilizationPercent > 100 {
-				t.Errorf("utilizationPercent %d out of [0,100]", s.UtilizationPercent)
+				t.Errorf("utilizationPercent %g out of [0,100]", s.UtilizationPercent)
 			}
-			if s.LargestFreePrefix != tt.wantLargestFree {
-				t.Errorf("largestFreePrefix: got %d, want %d", s.LargestFreePrefix, tt.wantLargestFree)
-			}
-
 			// Capacity counts must never be negative regardless of family.
-			if s.Capacity.Total < 0 || s.Capacity.Allocated < 0 || s.Capacity.Available < 0 {
+			// Counts are unsigned decimal by construction now — a negative one
+			// cannot be represented, so this checks they parse at all.
+			if bigStr(t, s.Capacity.Total).Sign() < 0 || bigStr(t, s.Capacity.Allocated).Sign() < 0 || bigStr(t, s.Capacity.Available).Sign() < 0 {
 				t.Errorf("capacity has negative field: %+v", s.Capacity)
 			}
-			if s.Capacity.Allocated > s.Capacity.Total {
-				t.Errorf("allocated %d exceeds total %d", s.Capacity.Allocated, s.Capacity.Total)
+			if bigStr(t, s.Capacity.Allocated).Cmp(bigStr(t, s.Capacity.Total)) > 0 {
+				t.Errorf("allocated %s exceeds total %s", s.Capacity.Allocated, s.Capacity.Total)
 			}
-			if tt.wantTotalAtMost != 0 {
-				if s.Capacity.Total > tt.wantTotalAtMost {
-					t.Errorf("total %d exceeds saturation cap %d", s.Capacity.Total, tt.wantTotalAtMost)
-				}
-			} else if s.Capacity.Total != tt.wantTotal {
-				t.Errorf("total: got %d, want %d", s.Capacity.Total, tt.wantTotal)
+			// Exact for every family. There used to be a wantTotalAtMost escape
+			// here, because IPv6 totals saturated at MaxInt64 and could only be
+			// bounded rather than asserted. They are exact decimal strings now,
+			// so every case states the real number.
+			if s.Capacity.Total != tt.wantTotal {
+				t.Errorf("total: got %s, want %s", s.Capacity.Total, tt.wantTotal)
 			}
 		})
 	}
@@ -173,4 +165,18 @@ func TestEffectiveIPFamily(t *testing.T) {
 			}
 		})
 	}
+}
+
+// bigStr parses a capacity count, failing the test rather than returning a
+// zero that would silently satisfy a comparison.
+func bigStr(t *testing.T, s string) *big.Int {
+	t.Helper()
+	if s == "" {
+		return new(big.Int)
+	}
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		t.Fatalf("capacity count %q is not a decimal integer", s)
+	}
+	return v
 }

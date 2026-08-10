@@ -10,6 +10,7 @@ package apiserver
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,12 +21,14 @@ import (
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/klog/v2"
 
-	_ "go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
+	_ "go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipallocation"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipclaim"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipclass"
 	"go.miloapis.com/ipam/internal/registry/ipam/ippool"
+	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/pkg/apis/ipam/install"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -62,10 +65,44 @@ type ExtraConfig struct {
 	// AllocatorPool is the pgx pool the allocators commit against. The claim
 	// REST handlers open transactions on this pool. Required.
 	AllocatorPool *pgxpool.Pool
-	// PoolChecker authorises cross-project IPClaim creates via
-	// SubjectAccessReview. nil bypasses the check (e.g. when no authorizer
-	// is configured).
-	PoolChecker access.PoolAccessChecker
+	// LeaseSweepInterval is how often the retention-lease sweeper runs. Zero
+	// disables it entirely.
+	//
+	// Disabled and enabled are both safe defaults here, because expiry is
+	// already off unless a class or pool states a lease — a running sweeper with
+	// no leases configured examines the retained set and releases nothing. The
+	// switch exists so an operator can stop it without editing every class, and
+	// so a deployment that wants no background work in its apiservers can say so.
+	LeaseSweepInterval time.Duration
+
+	// PlatformProject is the project the platform's own address space lives in:
+	// the IPClass catalog and the operator-authored pools backing it.
+	//
+	// Carried here for the background sweeper, which is not a request and so
+	// never passes through the handler chain that puts this on a request
+	// context. Without it every sweep pass fails to load a class and retention
+	// silently stops being enforced — the sweeper caches a not-found class as
+	// nil and reads that as "no lease".
+	PlatformProject string
+
+	// ClassChecker authorises class consumption via SubjectAccessReview. It
+	// replaced PoolChecker: a claim names a class and never a pool, so the class
+	// name is the only authorization boundary a claim crosses.
+	//
+	// nil is a denial for every project-scoped claim, not a bypass. Wiring it to
+	// nothing removes the boundary rather than removing the requirement, and the
+	// design is explicit that this check must fail closed.
+	ClassChecker access.ClassAccessChecker
+
+	// NamespaceChecker refuses a claim into a namespace that cannot collect
+	// what would be bound into it — Terminating, or absent (#86, #72).
+	//
+	// nil DISABLES the check rather than denying every claim, which is the
+	// OPPOSITE of ClassChecker above and is deliberate. That one is an
+	// authorization boundary and must fail closed; this one is a liveness hint
+	// and must fail open, because putting another service's availability in the
+	// hot path of every allocation turns a partial outage into a total one.
+	NamespaceChecker access.NamespaceChecker
 }
 
 // Config combines generic and IPAM-specific configuration.
@@ -144,6 +181,24 @@ func (c completedConfig) New() (*IPAMServer, error) {
 
 	v1alpha1Storage := map[string]rest.Storage{}
 
+	// IPClass — cluster-scoped, with status subresource. A class is policy and
+	// nothing about writing one allocates anything; the pool is here only so
+	// reads can resolve status.offeringPools, which is derived from every
+	// pool's spec.classNames and so cannot be known by any write to a class.
+	// It is registered before IPPool because
+	// pools offer themselves to classes; nothing enforces that order, but it is
+	// the order an operator authors them in.
+	ipClassStore, ipClassStatusStore, err := ipclass.NewIPClassStorage(
+		Scheme,
+		c.GenericConfig.RESTOptionsGetter,
+		c.ExtraConfig.AllocatorPool,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create IPClass storage: %w", err)
+	}
+	v1alpha1Storage["ipclasses"] = ipClassStore
+	v1alpha1Storage["ipclasses/status"] = ipClassStatusStore
+
 	// IPPool — cluster-scoped, with status subresource. Root pools persist
 	// directly; child pools (with spec.parentPoolRef) allocate a sub-prefix
 	// from the parent pool synchronously inside Create.
@@ -160,12 +215,16 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	v1alpha1Storage["ippools"] = ipPoolStore
 	v1alpha1Storage["ippools/status"] = ipPoolStatusStore
 
-	// IPAllocation — namespaced, simple CRUD. Rows are system-created by the
-	// IPClaim Create handler inside the allocation transaction, so this
-	// storage carries no allocator/db dependency.
+	// IPAllocation — namespaced. Rows are system-created by the IPClaim Create
+	// handler inside the allocation transaction, but deletion is this storage's
+	// own: the address lives in a row the object does not own, and removing the
+	// object through the generic path left that row holding an address nothing
+	// named. It therefore needs the allocator and the pool.
 	ipAllocStore, ipAllocStatusStore, err := ipallocation.NewAllocationStorage(
 		Scheme,
 		c.GenericConfig.RESTOptionsGetter,
+		c.ExtraConfig.PrefixAllocator,
+		c.ExtraConfig.AllocatorPool,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create IPAllocation storage: %w", err)
@@ -181,7 +240,8 @@ func (c completedConfig) New() (*IPAMServer, error) {
 		c.ExtraConfig.PrefixAllocator,
 		c.ExtraConfig.AllocatorPool,
 		allocCodec,
-		c.ExtraConfig.PoolChecker,
+		c.ExtraConfig.ClassChecker,
+		c.ExtraConfig.NamespaceChecker,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create IPClaim storage: %w", err)
@@ -195,8 +255,70 @@ func (c completedConfig) New() (*IPAMServer, error) {
 		return nil, err
 	}
 
+	if c.ExtraConfig.LeaseSweepInterval > 0 {
+		if err := s.addLeaseSweeper(c.ExtraConfig); err != nil {
+			return nil, err
+		}
+	}
+
 	klog.Info("IPAM server initialized successfully")
 	return s, nil
+}
+
+// addLeaseSweeper starts the retention-lease sweeper as a post-start hook.
+//
+// In-process rather than a separate deployable, and with no leader election.
+// Both are deliberate:
+//
+//   - The apiserver already runs background work of this shape — the watcher's
+//     changelog cleanup — so this is not a new kind of thing for the deployment.
+//   - Replicas sweeping concurrently is safe because each pool is swept under
+//     that pool's row lock, which is the same lock the allocation path takes. Two
+//     sweepers produce one winner and one no-op, and neither can race a claim
+//     reclaiming its address. Leader election would add a failure mode (a stalled
+//     leader stops all sweeping) to buy a property the lock already provides.
+//
+// The hook's context is cancelled at shutdown, which ends the loop between
+// passes. A pass in flight finishes its current pool transaction or rolls back
+// with it; nothing is left half-swept, because each pool is one transaction.
+func (s *IPAMServer) addLeaseSweeper(cfg *ExtraConfig) error {
+	sweeper, ok := cfg.PrefixAllocator.(interface {
+		SweepExpiredLeases(context.Context, allocator.TxBeginner, allocator.SweepOptions) (allocator.SweepResult, error)
+	})
+	if !ok {
+		return fmt.Errorf("configured allocator does not support lease sweeping")
+	}
+	interval := cfg.LeaseSweepInterval
+	pool := cfg.AllocatorPool
+	platformProject := cfg.PlatformProject
+
+	return s.GenericAPIServer.AddPostStartHook("ipam-lease-sweeper", func(hookCtx genericapiserver.PostStartHookContext) error {
+		go func() {
+			// The sweeper reads the class catalog, which lives in the platform
+			// project, so its context needs the same value the request filter
+			// puts on a request context. This is the one caller that cannot get
+			// it from the handler chain.
+			ctx := tenant.WithPlatformProject(hookCtx.Context, platformProject)
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			klog.InfoS("retention lease sweeper started", "interval", interval.String())
+			for {
+				select {
+				case <-ctx.Done():
+					klog.InfoS("retention lease sweeper stopped")
+					return
+				case <-ticker.C:
+					if _, err := sweeper.SweepExpiredLeases(ctx, pool, allocator.SweepOptions{}); err != nil {
+						// Logged rather than fatal: a sweep that cannot run is a
+						// capacity problem, not a serving one, and the apiserver
+						// must keep answering claims either way.
+						klog.ErrorS(err, "retention lease sweep failed")
+					}
+				}
+			}
+		}()
+		return nil
+	})
 }
 
 // Run starts the server and blocks until the context is cancelled.

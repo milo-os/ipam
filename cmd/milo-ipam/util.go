@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"math"
+	"math/big"
 	"math/bits"
 	"net/netip"
 	"time"
@@ -20,13 +22,25 @@ func familyBits(family ipamv1alpha1.IPFamily) int {
 	return 32
 }
 
-// utilizationPercent computes allocated/total as a percentage. A pool with no
-// reported total (status not yet populated) is treated as 0%.
+// utilizationPercent computes allocated/total as a percentage from the exact
+// counts. A pool with no reported total (status not yet populated) is 0%.
+//
+// big.Rat rather than float64 division: the counts are exact decimal strings
+// precisely because they exceed float64's integer range for IPv6, so converting
+// them to float64 first would discard the precision the strings exist to carry.
+// This path is only the fallback for a server that did not report
+// utilizationPercent; the server's own figure is preferred.
 func utilizationPercent(c ipamv1alpha1.PoolCapacity) float64 {
-	if c.Total <= 0 {
+	total, ok := new(big.Int).SetString(c.Total, 10)
+	if !ok || total.Sign() <= 0 {
 		return 0
 	}
-	return float64(c.Allocated) / float64(c.Total) * 100
+	allocated, ok := new(big.Int).SetString(c.Allocated, 10)
+	if !ok {
+		return 0
+	}
+	pct, _ := new(big.Rat).SetFrac(new(big.Int).Mul(allocated, big.NewInt(100)), total).Float64()
+	return math.Round(pct*10000) / 10000
 }
 
 // utilizationLabel returns a non-color textual severity so meaning survives
@@ -69,13 +83,35 @@ func utilizationCell(pct float64, width int, useColor bool) string {
 	bar := utilizationBar(pct, width, useColor)
 	label := utilizationLabel(pct)
 	if label != "" {
-		return fmt.Sprintf("%s %3.0f%% (%s)", bar, pct, label)
+		return fmt.Sprintf("%s %s (%s)", bar, formatPercent(pct), label)
 	}
-	return fmt.Sprintf("%s %3.0f%%", bar, pct)
+	return fmt.Sprintf("%s %s", bar, formatPercent(pct))
+}
+
+// formatPercent renders a utilization figure without rounding a real value away
+// to nothing.
+//
+// %3.0f printed 0% for every pool sized the way these are: 256 addresses in a
+// /12 is 0.024%, and a pool holding sixteen claims read as empty. Below 1% the
+// figure is shown to two decimals — enough to distinguish "nothing" from "a
+// little", which is the distinction that was lost. At or above 1% it stays a
+// whole number, because 47.0022% is noise where 47% is the answer.
+//
+// Exactly zero prints as 0%, not 0.00%, so an empty pool still reads as empty
+// at a glance.
+func formatPercent(pct float64) string {
+	switch {
+	case pct == 0:
+		return "  0%"
+	case pct < 1:
+		return fmt.Sprintf("%5.2f%%", pct)
+	default:
+		return fmt.Sprintf("%3.0f%%", pct)
+	}
 }
 
 // poolHasServerStatus reports whether the server populated the family-agnostic
-// status fields (ipFamily, utilizationPercent, largestFreePrefix). The status
+// status fields (ipFamily, utilizationPercent). The status
 // family is the reliable signal: the server sets it for both root and child
 // pools, so its presence means the accurate fields can be trusted over the
 // int64 capacity counts, which saturate for IPv6.
@@ -98,20 +134,19 @@ func poolFamily(p *ipamv1alpha1.IPPool) ipamv1alpha1.IPFamily {
 // int64 capacity ratio is used only for older servers that don't report it.
 func poolUtilization(p *ipamv1alpha1.IPPool) float64 {
 	if poolHasServerStatus(p) {
-		return float64(p.Status.UtilizationPercent)
+		return p.Status.UtilizationPercent
 	}
 	return utilizationPercent(p.Status.Capacity)
 }
 
-// poolLargestFreeCell formats the largest-free-block column, preferring the
-// server's exact prefix length over the int64-capacity approximation.
+// poolLargestFreeCell formats the largest-free-block column.
+//
+// The server no longer reports an exact largest free prefix — status.
+// largestFreePrefix was removed because computing it meant reading every
+// allocation in the pool on every write. What is left is the estimate derived
+// from the integer capacity counts, which is approximate for IPv6 by
+// construction and is labelled as such by largestFreeCell.
 func poolLargestFreeCell(p *ipamv1alpha1.IPPool) string {
-	if poolHasServerStatus(p) {
-		if p.Status.LargestFreePrefix <= 0 {
-			return "—"
-		}
-		return fmt.Sprintf("/%d", p.Status.LargestFreePrefix)
-	}
 	return largestFreeCell(p.Spec.IPFamily, p.Status.Capacity)
 }
 
@@ -151,7 +186,13 @@ func utilizationBar(pct float64, width int, useColor bool) string {
 
 // largestFreeCell formats the largest-free-block column.
 func largestFreeCell(family ipamv1alpha1.IPFamily, c ipamv1alpha1.PoolCapacity) string {
-	l := largestFreePrefix(family, c.Available)
+	avail, ok := new(big.Int).SetString(c.Available, 10)
+	if !ok || !avail.IsInt64() {
+		// Either unreported, or a count too large for the estimator's int64
+		// arithmetic — which for IPv6 is the normal case, not an error.
+		return "—"
+	}
+	l := largestFreePrefix(family, avail.Int64())
 	if l <= 0 {
 		return "—"
 	}
@@ -197,7 +238,7 @@ func humanDuration(t metav1.Time) string {
 }
 
 // validateCIDR parses a CIDR and reports the parsed prefix plus its family, or
-// a usage error. Used by `pool create --cidr` and `prefix claim --cidr`.
+// a usage error. Used by `pool create --cidr`.
 func validateCIDR(cidr string) (netip.Prefix, ipamv1alpha1.IPFamily, error) {
 	p, err := netip.ParsePrefix(cidr)
 	if err != nil {
@@ -208,27 +249,4 @@ func validateCIDR(cidr string) (netip.Prefix, ipamv1alpha1.IPFamily, error) {
 		fam = ipamv1alpha1.IPv6
 	}
 	return p, fam, nil
-}
-
-// projectedUtilization estimates the pool utilization after a claim of the given
-// prefix length, for --dry-run previews. It assumes the claim's addresses are
-// added to the allocated count. Returns before% and after%.
-func projectedUtilization(c ipamv1alpha1.PoolCapacity, family ipamv1alpha1.IPFamily, claimLen int) (before, after float64) {
-	before = utilizationPercent(c)
-	if c.Total <= 0 {
-		return before, before
-	}
-	width := familyBits(family)
-	hostBits := width - claimLen
-	if hostBits < 0 || hostBits >= 63 {
-		// Degenerate or astronomically large claim: clamp to full.
-		return before, 100
-	}
-	claimAddrs := int64(1) << uint(hostBits)
-	allocated := c.Allocated + claimAddrs
-	if allocated > c.Total {
-		allocated = c.Total
-	}
-	after = float64(allocated) / float64(c.Total) * 100
-	return before, after
 }

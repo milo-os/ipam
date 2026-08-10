@@ -25,7 +25,7 @@
 //
 // This implementation replaces the lock with a commit-ordered watcher
 // cursor based on the 64-bit xact id (xid8) stored on each changelog row.
-// Migration 003 adds a commit_xid column defaulted to
+// Migration 001 defines ipam_changelog.commit_xid, defaulted to
 // pg_current_xact_id()::text::bigint, so every INSERT captures the
 // inserting transaction's xid8 at INSERT time. The watcher then computes
 // a per-poll horizon via pg_snapshot_xmin(pg_current_snapshot()), the
@@ -68,11 +68,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/watch"
@@ -117,8 +119,8 @@ const (
 	// of rows above the retention window.
 	defaultCleanupInterval = 1 * time.Minute
 	// notifyChannelName is the Postgres NOTIFY channel name we LISTEN on.
-	// Must match the channel name used in the trigger function in
-	// migrations/002_listen_notify.sql.
+	// Must match the channel name used by the ipam_notify_changelog trigger
+	// function in migrations/001_initial_schema.sql.
 	notifyChannelName = "ipam_changes"
 	// listenerMinReconnect/MaxReconnect bound the reconnection backoff for
 	// the dedicated LISTEN connection.
@@ -362,12 +364,28 @@ func (pw *PostgresWatcher) Watch(ctx context.Context, key string, opts storage.L
 		pw.startListener()
 	})
 
+	// Kubernetes gives resourceVersion three distinct meanings on a watch and
+	// they are not interchangeable:
+	//
+	//	""  start from now. The client did not ask for history and must not
+	//	    be handed any — `kubectl get --watch-only` would otherwise print
+	//	    up to a full retention window of past events as if they were
+	//	    happening.
+	//	"0" any version. Replaying whatever the changelog still holds is
+	//	    permitted; this is the cheapest mode.
+	//	 N  replay everything after N, or fail with 410 Gone if N is older
+	//	    than the changelog still reaches.
+	//
+	// These were previously collapsed: Sscanf left startRV at 0 for "", so
+	// "" behaved as "0" and replayed history.
 	startRV := int64(0)
-	if opts.ResourceVersion != "" {
-		_, err := fmt.Sscanf(opts.ResourceVersion, "%d", &startRV)
-		if err != nil {
-			return nil, storage.NewInternalError(fmt.Errorf("invalid resource version %q: %w", opts.ResourceVersion, err))
+	startFromNow := opts.ResourceVersion == ""
+	if !startFromNow {
+		parsed, err := strconv.ParseInt(opts.ResourceVersion, 10, 64)
+		if err != nil || parsed < 0 {
+			return nil, storage.NewInternalError(fmt.Errorf("invalid resource version %q", opts.ResourceVersion))
 		}
+		startRV = parsed
 	}
 
 	// sendInitialEvents signals that the watch should synthesize ADDED events
@@ -392,14 +410,23 @@ func (pw *PostgresWatcher) Watch(ctx context.Context, key string, opts storage.L
 		excludedKeyPrefixes: pw.excludedKeyPrefixes,
 	}
 
-	// If the client is resuming from a specific RV, seed the (xid, id)
-	// cursor from the changelog row that carried that RV. A mismatch means
-	// the changelog has been compacted past the client's resume point;
-	// callers expect an error in that case rather than silent gap-skipping.
-	if startRV > 0 {
+	switch {
+	case startFromNow:
+		// "": no history. Park the cursor at the newest committed changelog
+		// row so the first poll emits only what commits after this point.
+		if err := w.seedCursorAtNow(ctx); err != nil {
+			return nil, err
+		}
+	case startRV > 0:
+		// Resuming from a specific RV: seed the (xid, id) cursor from the
+		// changelog row that carried that RV, or reject the watch if the
+		// changelog no longer reaches back that far.
 		if err := w.seedCursorFromRV(ctx, startRV); err != nil {
 			return nil, err
 		}
+	default:
+		// "0" — any version. Cursor stays at (0, 0): whatever the changelog
+		// still holds is replayed, which this mode explicitly permits.
 	}
 
 	pw.register(w)
@@ -423,19 +450,128 @@ func (pw *PostgresWatcher) cleanupLoop() {
 			return
 		case <-ticker.C:
 			cutoff := time.Now().Add(-defaultChangelogRetention)
-			result, err := pw.db.Exec(
-				`DELETE FROM ipam_changelog WHERE created_at < $1`, cutoff,
-			)
-			if err != nil {
+			rows, ran, err := pw.pruneChangelog(cutoff)
+			switch {
+			case err != nil:
+				metrics.RecordChangelogCompaction("error", 0)
 				klog.ErrorS(err, "Failed to clean up changelog entries")
-				continue
-			}
-			if rows, err := result.RowsAffected(); err == nil && rows > 0 {
-				klog.V(2).InfoS("Cleaned up old changelog entries", "count", rows)
+			case !ran:
+				// Another replica holds the lock and is compacting this pass.
+				// The healthy steady state on a multi-replica deployment, not a
+				// problem — recorded so "nobody compacted" stays distinguishable
+				// from "somebody else did".
+				metrics.RecordChangelogCompaction("skipped_locked", 0)
+			default:
+				metrics.RecordChangelogCompaction("compacted", rows)
+				if rows > 0 {
+					klog.V(2).InfoS("Cleaned up old changelog entries", "count", rows)
+				}
 			}
 		}
 	}
 }
+
+// pruneChangelog deletes changelog rows older than cutoff and returns how
+// many were removed.
+//
+// It prunes on a resource_version boundary derived from the time cutoff, not
+// on created_at directly.
+//
+// created_at and resource_version are not perfectly co-ordered:
+// resource_version comes from nextval() before the transaction commits, while
+// created_at is set when the changelog row is inserted, so two overlapping
+// transactions can land in opposite orders under the two columns. Deleting on
+// created_at therefore leaves a retained set with holes in it — a row with a
+// *lower* resource_version can survive one that was pruned.
+//
+// That is what breaks checkResumePointRetained: it answers "can this client be
+// served completely?" with MIN(resource_version) over the retained rows, which
+// is only an honest floor if the retained set is everything above it. With a
+// holed set, a client is told its resume point is safe and then silently
+// misses the pruned row above it — the exact failure the 410 exists to
+// prevent, reintroduced one layer down.
+//
+// Anchoring the delete to a resource_version makes the retained set a clean
+// suffix. The cost is that a few rows fractionally younger than the cutoff go
+// early, bounded by the same sub-second commit-interleave window; against a
+// 5-minute retention that is not a meaningful loss.
+// # Only one replica compacts per pass
+//
+// Every replica runs this loop on its own ticker, and compaction is global
+// rather than per-replica: the cutoff is derived from the table, so two
+// replicas compute the same range and issue the same DELETE. That is pure
+// duplicated work at best, and at worst it deadlocks — measured on the dev
+// cluster, four processes in one deadlock report, all on this statement, with
+// no pool row or claim involved.
+//
+// Two identical statements deadlocking looks impossible until you know why. A
+// bulk DELETE takes row locks in whatever order its plan produces them, and
+// `synchronize_seqscans` (on by default) deliberately starts a concurrent
+// sequential scan of the same table at a DIFFERENT position so the two can
+// share work. So the two replicas walk the same rows in genuinely different
+// orders and each ends up waiting on a row the other already holds.
+//
+// The fix is to stop both doing it rather than to make their orders agree.
+// pg_try_advisory_lock is non-blocking: the replica that gets it compacts, the
+// others return immediately and try again next tick. Missing a pass is
+// harmless — the next one covers the same range, because the range is derived
+// from the data rather than from what this replica last did.
+//
+// An advisory lock rather than a leader election because there is nothing to
+// elect: this is one idempotent statement, and the lock is released when the
+// session ends, so a replica that dies mid-compaction blocks nobody.
+//
+// The lock is session-scoped and this is database/sql, so the Exec that takes
+// it and the Exec that releases it may land on different pooled connections —
+// hence the explicit Conn, which pins both to one session. Getting that wrong
+// leaks the lock until the connection is recycled and compaction stops
+// cluster-wide.
+func (pw *PostgresWatcher) pruneChangelog(cutoff time.Time) (int64, bool, error) {
+	ctx := context.Background()
+	conn, err := pw.db.Conn(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = conn.Close() }()
+
+	var acquired bool
+	if err := conn.QueryRowContext(ctx,
+		`SELECT pg_try_advisory_lock($1)`, changelogCompactionLockID).Scan(&acquired); err != nil {
+		return 0, false, err
+	}
+	if !acquired {
+		return 0, false, nil
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx,
+			`SELECT pg_advisory_unlock($1)`, changelogCompactionLockID); err != nil {
+			klog.ErrorS(err, "Failed to release the changelog compaction lock")
+		}
+	}()
+
+	result, err := conn.ExecContext(ctx,
+		`DELETE FROM ipam_changelog
+		  WHERE resource_version <= (
+		        SELECT COALESCE(MAX(resource_version), 0)
+		          FROM ipam_changelog
+		         WHERE created_at < $1)`, cutoff,
+	)
+	if err != nil {
+		return 0, true, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, true, nil
+	}
+	return rows, true, nil
+}
+
+// changelogCompactionLockID is the advisory lock every replica contends for
+// before compacting. Arbitrary but fixed, and namespaced to this service by
+// being a constant nothing else in the schema uses — advisory lock IDs share
+// one cluster-wide space, so a collision with another application on the same
+// database would silently serialise two unrelated tasks.
+const changelogCompactionLockID int64 = 0x49414D43_4F4D5031 // "IAMC","OMP1"
 
 // postgresWatch implements watch.Interface by polling the changelog table.
 //
@@ -597,18 +733,55 @@ func (w *postgresWatch) poll(ctx context.Context) {
 	}
 }
 
-// seedCursorFromRV translates a client-supplied resource version into the
-// internal (commit_xid, id) cursor. The client says "resume at or after RV
-// N"; we find the changelog row whose resource_version is N and take its
-// (commit_xid, id) as the inclusive lower bound — i.e. the next emitted
-// row is strictly greater than (that xid, that id).
+// seedCursorAtNow parks the cursor at the newest changelog row that is
+// already committed, so the watch emits only what commits after this point.
+// This is the resourceVersion="" contract: start from now, deliver no
+// history.
 //
-// If no row exists for the requested RV (e.g. the changelog has been
-// compacted past it) we fall back to using it as a directional hint: pick
-// the row with the largest resource_version <= startRV. If even that
-// returns nothing the cursor stays at (0, 0) which emits everything from
-// the beginning — the compaction case would be surfaced by the cacher's
-// own consistency checks rather than here.
+// Rows at or above the current horizon are still in flight and are
+// deliberately left ahead of the cursor — they will be emitted by the first
+// poll once they fall below the horizon. That is the same benign
+// over-delivery the LIST-to-WATCH handoff documents: a watch opened at the
+// instant a write commits may see that write, which is correct, because the
+// client has no way to have seen it already.
+func (w *postgresWatch) seedCursorAtNow(ctx context.Context) error {
+	var xid, id sql.NullInt64
+	err := w.db.QueryRowContext(ctx,
+		`SELECT commit_xid, id
+		   FROM ipam_changelog
+		  WHERE commit_xid < pg_snapshot_xmin(pg_current_snapshot())::text::bigint
+		  ORDER BY commit_xid DESC, id DESC
+		  LIMIT 1`,
+	).Scan(&xid, &id)
+	if err != nil && err != sql.ErrNoRows {
+		return storage.NewInternalError(fmt.Errorf("seed cursor at current position: %w", err))
+	}
+	if xid.Valid && id.Valid {
+		w.lastXid = xid.Int64
+		w.lastID = id.Int64
+	}
+	return nil
+}
+
+// seedCursorFromRV translates a client-supplied resource version into the
+// internal (commit_xid, id) cursor. The client says "resume after RV N"; we
+// find the changelog row whose resource_version is N and take its
+// (commit_xid, id) as the exclusive lower bound — i.e. the next emitted row
+// is strictly greater than (that xid, that id).
+//
+// If no row carries exactly N, the row with the largest resource_version <= N
+// is an equally exact seed: no row exists in between, so nothing is skipped
+// and nothing is re-delivered.
+//
+// If N predates the changelog entirely, the events the client is asking for
+// have been pruned and can never be delivered. That is the case this function
+// exists to catch. Returning nil and emitting the surviving suffix is the
+// worst available answer: the client sees a healthy stream with a hole in it
+// and has no way to detect the hole. 410 Gone is the answer an informer
+// understands — it relists and recovers. The previous code deferred this to
+// "the cacher's own consistency checks", but this service disables the cacher
+// (see internal/storage/postgres.RESTOptionsGetter), so nothing downstream was
+// ever going to catch it.
 func (w *postgresWatch) seedCursorFromRV(ctx context.Context, startRV int64) error {
 	var xid, id sql.NullInt64
 	err := w.db.QueryRowContext(ctx,
@@ -619,6 +792,9 @@ func (w *postgresWatch) seedCursorFromRV(ctx context.Context, startRV int64) err
 		return storage.NewInternalError(fmt.Errorf("seed cursor from resource version %d: %w", startRV, err))
 	}
 	if err == sql.ErrNoRows {
+		if err := w.checkResumePointRetained(ctx, startRV); err != nil {
+			return err
+		}
 		err = w.db.QueryRowContext(ctx,
 			`SELECT commit_xid, id FROM ipam_changelog
 			  WHERE resource_version <= $1
@@ -636,6 +812,49 @@ func (w *postgresWatch) seedCursorFromRV(ctx context.Context, startRV int64) err
 	}
 	w.lastRV = startRV
 	return nil
+}
+
+// checkResumePointRetained decides whether the changelog still reaches back
+// to startRV, and returns a 410 Gone (ResourceExpired) if it does not.
+//
+// The test is `startRV >= MIN(resource_version)` over the retained rows. That
+// is only sound because cleanupLoop prunes on a resource_version boundary
+// rather than directly on created_at — see the comment there. Given that, the
+// retained set is exactly the rows above some cutoff, so every row after
+// MIN(retained) is present and a client at or above MIN(retained) can be
+// served completely. It is conservative by exactly one row (a client sitting
+// on the cutoff itself is told to relist), which is the safe direction.
+//
+// An empty changelog carries no floor. It is the ordinary state of a quiet
+// database, so it must not mean "everyone relists forever": a client whose RV
+// is already at or beyond the newest committed version has nothing to miss and
+// is served. A client behind that version is asking for events that were
+// pruned, and is told to relist.
+func (w *postgresWatch) checkResumePointRetained(ctx context.Context, startRV int64) error {
+	var minRetained sql.NullInt64
+	if err := w.db.QueryRowContext(ctx,
+		`SELECT MIN(resource_version) FROM ipam_changelog`,
+	).Scan(&minRetained); err != nil {
+		return storage.NewInternalError(fmt.Errorf("read changelog floor: %w", err))
+	}
+
+	if minRetained.Valid {
+		if startRV >= minRetained.Int64 {
+			return nil
+		}
+		return apierrors.NewResourceExpired(fmt.Sprintf(
+			"too old resource version: %d (%d)", startRV, minRetained.Int64))
+	}
+
+	maxRV, err := committedMaxResourceVersion(w.db)
+	if err != nil {
+		return storage.NewInternalError(fmt.Errorf("read committed max resource version: %w", err))
+	}
+	if startRV >= maxRV {
+		return nil
+	}
+	return apierrors.NewResourceExpired(fmt.Sprintf(
+		"too old resource version: %d (%d)", startRV, maxRV))
 }
 
 // sendInitialEventList queries the ipam_objects table for all objects

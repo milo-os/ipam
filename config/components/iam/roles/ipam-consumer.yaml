@@ -4,11 +4,12 @@ metadata:
   name: ipam.miloapis.com-consumer
   annotations:
     kubernetes.io/display-name: IPAM Consumer
-    kubernetes.io/description: "File and manage IP claims; read-only on pools and allocations"
+    kubernetes.io/description: "File and manage IP claims against the classes granted to you; read-only on classes, pools and allocations"
 spec:
   launchStage: Beta
-  # Consumers inherit read access to every IPAM resource (including pools so
-  # they can discover available address space) and add claim CRUD on top.
+  # Consumers inherit read access to every IPAM resource (including classes, so
+  # they can discover what to name, and pools so they can see available address
+  # space) and add claim CRUD on top.
   inheritedRoles:
     - name: ipam.miloapis.com-viewer
   includedPermissions:
@@ -16,3 +17,31 @@ spec:
     - ipam.miloapis.com/ipclaims.update
     - ipam.miloapis.com/ipclaims.patch
     - ipam.miloapis.com/ipclaims.delete
+
+    # ipclasses.use is the permission the service actually enforces, and it is
+    # the whole authorization surface for claiming: a claim no longer names a
+    # pool, so the class is the only thing left to authorize. Every create runs
+    # a SubjectAccessReview for "use" on ipclasses/<name> before the cascade can
+    # provision anything (internal/access/class.go, called from
+    # internal/registry/ipam/ipclaim/storage.go).
+    #
+    # Without this line the role grants ipclaims.create and consumer claims
+    # still fail — 403 "caller may not claim addresses of this class" — because
+    # the verb and the resource RBAC refuses are not the ones the caller asked
+    # for. That is the failure this role shipped with until 2026-08-08, and it
+    # is invisible in a 403 unless you read which resource is named: a denial
+    # naming `ipclaims` is RBAC refusing the verb, a denial naming `ipclasses`
+    # is this gate.
+    #
+    # Granting it here admits the holder to every class they can otherwise
+    # reach. To admit a consumer to specific classes instead, bind this role
+    # without the line below and grant ipclasses.use on the named classes.
+    #
+    # The grant is not the only gate and cannot widen the other two. A class
+    # whose visibility is `platform` — or unset, which fails closed to the same
+    # thing — is refused before the SAR runs, so this permission can never open
+    # an operator-internal class. A container class (spec.poolPer non-empty) is
+    # refused for everyone including the platform, because binding a claim to
+    # one would take a whole subnet out of the space the classes below it draw
+    # from. Only `shared` and `consumer` leaf classes are reachable at all.
+    - ipam.miloapis.com/ipclasses.use

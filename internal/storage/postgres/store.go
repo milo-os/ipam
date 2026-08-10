@@ -15,9 +15,11 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // Postgres driver (pgx)
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/klog/v2"
@@ -79,7 +81,11 @@ func (s *Store) Create(ctx context.Context, key string, obj, out runtime.Object,
 	if err := s.validateKey(key); err != nil {
 		return err
 	}
-	key = tenant.FromContext(ctx).ApplyPrefix(key)
+	id, err := requireTenantFor(ctx, key)
+	if err != nil {
+		return err
+	}
+	key = id.ApplyPrefix(key)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -137,7 +143,11 @@ func (s *Store) Delete(ctx context.Context, key string, out runtime.Object, prec
 	if err := s.validateKey(key); err != nil {
 		return err
 	}
-	key = tenant.FromContext(ctx).ApplyPrefix(key)
+	id, err := requireTenantFor(ctx, key)
+	if err != nil {
+		return err
+	}
+	key = id.ApplyPrefix(key)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -378,7 +388,11 @@ func (s *Store) GuaranteedUpdate(ctx context.Context, key string, destination ru
 	if err := s.validateKey(key); err != nil {
 		return err
 	}
-	key = tenant.FromContext(ctx).ApplyPrefix(key)
+	id, err := requireTenantFor(ctx, key)
+	if err != nil {
+		return err
+	}
+	key = id.ApplyPrefix(key)
 
 	const fallbackMaxAttempts = 10
 	deadline, hasDeadline := ctx.Deadline()
@@ -638,6 +652,57 @@ func (s *Store) currentResourceVersion(ctx context.Context) (int64, error) {
 }
 
 // validateKey checks that the key is not empty.
+// requireTenantFor resolves the calling identity for a write, refusing a
+// request that carries no project.
+//
+// This is the chokepoint rather than admission, for three reasons. It is below
+// every registry, so it covers every resource and every verb without a list
+// anyone has to remember to extend. It runs whether or not quota admission is
+// enabled — the existing platform-consumer guard only installs alongside the
+// quota plugin, and only for ipclaims CREATE, so on a server without quota
+// there was no refusal at all. And it sits at the exact line that would
+// otherwise compute the unprefixed key, so the refusal and the thing being
+// refused cannot drift apart.
+//
+// The background lease sweeper is unaffected: it works directly against pgx
+// transactions with fully-qualified pool keys and never enters this Store.
+//
+// Returns a 403 rather than a 400 because this is an authorization statement,
+// not a malformed request — the caller authenticated fine and simply has no
+// project to write into.
+func requireTenantFor(ctx context.Context, key string) (tenant.Identity, error) {
+	id, err := tenant.RequireTenant(ctx)
+	if err == nil {
+		return id, nil
+	}
+	gr := groupResourceFromKey(key)
+	return id, apierrors.NewForbidden(gr, "", fmt.Errorf(
+		"%w: writes must be scoped to a project. Milo's front gate forwards the "+
+			"project as %s; a request reaching IPAM without it has no keyspace to "+
+			"write into. Scope the request to a project, or use the platform "+
+			"project's credentials for platform-owned objects",
+		tenant.ErrNoTenant, tenant.ExtraParentName))
+}
+
+// groupResourceFromKey recovers the GroupResource from a storage key so the
+// 403 names the resource the caller asked for rather than an empty one. Keys
+// are "/ipam.miloapis.com/<resource>/..."; anything else yields the group with
+// an empty resource, which is still a better message than nothing.
+func groupResourceFromKey(key string) schema.GroupResource {
+	const prefix = "/ipam.miloapis.com/"
+	gr := schema.GroupResource{Group: "ipam.miloapis.com"}
+	if !strings.HasPrefix(key, prefix) {
+		return gr
+	}
+	rest := key[len(prefix):]
+	if slash := strings.IndexByte(rest, '/'); slash > 0 {
+		gr.Resource = rest[:slash]
+	} else {
+		gr.Resource = rest
+	}
+	return gr
+}
+
 func (s *Store) validateKey(key string) error {
 	if key == "" {
 		return storage.NewInternalError(fmt.Errorf("key must not be empty"))

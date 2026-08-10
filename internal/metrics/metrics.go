@@ -26,7 +26,13 @@ var (
 	// label set surfaces as memory pressure rather than silent dropouts. If
 	// project count grows past the low six figures, move tenant context to
 	// an `_info`-style metric joined at query time instead of an inline
-	// label. See docs/production-readiness.md for the cardinality discussion.
+	// label.
+	//
+	// This used to point at docs/production-readiness.md "for the cardinality
+	// discussion". That report is retired, and the discussion it held was one
+	// line — "no documented cardinality bound" — which the paragraph above now
+	// supersedes. The bound belongs here, next to the labels it constrains,
+	// rather than in a document that expires.
 
 	// AllocationDuration tracks the latency of synchronous allocation
 	// transactions for IPClaim and ASNClaim.

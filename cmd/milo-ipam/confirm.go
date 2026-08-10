@@ -22,7 +22,7 @@ func (a *app) nonInteractive() bool {
 }
 
 // confirmYesNo asks a yes/no question scaled to a low/medium blast radius (a
-// single prefix release). Returns true to proceed. --yes bypasses; a
+// single claim release). Returns true to proceed. --yes bypasses; a
 // non-interactive session proceeds (prompts auto-suppressed per the proposal).
 func (a *app) confirmYesNo(prompt string) bool {
 	if a.opts.assumeYes {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/exaring/otelpgx"
@@ -12,6 +13,7 @@ import (
 	"github.com/spf13/pflag"
 	"go.opentelemetry.io/otel"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	openapinamer "k8s.io/apiserver/pkg/endpoints/openapi"
 	genericapiserver "k8s.io/apiserver/pkg/server"
 	"k8s.io/apiserver/pkg/server/healthz"
@@ -32,6 +34,7 @@ import (
 	ipamapiserver "go.miloapis.com/ipam/internal/apiserver"
 	"go.miloapis.com/ipam/internal/metrics"
 	pgstore "go.miloapis.com/ipam/internal/storage/postgres"
+	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/version"
 	generatedopenapi "go.miloapis.com/ipam/pkg/generated/openapi"
 
@@ -45,6 +48,23 @@ import (
 // within Prometheus' default scrape interval without adding meaningful
 // overhead.
 const pgxpoolStatsInterval = 15 * time.Second
+
+const (
+	// defaultLeaseSweepInterval is how often retained allocations are checked
+	// against their lease. Minutes rather than seconds: a lease is measured in
+	// days, so the sweep only needs to be frequent enough that an expiry is acted
+	// on promptly relative to its own duration, and each pass takes a short lock
+	// on every pool holding retained allocations.
+	defaultLeaseSweepInterval = 5 * time.Minute
+
+	// minLeaseSweepInterval floors the flag. Every pass takes a row lock on each
+	// pool holding retained allocations, and claims against those pools wait
+	// behind it — so a sweep tuned down to milliseconds would turn a background
+	// job into a source of allocation latency. One second is fast enough for a
+	// test that needs to observe the grace window inside a minute, and slow
+	// enough that it cannot be the reason a pool is contended.
+	minLeaseSweepInterval = time.Second
+)
 
 // allocatorPoolRetrySchedule controls the back-off between attempts to open
 // the allocator pgxpool at startup. With the postgres component installed
@@ -151,12 +171,41 @@ type IPAMServerOptions struct {
 	// the only supported storage backend.
 	PostgresDSN string
 
+	// PlatformProject is the project the platform's own address space lives in:
+	// the class catalog, and the operator-authored pools that back it.
+	//
+	// Required, and deliberately not defaulted. There is no unprefixed keyspace
+	// any more — every object belongs to a project, and the platform's is a
+	// project like any other, which tenants consume out of. Two candidate
+	// defaults exist and both are wrong: "" reinstates the unprefixed keyspace
+	// this removes, and any concrete name would silently make some tenant's
+	// project the platform on a cluster that happened to use that name.
+	//
+	// It is also the value tenant.Identity.IsPlatform compares against, so it
+	// decides who clears the class-visibility gate and the class-consumption
+	// SAR. That makes it security-relevant configuration, which is a second
+	// reason it must be stated rather than inferred.
+	PlatformProject string
+
 	// EnableQuota gates Milo quota enforcement. Default true (production
 	// enforces). Environments without a Milo quota backend (kind/dev, e2e)
 	// must set --enable-quota=false: the quota plugin's ClaimCreationPolicy /
 	// resource-type informers cannot sync against a cluster that lacks the
 	// quota.miloapis.com CRDs, which would otherwise block readyz forever.
 	EnableQuota bool
+
+	// LeaseSweepInterval is how often the retention-lease sweeper runs. Zero
+	// disables it.
+	//
+	// Configurable rather than fixed because a faithful test of the lease
+	// lifecycle needs a lease longer than the sweep interval — otherwise the
+	// first pass finds the allocation already past lease plus grace and releases
+	// it in one step, reporting that release works while never observing the
+	// warning window that two-phase expiry exists to provide. At the default of
+	// five minutes that test takes a quarter of an hour; at a few seconds it
+	// takes a minute, which is the difference between the lifecycle being
+	// covered in CI and not.
+	LeaseSweepInterval time.Duration
 }
 
 func NewIPAMServerOptions() *IPAMServerOptions {
@@ -165,8 +214,9 @@ func NewIPAMServerOptions() *IPAMServerOptions {
 			"/registry/ipam.miloapis.com",
 			ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...),
 		),
-		Logs:        logsapi.NewLoggingConfiguration(),
-		EnableQuota: true,
+		Logs:               logsapi.NewLoggingConfiguration(),
+		EnableQuota:        true,
+		LeaseSweepInterval: defaultLeaseSweepInterval,
 	}
 
 	// IPAM is a delegating aggregated apiserver — admission webhooks, policies,
@@ -190,10 +240,63 @@ func (o *IPAMServerOptions) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.PostgresDSN, "postgres-dsn", o.PostgresDSN,
 		"PostgreSQL connection string (required)")
 
+	fs.StringVar(&o.PlatformProject, "platform-project", o.PlatformProject,
+		"The project the platform's own address space lives in: the IPClass catalog and the "+
+			"operator-authored pools that back it (required). Everything IPAM stores is scoped to a "+
+			"project, including the platform's own objects, and tenants consume out of this one. This "+
+			"is also the project whose callers are treated as the platform for class-consumption "+
+			"authorization, so it must name a project only operators can act as.")
+
+	fs.DurationVar(&o.LeaseSweepInterval, "lease-sweep-interval", o.LeaseSweepInterval,
+		"How often retained allocations are checked against their retention lease. "+
+			"0 disables the sweeper entirely; below "+minLeaseSweepInterval.String()+" is rejected, because each "+
+			"pass takes a row lock on every pool holding retained allocations and claims "+
+			"against those pools wait behind it. Lower it in tests that need to observe "+
+			"the Expiring grace window without waiting for a production-length interval.")
+
 	fs.BoolVar(&o.EnableQuota, "enable-quota", o.EnableQuota,
 		"Enforce Milo quota on resource creation (default true). Requires a reachable "+
 			"Milo quota backend via --kubeconfig; set false in environments without one "+
 			"(e.g. kind/dev, e2e) to avoid readyz blocking on quota informers.")
+}
+
+// platformProjectFilter puts the configured platform project on every request
+// context, so tenant.FromContext can answer IsPlatform and the allocator's
+// class lookups know which project's keyspace to read.
+//
+// A filter rather than a package-level variable in internal/tenant. The value
+// is process-wide immutable configuration, which is exactly what tempts one
+// into a global — but IsPlatform decides an authorization bypass, and a global
+// means a test that forgets to set it gets a confidently wrong answer instead
+// of a failure. Carried on the context, every way of getting it wrong fails
+// closed: an unconfigured server, a request that somehow bypassed this filter,
+// and a tenant.Identity built as a literal all report "not the platform".
+//
+// It is installed unconditionally, unlike consumerContextFilter, which is
+// wired only with --enable-quota. Tenant scoping is not optional.
+func platformProjectFilter(platformProject string, apiHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		ctx := tenant.WithPlatformProject(req.Context(), platformProject)
+		apiHandler.ServeHTTP(w, req.WithContext(ctx))
+	})
+}
+
+// installPlatformProjectFilter makes the platform-project filter the innermost
+// wrapper of the API handler, so the value is on the context before the REST
+// and admission path reads it.
+//
+// Ordering against consumerContextFilter does not matter: that filter reads
+// only Project() and Org(), neither of which consults the platform project.
+// What does matter is that both sit inside the generic chain, after
+// authentication has populated UserInfo.
+func installPlatformProjectFilter(genericConfig *genericapiserver.RecommendedConfig, platformProject string) {
+	prev := genericConfig.BuildHandlerChainFunc
+	if prev == nil {
+		prev = genericapiserver.DefaultBuildHandlerChain
+	}
+	genericConfig.BuildHandlerChainFunc = func(apiHandler http.Handler, c *genericapiserver.Config) http.Handler {
+		return prev(platformProjectFilter(platformProject, apiHandler), c)
+	}
 }
 
 func (o *IPAMServerOptions) Complete() error { return nil }
@@ -201,6 +304,37 @@ func (o *IPAMServerOptions) Complete() error { return nil }
 func (o *IPAMServerOptions) Validate() error {
 	if o.PostgresDSN == "" {
 		return fmt.Errorf("--postgres-dsn is required")
+	}
+	// Rejected at startup rather than per-request. Both fail closed, but an
+	// unset flag is a deployment mistake and not a runtime condition: without it
+	// the class catalog is read from a keyspace nothing writes to, so every
+	// claim fails with "class not found" and nothing points at the cause. One
+	// clear message before the first request is strictly better than that
+	// message on every request forever.
+	if o.PlatformProject == "" {
+		return fmt.Errorf(
+			"--platform-project is required: the IPClass catalog and the platform's own pools " +
+				"live in a project like everything else, and there is no unprefixed keyspace to fall back to")
+	}
+	// The value becomes a storage key prefix ("project/<name>/") and is compared
+	// against the parent-name extra a real request carries, so it has to be a
+	// project name and nothing more. A slash in particular would let it address
+	// a keyspace other than its own.
+	if errs := validation.IsDNS1123Subdomain(o.PlatformProject); len(errs) > 0 {
+		return fmt.Errorf("--platform-project %q must be a valid project name: %s",
+			o.PlatformProject, strings.Join(errs, "; "))
+	}
+	// Zero is a real setting — it disables the sweeper — so the floor applies
+	// only to positive values. Rejected rather than silently clamped: an
+	// operator who asked for 10ms and got 1s would be running something other
+	// than what they configured, and would find out from a latency graph.
+	if o.LeaseSweepInterval < 0 {
+		return fmt.Errorf("--lease-sweep-interval must not be negative; 0 disables the sweeper")
+	}
+	if o.LeaseSweepInterval > 0 && o.LeaseSweepInterval < minLeaseSweepInterval {
+		return fmt.Errorf(
+			"--lease-sweep-interval is %s, below the %s minimum: each pass takes a row lock on every pool holding retained allocations, and claims against those pools wait behind it",
+			o.LeaseSweepInterval, minLeaseSweepInterval)
 	}
 	return nil
 }
@@ -244,10 +378,13 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	// request context (via keys milo's quota plugin reads) — the filter must run
 	// after authentication and before admission, which installing it as the
 	// innermost API-handler wrapper guarantees.
+	// Unconditional: every request needs to know which project is the platform,
+	// whether or not quota is enforced.
+	installRequestFilters(genericConfig, o.PlatformProject, o.EnableQuota)
+
 	if o.EnableQuota {
 		registerQuotaAdmission(o)
 		wireAdmissionInitializers(o)
-		installConsumerContextFilter(genericConfig)
 	}
 
 	if err := o.RecommendedOptions.ApplyTo(genericConfig); err != nil {
@@ -363,17 +500,65 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	// both ~3× the SLO.
 	etcdfeature.DefaultFeatureSupportChecker = pgstore.NewFeatureSupportChecker()
 
-	var poolChecker access.PoolAccessChecker
+	// A nil checker denies every project-scoped claim rather than allowing one,
+	// so an apiserver started without an authorizer serves platform callers only.
+	var classChecker access.ClassAccessChecker
 	if genericConfig.Authorization.Authorizer != nil {
-		poolChecker = access.NewPoolAccessChecker(genericConfig.Authorization.Authorizer)
+		classChecker = access.NewClassAccessChecker(genericConfig.Authorization.Authorizer)
 	}
+
+	// The namespace-liveness checker reuses the client config --kubeconfig
+	// produced, rewriting Host per project the way milo's quota plugin does.
+	//
+	// Wired here rather than as an admission plugin ON PURPOSE. Admission
+	// installs only under --enable-quota and the dev overlay sets
+	// ENABLE_QUOTA=false, so an admission-based check would be inert on every
+	// dev cluster and in every e2e and load run — #85 exactly, measured after
+	// that fix had supposedly landed.
+	//
+	// GATED ON --kubeconfig BEING SET, not on ClientConfig being non-nil.
+	//
+	// That distinction is the whole safety of this wiring and it is not
+	// obvious. CoreAPIOptions.ApplyTo falls back to rest.InClusterConfig() when
+	// --kubeconfig is empty, and in a pod that SUCCEEDS — so ClientConfig is
+	// non-nil in every in-cluster deployment whether or not Milo is reachable.
+	// Inferring "there is a project control plane to ask" from it would build a
+	// checker pointed at the ROOT apiserver, rewrite the Host to a
+	// /projects/<id>/control-plane path that does not exist there, get a 404,
+	// read it as "namespace missing", and REFUSE EVERY PROJECT-SCOPED CLAIM.
+	//
+	// Measured on the dev cluster: KUBECONFIG is empty, CoreAPI is never
+	// disabled, so ClientConfig is the kind cluster's own API server.
+	//
+	// --kubeconfig is the signal that actually means what is needed: the
+	// deployment's own comment says it MUST point at milo-apiserver for a real
+	// control plane. Empty means there is no Milo to ask, so the check is off
+	// and IPAM behaves as it did before #86 — which is the documented fail-open
+	// state, not a silent hole, because this check is liveness rather than
+	// authorization.
+	var nsChecker access.NamespaceChecker
+	if o.RecommendedOptions.CoreAPI != nil && o.RecommendedOptions.CoreAPI.CoreAPIKubeconfigPath != "" {
+		nsChecker = access.NewNamespaceChecker(genericConfig.ClientConfig)
+	}
+	// Say which it is at startup. Whether a correctness check is running must
+	// not be something an operator has to infer from a flag two layers away —
+	// that inference is what made #85 survive as long as it did.
+	klog.InfoS("namespace liveness check", "enabled", nsChecker != nil,
+		"reason", "requires --kubeconfig pointing at the Milo control plane")
 
 	return &ipamapiserver.Config{
 		GenericConfig: genericConfig,
 		ExtraConfig: ipamapiserver.ExtraConfig{
-			PrefixAllocator: prefixAllocator,
-			AllocatorPool:   allocatorPool,
-			PoolChecker:     poolChecker,
+			PrefixAllocator:  prefixAllocator,
+			AllocatorPool:    allocatorPool,
+			ClassChecker:     classChecker,
+			NamespaceChecker: nsChecker,
+			// The sweeper is not a request, so it cannot pick this up from the
+			// handler chain the way every REST path does.
+			PlatformProject: o.PlatformProject,
+			// Enabled by default and harmless when no class or pool states a
+			// lease: the sweeper examines the retained set and releases nothing.
+			LeaseSweepInterval: o.LeaseSweepInterval,
 		},
 	}, nil
 }

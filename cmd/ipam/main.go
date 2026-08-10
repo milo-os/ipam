@@ -31,6 +31,7 @@ Kubernetes API server.`,
 
 	cmd.AddCommand(NewServeCommand())
 	cmd.AddCommand(NewMigrateCommand())
+	cmd.AddCommand(NewReclaimCommand())
 	cmd.AddCommand(NewVersionCommand())
 
 	return cmd

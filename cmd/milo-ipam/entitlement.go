@@ -37,13 +37,21 @@ const entitlementWatchTimeout = 15 * time.Second
 // reflects that: requesting access submits a request that a provider must
 // approve before IPAM becomes usable.
 //
-//   - project == "" (platform scope): no-op. Platform/operator calls are not
-//     project-entitled.
+//   - project == "": no-op. Nothing to check an entitlement against.
 //   - Active: proceed.
 //   - PendingApproval: stop with a pointer to `datumctl services list`.
 //   - Rejected: stop with a pointer to `datumctl services enable`.
 //   - none found, or the API is not served in this control plane
 //     (IsNoMatchError): prompt-and-request on a TTY, else an actionable error.
+//
+// The empty-project case is deliberately NOT described as "platform scope",
+// which is what this comment used to call it. A datumctl context with no
+// project produces no iam.miloapis.com/parent-* extras, and a request carrying
+// none is not the platform — the platform is an ordinary project named by the
+// apiserver's --platform-project. A caller with no project has no keyspace at
+// all: it reads nothing and, since the untenanted-write gate, may not write.
+// Skipping the entitlement check is correct because such a call has nothing to
+// be entitled to, not because the caller is privileged.
 //
 // out should be cmd.ErrOrStderr() and in should be cmd.InOrStdin() so prompts
 // never pollute the structured (-o json|yaml) data contract on stdout.
