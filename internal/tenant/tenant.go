@@ -118,9 +118,12 @@ func first(vals []string) string {
 // "/ipam.miloapis.com/...").
 //
 // Format reminder: project keys look like
-//   project/<projectID>/ipam.miloapis.com/<resource>/<name>
+//
+//	project/<projectID>/ipam.miloapis.com/<resource>/<name>
+//
 // platform keys look like
-//   /ipam.miloapis.com/<resource>/<name>
+//
+//	/ipam.miloapis.com/<resource>/<name>
 //
 // Used by metrics emission paths that only have a key in hand (e.g. the
 // pool-utilization gauge published from the allocator), to derive the same

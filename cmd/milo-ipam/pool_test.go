@@ -45,8 +45,8 @@ func TestPoolListPrefersServerStatus(t *testing.T) {
 			Phase:         ipamv1alpha1.PoolReady,
 			AllocatedCIDR: "2001:db8:e2e0::/48",
 			IPFamily:      ipamv1alpha1.IPv6,
-			// Saturated counts that would compute 0% via the old client-side
-			// path; the status fields below are authoritative.
+			// Saturated counts. A client deriving utilization from these
+			// computes 0%; status.utilizationPercent below is authoritative.
 			Capacity:           ipamv1alpha1.PoolCapacity{Total: 1<<63 - 1, Allocated: 0, Available: 1<<63 - 1},
 			UtilizationPercent: 6,
 		},
@@ -122,7 +122,7 @@ func TestPoolTreePrefersServerStatus(t *testing.T) {
 		Status: ipamv1alpha1.IPPoolStatus{
 			Phase: ipamv1alpha1.PoolReady, AllocatedCIDR: "2001:db8::/36",
 			IPFamily: ipamv1alpha1.IPv6, UtilizationPercent: 12,
-			// A saturated capacity that the old client-side path would misread.
+			// Saturated counts, which a client deriving utilization misreads.
 			Capacity: ipamv1alpha1.PoolCapacity{Total: 1<<63 - 1, Allocated: 0, Available: 1<<63 - 1},
 		},
 	}

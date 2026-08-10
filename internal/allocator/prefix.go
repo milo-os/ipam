@@ -269,14 +269,9 @@ func setPoolCapacityStatus(pool *ipamv1alpha1.IPPool, parents, allocations []net
 		Available: available,
 	}
 
-	// Utilization from the free-space measurement, not from summing the
-	// allocations. Summing counts an address covered by several allocations
-	// once per allocation, so a range shared by eight networks read as eight
-	// times its real occupancy.
-	//
-	// status.largestFreePrefix is no longer written. Finding the largest free
-	// aligned block costs a walk of every free region, and this runs on every
-	// successful claim.
+	// Measure, not a sum of allocation sizes. Allocations may overlap: two
+	// networks can hold one address out of a shared range, and summing counts
+	// that address once per holder.
 	if m, err := allocation.Measure(parents, allocations, allocation.Reservation{}); err == nil {
 		pool.Status.UtilizationPercent = int32(m.UtilizationPercent)
 	}
