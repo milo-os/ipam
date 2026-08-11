@@ -134,7 +134,7 @@ func schema_pkg_apis_ipam_v1alpha1_ClassSourceRef(ref common.ReferenceCallback) 
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "ClassSourceRef names a class in another project.\n\nThe project is explicit rather than implied by server configuration, so which project a class comes from is a fact stated on the object and visible to anyone who can read it.",
+				Description: "ClassSourceRef names a class in another project.\n\nThe project is explicit rather than implied by server configuration, so which project a class comes from is a fact stated on the object and visible to anyone who can read it.\n\nNaming another project's class requires the ipam.miloapis.com/ipclasses.use permission on it, checked when the referencing class is created.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"project": {

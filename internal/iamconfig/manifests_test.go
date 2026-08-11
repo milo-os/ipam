@@ -199,6 +199,38 @@ func TestConsumersCanReadEveryResourceAClaimTouches(t *testing.T) {
 	}
 }
 
+// The verbs below are checked by SubjectAccessReview from the allocation and
+// class-admission paths, not by the apiserver's own request handling, so
+// nothing else ties them to a manifest. A verb the code checks but no
+// ProtectedResource declares is denied for everyone, and the denial only
+// surfaces as a cross-project reference or claim that can never be authorised.
+func TestEveryVerbTheCodeChecksIsDeclared(t *testing.T) {
+	protected := loadProtectedResources(t)
+	for _, want := range []struct {
+		plural, verb, site string
+	}{
+		{"ippools", "use", "internal/access/sar.go"},
+		{"ipclasses", "use", "internal/access/class.go"},
+	} {
+		pr, ok := protected[want.plural]
+		if !ok {
+			t.Errorf("%s checks %q on %q, which has no ProtectedResource", want.site, want.verb, want.plural)
+			continue
+		}
+		declared := false
+		for _, v := range pr.Spec.Permissions {
+			if v == want.verb {
+				declared = true
+			}
+		}
+		if !declared {
+			t.Errorf("%s issues a %q SubjectAccessReview against %q, but the ProtectedResource "+
+				"does not declare that permission, so IAM denies it for everyone",
+				want.site, want.verb, want.plural)
+		}
+	}
+}
+
 // A permission nothing declares is a typo that grants nothing, and it reads as
 // a grant until somebody tests the cluster.
 func TestEveryGrantedPermissionIsDeclared(t *testing.T) {

@@ -23,3 +23,6 @@ spec:
     # "use" authorises consumers of a shared pool; providers grant it on the
     # pools they want to admit cross-project allocation from.
     - ipam.miloapis.com/ippools.use
+    # The same for classes: a project referencing this class with spec.source
+    # needs "use" on it, and the provider is who grants that.
+    - ipam.miloapis.com/ipclasses.use

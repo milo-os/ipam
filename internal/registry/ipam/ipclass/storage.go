@@ -2,7 +2,9 @@ package ipclass
 
 import (
 	"context"
+	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/generic"
@@ -10,6 +12,8 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
+	"go.miloapis.com/ipam/internal/access"
+	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -17,6 +21,58 @@ import (
 // IPClassStorage is the standard REST storage for IPClass.
 type IPClassStorage struct {
 	*genericregistry.Store
+
+	classChecker access.ClassAccessChecker
+}
+
+// Create admits a class, requiring the "use" permission on the source class
+// when the class is a reference into another project.
+//
+// The check runs here rather than on each allocation because spec.source is
+// immutable: the reference is the grant being exercised, and it is established
+// exactly once. A permission revoked later does not invalidate a reference
+// already created — deleting the reference is what withdraws the access.
+func (s *IPClassStorage) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
+	if err := s.authorizeSource(ctx, obj); err != nil {
+		return nil, err
+	}
+	return s.Store.Create(ctx, obj, createValidation, options)
+}
+
+func (s *IPClassStorage) authorizeSource(ctx context.Context, obj runtime.Object) error {
+	class, ok := obj.(*ipam.IPClass)
+	if !ok || class.Spec.Source == nil {
+		return nil
+	}
+	src := *class.Spec.Source
+
+	// A class naming a source in the caller's own project reaches nothing the
+	// caller cannot already reach.
+	if src.Project == tenant.FromContext(ctx).Name {
+		return nil
+	}
+
+	forbidden := func(detail string) error {
+		return apierrors.NewForbidden(v1alpha1.Resource("ipclasses"), class.Name,
+			fmt.Errorf("%s: referencing class %q in project %q requires the "+
+				"ipam.miloapis.com/ipclasses.use permission on it", detail, src.Name, src.Project))
+	}
+
+	// No checker means no authorizer was configured. Admitting the reference
+	// would grant the source project's address space to a caller nothing
+	// vouched for.
+	if s.classChecker == nil {
+		return forbidden("cross-project class references are unavailable")
+	}
+
+	allowed, err := s.classChecker.CanUseClass(ctx, src.Project, src.Name)
+	if err != nil {
+		return apierrors.NewInternalError(fmt.Errorf("authorize class reference: %w", err))
+	}
+	if !allowed {
+		return forbidden("not authorized to use the source class")
+	}
+	return nil
 }
 
 // IPClassStatusStorage exposes the /status subresource.
@@ -46,7 +102,10 @@ func (s *IPClassStatusStorage) ConvertToTable(ctx context.Context, obj runtime.O
 // NewClassStorage builds the IPClass REST storage and its /status subresource.
 // A class is policy, not an allocation, so this carries no allocator or db
 // dependency.
-func NewClassStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter) (*IPClassStorage, *IPClassStatusStorage, error) {
+//
+// classChecker authorises references into another project. A nil checker
+// refuses them.
+func NewClassStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, classChecker access.ClassAccessChecker) (*IPClassStorage, *IPClassStatusStorage, error) {
 	strategy := NewStrategy(scheme)
 	statusStrategy := NewStatusStrategy(scheme)
 
@@ -72,5 +131,5 @@ func NewClassStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGette
 	statusStore.UpdateStrategy = statusStrategy
 	statusStore.ResetFieldsStrategy = statusStrategy
 
-	return &IPClassStorage{store}, &IPClassStatusStorage{store: &statusStore}, nil
+	return &IPClassStorage{Store: store, classChecker: classChecker}, &IPClassStatusStorage{store: &statusStore}, nil
 }

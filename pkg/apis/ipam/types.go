@@ -109,7 +109,9 @@ type ScopeRef struct {
 	Name     string
 }
 
-// ClassSourceRef names a class in another project.
+// ClassSourceRef names a class in another project. Naming another project's
+// class requires the ipam.miloapis.com/ipclasses.use permission on it, checked
+// when the referencing class is created.
 type ClassSourceRef struct {
 	Project string
 	Name    string
