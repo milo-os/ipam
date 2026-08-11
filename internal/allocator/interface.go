@@ -17,6 +17,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
 // ErrPoolNotFound is returned when the supplied poolKey does not exist in
@@ -28,15 +30,42 @@ var ErrPoolNotFound = errors.New("ipam: pool not found")
 // Storage) at the registry boundary.
 var ErrPoolExhausted = errors.New("ipam: pool exhausted")
 
-// PrefixAllocator atomically reserves a sub-CIDR from an IPPrefix pool.
+// ErrObjectNotFound is returned by GetObject when no row exists at the key.
+var ErrObjectNotFound = errors.New("ipam: object not found")
+
+// PrefixRequest describes one allocation against a pool.
 //
-// ownerProject scopes the allocation to a single tenant project so per-project
+// OwnerProject scopes the allocation to a single tenant project so per-project
 // capacity queries (used by the quota integration) can sum allocations
-// belonging to a given project. Pass "" for platform-scoped allocations.
+// belonging to a given project. Leave it empty for platform-scoped
+// allocations.
+type PrefixRequest struct {
+	PoolKey   string
+	PrefixLen int
+	IPFamily  string
+
+	// ClaimKey is the claim the allocation is bound to. Retention clears it,
+	// so it is not the row's identity.
+	ClaimKey string
+
+	// AllocationKey is the storage key of the IPAllocation the row backs, and
+	// the identity every release path finds the row by. Defaults to ClaimKey.
+	AllocationKey string
+
+	OwnerProject string
+
+	// ClassName and ReclaimPolicy are recorded on the row because the
+	// allocation outlives the claim that chose them. An empty ReclaimPolicy
+	// is Delete.
+	ClassName     string
+	ReclaimPolicy ipamv1alpha1.ReclaimPolicy
+}
+
+// PrefixAllocator atomically reserves a sub-CIDR from an IPPool.
 type PrefixAllocator interface {
-	// AllocatePrefix reserves a sub-prefix of prefixLen bits within the
-	// pool identified by poolKey and returns its CIDR string.
-	AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, error)
+	// AllocatePrefix reserves a sub-prefix of req.PrefixLen bits within the
+	// pool identified by req.PoolKey and returns its CIDR string.
+	AllocatePrefix(ctx context.Context, tx pgx.Tx, req PrefixRequest) (string, error)
 
 	// InsertObject writes a generic API object row into ipam_objects inside
 	// the supplied transaction and returns the assigned resource_version.
@@ -45,8 +74,21 @@ type PrefixAllocator interface {
 	// see on subsequent GETs.
 	InsertObject(ctx context.Context, tx pgx.Tx, key, kind, namespace, name string, data []byte) (int64, error)
 
-	// Release removes the prefix allocation record matching claimKey.
-	Release(ctx context.Context, tx pgx.Tx, claimKey string) error
+	// Release disposes of the allocations bound to claimKey according to the
+	// reclaim policy recorded on each row: Delete frees the address, Retain
+	// unbinds the claim and leaves the address held. It returns the
+	// allocation keys of the rows that were retained, so the caller can keep
+	// their IPAllocation objects instead of deleting them.
+	Release(ctx context.Context, tx pgx.Tx, claimKey string) ([]string, error)
+
+	// ReleaseAllocation frees the allocation row identified by allocationKey
+	// whatever its claim binding. It is the release path for a retained
+	// allocation, which no longer has a claim to release through.
+	ReleaseAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error
+
+	// GetObject reads the stored API object at key inside the supplied
+	// transaction, returning ErrObjectNotFound if no row exists.
+	GetObject(ctx context.Context, tx pgx.Tx, key string) ([]byte, error)
 
 	// DeleteObject removes the API object row at key from ipam_objects and
 	// records a DELETED changelog entry inside the supplied transaction. The

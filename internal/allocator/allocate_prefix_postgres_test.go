@@ -46,7 +46,11 @@ func TestAllocatePrefixWritesEveryRequiredColumn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	got, err := NewPostgresPrefixAllocator().AllocatePrefix(ctx, tx, poolKey, 24, "IPv4", claimKey, "platform")
+	got, err := NewPostgresPrefixAllocator().AllocatePrefix(ctx, tx, PrefixRequest{
+		PoolKey: poolKey, PrefixLen: 24, IPFamily: "IPv4",
+		ClaimKey: claimKey, AllocationKey: claimKey + "/alloc",
+		OwnerProject: "platform", ClassName: "standard",
+	})
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("AllocatePrefix: %v", err)

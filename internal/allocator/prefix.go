@@ -53,7 +53,9 @@ func NewPostgresPrefixAllocator() *PostgresPrefixAllocator {
 }
 
 // AllocatePrefix implements PrefixAllocator.AllocatePrefix.
-func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, poolKey string, prefixLen int, ipFamily string, claimKey string, ownerProject string) (string, error) {
+func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, req PrefixRequest) (string, error) {
+	poolKey, prefixLen, ipFamily := req.PoolKey, req.PrefixLen, req.IPFamily
+
 	pool, err := lockAndDecodeIPPool(ctx, tx, poolKey)
 	if err != nil {
 		return "", err
@@ -89,7 +91,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, ownerProject); err != nil {
+	if err := insertPrefixAllocation(ctx, tx, req, cidr.String()); err != nil {
 		return "", err
 	}
 
@@ -101,7 +103,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	}
 	publishPrefixUtilization(poolKey, ipFamily, parents, consumed)
 
-	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", claimKey, "ownerProject", ownerProject)
+	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", req.ClaimKey, "ownerProject", req.OwnerProject)
 	return cidr.String(), nil
 }
 
@@ -159,15 +161,69 @@ func labelsFromData(data []byte) []byte {
 
 // Release implements PrefixAllocator.Release.
 //
+// Retention runs first, so the delete that follows sees only the rows that
+// really are being freed.
+func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimKey string) ([]string, error) {
+	retained, err := retainAllocations(ctx, tx, claimKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := deleteAllocations(ctx, tx, "claim_key = $1", claimKey); err != nil {
+		return nil, err
+	}
+	return retained, nil
+}
+
+// ReleaseAllocation implements PrefixAllocator.ReleaseAllocation.
+func (a *PostgresPrefixAllocator) ReleaseAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error {
+	return deleteAllocations(ctx, tx, "allocation_key = $1", allocationKey)
+}
+
+// retainAllocations unbinds the claim from the rows it holds under reclaim
+// policy Retain and returns their allocation keys.
+//
+// Nothing else happens, and that is the point: the address is still held, so
+// consumption, pool capacity, the utilization gauges and the search floor are
+// all unchanged. retained_at is stamped by the ipam_set_retained_at trigger on
+// this exact transition, so it is never written here.
+func retainAllocations(ctx context.Context, tx pgx.Tx, claimKey string) ([]string, error) {
+	rows, err := tx.Query(ctx,
+		`UPDATE ipam_cidr_allocations SET claim_key = NULL
+		  WHERE claim_key = $1 AND reclaim_policy = 'Retain'
+		 RETURNING allocation_key`, claimKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("retain allocation: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("scan retained allocation: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate retained allocations: %w", err)
+	}
+	return keys, nil
+}
+
+// deleteAllocations frees every allocation row matching cond, which must be a
+// single-parameter predicate, and republishes the capacity of each pool it
+// touched.
+//
 // RETURNING surfaces the pool_key/ip_family so the post-release utilization
 // gauge can be refreshed without an extra round-trip on the read path. Pool
 // rows that have already been hard-deleted (orphaned allocations) yield zero
 // rows from RETURNING; in that case the gauge update is silently skipped.
-func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimKey string) error {
+func deleteAllocations(ctx context.Context, tx pgx.Tx, cond string, arg any) error {
 	rows, err := tx.Query(ctx,
-		`DELETE FROM ipam_cidr_allocations WHERE claim_key = $1
+		`DELETE FROM ipam_cidr_allocations WHERE `+cond+`
 		 RETURNING pool_key, ip_family,
-		           host(allocated_cidr) || '/' || masklen(allocated_cidr)`, claimKey,
+		           host(allocated_cidr) || '/' || masklen(allocated_cidr)`, arg,
 	)
 	if err != nil {
 		return fmt.Errorf("release prefix: %w", err)
@@ -292,6 +348,19 @@ func effectivePoolFamily(pool *ipamv1alpha1.IPPool) string {
 // DeleteObject implements PrefixAllocator.DeleteObject.
 func (a *PostgresPrefixAllocator) DeleteObject(ctx context.Context, tx pgx.Tx, key string) (int64, error) {
 	return deleteObject(ctx, tx, key)
+}
+
+// GetObject implements PrefixAllocator.GetObject.
+func (a *PostgresPrefixAllocator) GetObject(ctx context.Context, tx pgx.Tx, key string) ([]byte, error) {
+	var data []byte
+	err := tx.QueryRow(ctx, `SELECT data FROM ipam_objects WHERE key = $1`, key).Scan(&data)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("%w: %q", ErrObjectNotFound, key)
+		}
+		return nil, fmt.Errorf("read object %q: %w", key, err)
+	}
+	return data, nil
 }
 
 // UpdateObject implements PrefixAllocator.UpdateObject.
@@ -464,14 +533,33 @@ func publishPrefixUtilization(poolKey, ipFamily string, parents []net.IPNet, con
 }
 
 // insertPrefixAllocation records a new allocation row.
-func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, poolKey, cidr, claimKey, ipFamily string, ownerProject string) error {
+//
+// class_name and reclaim_policy are written from the request, not left to the
+// column defaults: a retained row is read after its claim is gone, and what it
+// was handed out under has to be readable from the row itself.
+//
+// scope_digest is the digest findBlock searched under, so the row lands in the
+// address space the search proved free. It is not the claim's scope digest;
+// projecting a claim's scope onto its class is not wired through the search
+// yet, and a row in a space the search did not consider would not block the
+// allocations it overlaps.
+func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, cidr string) error {
 	defer metrics.ObserveQuery("insert_allocation", time.Now())
+	allocationKey := req.AllocationKey
+	if allocationKey == "" {
+		allocationKey = req.ClaimKey
+	}
+	policy := req.ReclaimPolicy
+	if policy == "" {
+		policy = ipamv1alpha1.ReclaimDelete
+	}
 	_, err := tx.Exec(ctx,
 		`INSERT INTO ipam_cidr_allocations
 		    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family,
-		     reclaim_policy, owner_project)
-		 VALUES ($1, $2, $3, $3, $4, 'Delete', $5)`,
-		poolKey, cidr, claimKey, ipFamily, ownerProject,
+		     purpose, class_name, scope_digest, reclaim_policy, owner_project)
+		 VALUES ($1, $2, $3, $4, $5, 'Claim', $6, $7, $8, $9)`,
+		req.PoolKey, cidr, req.ClaimKey, allocationKey, req.IPFamily,
+		req.ClassName, scope.EmptyAddressSpaceDigest(), string(policy), req.OwnerProject,
 	)
 	if err != nil {
 		return fmt.Errorf("insert allocation: %w", err)

@@ -174,12 +174,14 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	v1alpha1Storage["ipclasses"] = ipClassStore
 	v1alpha1Storage["ipclasses/status"] = ipClassStatusStore
 
-	// IPAllocation — namespaced, simple CRUD. Rows are system-created by the
-	// IPClaim Create handler inside the allocation transaction, so this
-	// storage carries no allocator/db dependency.
+	// IPAllocation — namespaced. Rows are system-created by the IPClaim Create
+	// handler inside the allocation transaction; the allocator and pool are
+	// for Delete, which frees the address a retained allocation still holds.
 	ipAllocStore, ipAllocStatusStore, err := ipallocation.NewAllocationStorage(
 		Scheme,
 		c.GenericConfig.RESTOptionsGetter,
+		c.ExtraConfig.PrefixAllocator,
+		c.ExtraConfig.AllocatorPool,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create IPAllocation storage: %w", err)
