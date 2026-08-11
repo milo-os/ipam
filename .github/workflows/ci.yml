@@ -78,6 +78,11 @@ jobs:
       - name: Build k6 component
         run: kustomize build config/components/k6-performance-tests/ > /dev/null
 
+      # The install path for the IAM manifests, rendered by the infra Flux
+      # Kustomization rather than by either overlay above.
+      - name: Build Milo IAM bundle
+        run: kustomize build config/milo/ > /dev/null
+
   chainsaw-yaml:
     name: Lint chainsaw YAML
     runs-on: ubuntu-latest

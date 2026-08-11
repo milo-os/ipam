@@ -14,6 +14,9 @@ spec:
     - ipam.miloapis.com/ipallocations.list
     - ipam.miloapis.com/ipallocations.get
     - ipam.miloapis.com/ipallocations.watch
+    - ipam.miloapis.com/ipclasses.list
+    - ipam.miloapis.com/ipclasses.get
+    - ipam.miloapis.com/ipclasses.watch
     - ipam.miloapis.com/ipclaims.list
     - ipam.miloapis.com/ipclaims.get
     - ipam.miloapis.com/ipclaims.watch
