@@ -1,0 +1,26 @@
+{
+  "name": "IPAM",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.24-bookworm",
+
+  // docker-in-docker rather than a postgres service: internal/testdb starts its
+  // own container, so the fixture resolves its backend identically here, on a
+  // laptop, and in CI.
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/kubectl-helm-minikube:1": {
+      "minikube": "none"
+    }
+  },
+
+  "containerEnv": {
+    "IPAM_TEST_REQUIRE_POSTGRES": "1"
+  },
+
+  "postCreateCommand": "go mod download",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go"]
+    }
+  }
+}

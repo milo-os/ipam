@@ -63,6 +63,7 @@ func addFieldLabelConversions(scheme *runtime.Scheme) error {
 		"IPClass": fieldLabelConversion(false,
 			"spec.ipFamily",
 			"spec.parentClassName",
+			"spec.source.project",
 		),
 		// Namespaced.
 		"IPAllocation": fieldLabelConversion(true,

@@ -25,6 +25,7 @@ import (
 	_ "go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipallocation"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipclaim"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipclass"
 	"go.miloapis.com/ipam/internal/registry/ipam/ippool"
 	"go.miloapis.com/ipam/pkg/apis/ipam/install"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -159,6 +160,19 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	}
 	v1alpha1Storage["ippools"] = ipPoolStore
 	v1alpha1Storage["ippools/status"] = ipPoolStatusStore
+
+	// IPClass — cluster-scoped policy, with status subresource. No allocator or
+	// db dependency: a class states what an allocation should look like and
+	// allocates nothing itself.
+	ipClassStore, ipClassStatusStore, err := ipclass.NewClassStorage(
+		Scheme,
+		c.GenericConfig.RESTOptionsGetter,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create IPClass storage: %w", err)
+	}
+	v1alpha1Storage["ipclasses"] = ipClassStore
+	v1alpha1Storage["ipclasses/status"] = ipClassStatusStore
 
 	// IPAllocation — namespaced, simple CRUD. Rows are system-created by the
 	// IPClaim Create handler inside the allocation transaction, so this
