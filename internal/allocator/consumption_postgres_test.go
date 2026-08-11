@@ -98,7 +98,10 @@ func allocate(t *testing.T, db *pgxpool.Pool, poolKey, claim string, prefixLen i
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	cidr, err := NewPostgresPrefixAllocator().AllocatePrefix(ctx, tx, poolKey, prefixLen, "IPv4", claim, testProject)
+	cidr, err := NewPostgresPrefixAllocator().AllocatePrefix(ctx, tx, PrefixRequest{
+		PoolKey: poolKey, PrefixLen: prefixLen, IPFamily: "IPv4",
+		ClaimKey: claim, AllocationKey: claim, OwnerProject: testProject,
+	})
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		if errors.Is(err, ErrPoolExhausted) {
@@ -119,7 +122,7 @@ func release(t *testing.T, db *pgxpool.Pool, claim string) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := NewPostgresPrefixAllocator().Release(ctx, tx, claim); err != nil {
+	if _, err := NewPostgresPrefixAllocator().Release(ctx, tx, claim); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("release %s: %v", claim, err)
 	}

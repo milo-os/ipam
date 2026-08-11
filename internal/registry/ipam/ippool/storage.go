@@ -179,7 +179,13 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 
 	span.SetAttributes(attribute.String(tracing.AttrClaimIPFamily, ipFamily))
 
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, parentKey, pool.Spec.PrefixLength, ipFamily, childKey, "")
+	cidr, err := r.allocator.AllocatePrefix(ctx, tx, allocator.PrefixRequest{
+		PoolKey:       parentKey,
+		PrefixLen:     pool.Spec.PrefixLength,
+		IPFamily:      ipFamily,
+		ClaimKey:      childKey,
+		AllocationKey: childKey,
+	})
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		switch {
@@ -266,7 +272,7 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 		return nil, false, apierrors.NewConflict(
 			schema.GroupResource{Group: v1alpha1.GroupName, Resource: "ippools"},
 			name,
-			fmt.Errorf("cannot delete IPPool with %d active allocation(s); release all claims and child pools first", count),
+			fmt.Errorf("cannot delete IPPool with %d active allocation(s); release all claims, retained allocations and child pools first", count),
 		)
 	}
 
@@ -281,7 +287,7 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	if err != nil {
 		return nil, false, fmt.Errorf("begin child-pool delete transaction: %w", err)
 	}
-	if err := r.allocator.Release(ctx, tx, poolKey); err != nil {
+	if _, err := r.allocator.Release(ctx, tx, poolKey); err != nil {
 		_ = tx.Rollback(ctx)
 		return nil, false, fmt.Errorf("release child-pool allocation: %w", err)
 	}

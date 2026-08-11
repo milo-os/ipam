@@ -319,6 +319,23 @@ var (
 		},
 		[]string{"resource"},
 	)
+
+	// Retentions counts the subset of releases that freed no address because
+	// the allocation's reclaim policy was Retain. Retained addresses stay
+	// consumed with no claim naming them, so they are invisible in every
+	// claim-shaped view of the service; this is the counter that shows them
+	// accumulating.
+	//
+	// resource: "ipclaim".
+	Retentions = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Namespace:      "ipam",
+			Name:           "retentions_total",
+			Help:           "Total number of released claims whose allocation was retained",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"resource"},
+	)
 )
 
 func init() {
@@ -340,6 +357,7 @@ func init() {
 		WatcherPollBatchSize,
 		WatcherDrainCycles,
 		Releases,
+		Retentions,
 	)
 }
 
@@ -372,6 +390,13 @@ func RecordWatchEvent(kind, eventType string) {
 // commits successfully.
 func RecordRelease(resource string) {
 	Releases.WithLabelValues(resource).Inc()
+}
+
+// RecordRetention increments the retentions_total counter for a release that
+// left its allocation in place under reclaimPolicy Retain. Recorded alongside
+// RecordRelease, not instead of it.
+func RecordRetention(resource string) {
+	Retentions.WithLabelValues(resource).Inc()
 }
 
 // ObserveQuery records a Postgres query duration. Intended for use as

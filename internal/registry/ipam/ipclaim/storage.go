@@ -12,10 +12,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -260,6 +262,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 		return nil, apierrors.NewBadRequest(err.Error())
 	}
+	reclaimPolicy := allocator.EffectiveReclaimPolicy(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy))
 
 	// Resolving the pool provisions any missing level of the class's chain, and
 	// each level commits on its own — so it runs BEFORE the allocation
@@ -287,8 +290,28 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 	span.SetAttributes(attribute.String(tracing.AttrPoolName, poolName))
 
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, prefixLen, string(class.Spec.IPFamily), claimKey, id.Name)
+	// The IPAllocation's name and key are the allocation row's identity, so
+	// they are resolved before the row is written rather than after.
+	allocationName := allocationNameFor(claim.Namespace, claim.Name)
+	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
+
+	cidr, err := r.allocator.AllocatePrefix(ctx, tx, allocator.PrefixRequest{
+		PoolKey:       poolKey,
+		PrefixLen:     prefixLen,
+		IPFamily:      string(class.Spec.IPFamily),
+		ClaimKey:      claimKey,
+		AllocationKey: allocationKey,
+		OwnerProject:  id.Name,
+		ClassName:     class.Name,
+		ReclaimPolicy: reclaimPolicy,
+	})
 	if err != nil {
+		if isIdentityCollision(err) {
+			_ = tx.Rollback(ctx)
+			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
+			failSpan(tracing.ReasonTxError)
+			return nil, retainedAllocationConflict(claim.Name, allocationName)
+		}
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
 		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org)
@@ -303,12 +326,6 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		}
 		return nil, mapAllocationError(err)
 	}
-
-	// Build the IPAllocation object that records this binding. It lives in
-	// the claim's namespace; its name is a stable hash of the claim
-	// namespace/name so the Delete handler can recompute it deterministically.
-	allocationName := allocationNameFor(claim.Namespace, claim.Name)
-	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
 
 	// Populate the claim status with the computed allocation up-front so both
 	// the dry-run and the persisting paths return identical bound status.
@@ -329,14 +346,23 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return claim, nil
 	}
 
+	// The allocation records what it was handed out under, not just where it
+	// came from: under Retain it is read after the claim that chose those
+	// values is gone.
 	alloc := &ipam.IPAllocation{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      allocationName,
 			Namespace: claim.Namespace,
 		},
 		Spec: ipam.IPAllocationSpec{
-			IPFamily: claim.Spec.IPFamily,
-			PoolRef:  ipam.LocalRef{Name: poolName},
+			IPFamily:      ipam.IPFamily(class.Spec.IPFamily),
+			PoolRef:       ipam.LocalRef{Name: poolName},
+			ClassName:     class.Name,
+			Purpose:       ipam.PurposeClaim,
+			ClaimRef:      &ipam.LocalRef{Name: claim.Name},
+			Scope:         claim.Spec.Scope,
+			ReclaimPolicy: ipam.ReclaimPolicy(reclaimPolicy),
+			OwnerRef:      claim.Spec.OwnerRef,
 		},
 		Status: ipam.IPAllocationStatus{
 			Phase:         ipam.AllocationReady,
@@ -351,6 +377,10 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	}
 	if _, err := r.allocator.InsertObject(ctx, tx, allocationKey, "IPAllocation", claim.Namespace, allocationName, allocData); err != nil {
 		_ = tx.Rollback(ctx)
+		if isIdentityCollision(err) {
+			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
+			return nil, retainedAllocationConflict(claim.Name, allocationName)
+		}
 		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
 		return nil, fmt.Errorf("persist IPAllocation: %w", err)
 	}
@@ -482,8 +512,9 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 	// TX2 — release the allocation, remove the IPAllocation row and the
 	// claim row in a single transaction. Retried on transient failures.
 	var lastErr error
+	var retained bool
 	for attempt := 1; attempt <= deleteMaxAttempts; attempt++ {
-		lastErr = r.releaseAndDelete(ctx, claim, claimKey)
+		retained, lastErr = r.releaseAndDelete(ctx, claim, claimKey)
 		if lastErr == nil {
 			break
 		}
@@ -499,8 +530,14 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 		return nil, false, fmt.Errorf("release allocation after %d attempts: %w", deleteMaxAttempts, lastErr)
 	}
 
-	klog.V(2).InfoS("claim released and deleted", "claim", name)
+	klog.V(2).InfoS("claim released and deleted", "claim", name, "retained", retained)
+	// The claim was released either way; releases_total counts claims. Whether
+	// the address came back is a different question, and retention answers it
+	// on its own counter.
 	metrics.RecordRelease("ipclaim")
+	if retained {
+		metrics.RecordRetention("ipclaim")
+	}
 	return releasing, true, nil
 }
 
@@ -538,31 +575,76 @@ func (r *AllocatingREST) DeleteCollection(ctx context.Context, deleteValidation 
 	return deletedList, nil
 }
 
-// releaseAndDelete is a single attempt of TX2: release the allocation
-// row(s) for claimKey, delete the IPAllocation row recorded on the claim,
-// and delete the claim row — all inside one transaction.
-func (r *AllocatingREST) releaseAndDelete(ctx context.Context, claim *ipam.IPClaim, claimKey string) error {
+// releaseAndDelete is a single attempt of TX2: dispose of the allocation
+// row(s) for claimKey, dispose of the IPAllocation object the claim is bound
+// to, and delete the claim row — all inside one transaction.
+//
+// Under reclaimPolicy Retain the allocation row survives with its claim
+// cleared, and so does the IPAllocation: it is updated to drop spec.claimRef
+// rather than deleted, which is what makes retention visible rather than
+// inferred. The claim itself goes either way. Reports whether the address was
+// retained.
+func (r *AllocatingREST) releaseAndDelete(ctx context.Context, claim *ipam.IPClaim, claimKey string) (bool, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin release transaction: %w", err)
+		return false, fmt.Errorf("begin release transaction: %w", err)
 	}
-	if err := r.allocator.Release(ctx, tx, claimKey); err != nil {
+	retained, err := r.allocator.Release(ctx, tx, claimKey)
+	if err != nil {
 		_ = tx.Rollback(ctx)
-		return fmt.Errorf("release allocation: %w", err)
+		return false, fmt.Errorf("release allocation: %w", err)
 	}
 	if claim.Status.BoundAllocationRef != nil && claim.Status.BoundAllocationRef.Name != "" {
 		allocationKey := allocationObjectKey(tenant.FromContext(ctx), claim.Namespace, claim.Status.BoundAllocationRef.Name)
-		if _, err := r.allocator.DeleteObject(ctx, tx, allocationKey); err != nil {
+		if slices.Contains(retained, allocationKey) {
+			if err := r.unbindAllocation(ctx, tx, allocationKey); err != nil {
+				_ = tx.Rollback(ctx)
+				return false, err
+			}
+		} else if _, err := r.allocator.DeleteObject(ctx, tx, allocationKey); err != nil {
 			_ = tx.Rollback(ctx)
-			return fmt.Errorf("delete IPAllocation row: %w", err)
+			return false, fmt.Errorf("delete IPAllocation row: %w", err)
 		}
 	}
 	if _, err := r.allocator.DeleteObject(ctx, tx, claimKey); err != nil {
 		_ = tx.Rollback(ctx)
-		return fmt.Errorf("delete claim row: %w", err)
+		return false, fmt.Errorf("delete claim row: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit release transaction: %w", err)
+		return false, fmt.Errorf("commit release transaction: %w", err)
+	}
+	return len(retained) > 0, nil
+}
+
+// unbindAllocation clears spec.claimRef on a retained IPAllocation, in the
+// transaction that unbound its row. The update emits a MODIFIED event, so a
+// watcher sees the allocation become unbound rather than watching its claim
+// disappear and having to infer it.
+func (r *AllocatingREST) unbindAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error {
+	data, err := r.allocator.GetObject(ctx, tx, allocationKey)
+	if err != nil {
+		if errors.Is(err, allocator.ErrObjectNotFound) {
+			// The row it describes was retained, but there is no object left
+			// to unbind. Nothing to publish.
+			return nil
+		}
+		return fmt.Errorf("read retained IPAllocation: %w", err)
+	}
+	obj, err := runtime.Decode(r.codec, data)
+	if err != nil {
+		return fmt.Errorf("decode retained IPAllocation: %w", err)
+	}
+	alloc, ok := obj.(*ipam.IPAllocation)
+	if !ok {
+		return fmt.Errorf("expected *ipam.IPAllocation at %q, got %T", allocationKey, obj)
+	}
+	alloc.Spec.ClaimRef = nil
+	unbound, err := runtime.Encode(r.codec, alloc)
+	if err != nil {
+		return fmt.Errorf("encode retained IPAllocation: %w", err)
+	}
+	if _, err := r.allocator.UpdateObject(ctx, tx, allocationKey, unbound); err != nil {
+		return fmt.Errorf("unbind retained IPAllocation: %w", err)
 	}
 	return nil
 }
@@ -594,6 +676,36 @@ func allocationObjectKey(id tenant.Identity, namespace, name string) string {
 func allocationNameFor(namespace, name string) string {
 	h := sha256.Sum256([]byte(namespace + "/" + name))
 	return "alloc-" + hex.EncodeToString(h[:8])
+}
+
+// isIdentityCollision reports whether err is the unique violation a claim hits
+// when something already occupies the identity its IPAllocation would take.
+//
+// The allocation's name is a hash of the claim's namespace and name, so a
+// claim recreated under a name whose predecessor retained its address
+// recomputes that address's identity. Both the object row and the allocation
+// row refuse it, and neither refusal is an internal error.
+func isIdentityCollision(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != pgUniqueViolation {
+		return false
+	}
+	switch pgErr.ConstraintName {
+	case "ipam_cidr_alloc_allocation_key_key", "ipam_objects_pkey":
+		return true
+	default:
+		return false
+	}
+}
+
+const pgUniqueViolation = "23505"
+
+func retainedAllocationConflict(claimName, allocationName string) error {
+	return apierrors.NewConflict(
+		v1alpha1.Resource("ipclaims"),
+		claimName,
+		fmt.Errorf("an allocation under this identity already exists: IPAllocation %q, retained by an earlier claim of the same name; delete it to reuse the name", allocationName),
+	)
 }
 
 func mapAllocationError(err error) error {

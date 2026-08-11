@@ -87,17 +87,21 @@ func (ipAllocationStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Obj
 	return nil
 }
 
-// ValidateDelete protects against direct user-initiated deletes of
-// IPAllocation rows. The ipclaim Delete handler calls
+// ValidateDelete protects a bound allocation from being deleted out from
+// under the claim that holds it. The ipclaim Delete handler calls
 // allocator.DeleteObject directly (bypassing strategy validation) when it
 // tears down the claim, so this guard only fires for clients hitting the
 // /ipallocations endpoint with `kubectl delete`.
+//
+// A retained allocation has no claim — spec.claimRef is nil — and deleting it
+// is the only way to give its address back. Refusing that would make Retain a
+// one-way door.
 func (ipAllocationStrategy) ValidateDelete(_ context.Context, obj runtime.Object) field.ErrorList {
 	a := obj.(*ipam.IPAllocation)
-	if a.Spec.PoolRef.Name != "" {
+	if a.Spec.ClaimRef != nil && a.Spec.ClaimRef.Name != "" {
 		return field.ErrorList{field.Forbidden(
-			field.NewPath("spec", "poolRef"),
-			"IPAllocation is managed by its owning IPClaim; delete the claim instead",
+			field.NewPath("spec", "claimRef"),
+			fmt.Sprintf("IPAllocation is bound to IPClaim %q; delete the claim instead", a.Spec.ClaimRef.Name),
 		)}
 	}
 	return nil
