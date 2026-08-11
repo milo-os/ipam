@@ -3,6 +3,8 @@ kind: IPPool
 metadata:
   name: trace-parent
 spec:
+  classNames:
+    - trace-class
   cidr: 10.140.0.0/20
   ipFamily: IPv4
   visibility: consumer

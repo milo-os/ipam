@@ -21,6 +21,8 @@ spec:
       description: Root IPPool 10.220.0.0/20 (consumer, /24-/28)
       try:
         - create:
+            file: test-data/class.yaml
+        - create:
             file: test-data/root-pool.yaml
         - script:
             timeout: 45s

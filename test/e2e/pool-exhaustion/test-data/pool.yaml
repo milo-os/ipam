@@ -5,6 +5,8 @@ metadata:
 spec:
   cidr: 192.168.0.0/31
   ipFamily: IPv4
+  classNames:
+    - exhaust-class
   visibility: consumer
   allocation:
     minPrefixLength: 32

@@ -4,8 +4,6 @@ metadata:
   name: nest-grandchild-claim
   namespace: ($namespace)
 spec:
-  ipFamily: IPv4
+  className: nesting-class
   prefixLength: 24
-  poolRef:
-    name: nest-grandchild
   reclaimPolicy: Delete

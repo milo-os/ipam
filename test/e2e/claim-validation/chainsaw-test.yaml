@@ -16,6 +16,8 @@ spec:
       description: Create a valid IPPool; assert Ready phase and canonical CIDR
       try:
         - create:
+            file: test-data/class.yaml
+        - create:
             file: test-data/valid-pool.yaml
         - script:
             timeout: 45s

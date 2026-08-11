@@ -6,10 +6,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -20,10 +18,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -34,10 +30,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -48,10 +42,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -62,10 +54,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -76,10 +66,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -90,10 +78,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -104,10 +90,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -118,10 +102,8 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
@@ -132,8 +114,6 @@ metadata:
   labels:
     overlap-test: "true"
 spec:
-  ipFamily: IPv4
+  className: overlap-class
   prefixLength: 24
-  poolRef:
-    name: overlap-parent
   reclaimPolicy: Delete

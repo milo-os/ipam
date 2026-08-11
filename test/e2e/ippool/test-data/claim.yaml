@@ -4,8 +4,6 @@ metadata:
   name: pool-suite-claim
   namespace: ($namespace)
 spec:
-  ipFamily: IPv4
+  className: pool-suite-class
   prefixLength: 28
-  poolRef:
-    name: pool-suite-child
   reclaimPolicy: Delete

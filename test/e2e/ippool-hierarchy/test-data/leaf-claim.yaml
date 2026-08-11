@@ -4,8 +4,6 @@ metadata:
   name: hier-leaf-claim
   namespace: ($namespace)
 spec:
-  ipFamily: IPv4
+  className: hierarchy-class
   prefixLength: 24
-  poolRef:
-    name: hier-region-1
   reclaimPolicy: Delete

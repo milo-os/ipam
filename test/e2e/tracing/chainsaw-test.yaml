@@ -25,6 +25,8 @@ spec:
       description: Create a platform-scope root IPPool and wait for Ready.
       try:
         - create:
+            file: test-data/class.yaml
+        - create:
             file: test-data/pool.yaml
         - script:
             timeout: 45s

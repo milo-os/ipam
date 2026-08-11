@@ -21,6 +21,8 @@ spec:
       description: Top-of-tree environment IPPool (10.128.0.0/9, allow /12-/16)
       try:
         - create:
+            file: test-data/class.yaml
+        - create:
             file: test-data/env-pool.yaml
         - script:
             timeout: 45s

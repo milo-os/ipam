@@ -1,0 +1,10 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: exhaust-class
+spec:
+  ipFamily: IPv4
+  # A host address: min == max says the size once, so a claim need not ask.
+  allowedPrefixLengths:
+    min: 32
+    max: 32

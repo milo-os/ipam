@@ -21,6 +21,8 @@ spec:
       description: Root IPPool 10.0.0.0/8, explicit ipFamily IPv4
       try:
         - create:
+            file: test-data/class.yaml
+        - create:
             file: test-data/root-pool.yaml
         - script:
             timeout: 45s

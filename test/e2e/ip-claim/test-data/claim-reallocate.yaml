@@ -4,8 +4,6 @@ metadata:
   name: alloc-claim-reuse
   namespace: ($namespace)
 spec:
-  ipFamily: IPv4
+  className: alloc-class
   prefixLength: 24
-  poolRef:
-    name: alloc-parent
   reclaimPolicy: Delete

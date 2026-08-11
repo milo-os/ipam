@@ -21,6 +21,8 @@ spec:
       description: Create IPPool 10.64.0.0/16, /24 only (256 possible /24s)
       try:
         - create:
+            file: test-data/class.yaml
+        - create:
             file: test-data/parent.yaml
         - script:
             timeout: 45s
@@ -108,7 +110,7 @@ spec:
               # Verify exactly 10 IPAllocation objects exist in the same namespace,
               # each pointing at overlap-parent.
               count=$(kubectl get ipallocation -n "$NAMESPACE" \
-                -o jsonpath='{range .items[?(@.spec.poolRef.name=="overlap-parent")]}{.metadata.name}{"\n"}{end}' \
+                -o jsonpath='{range .items[?(@.status.poolRef.name=="overlap-parent")]}{.metadata.name}{"\n"}{end}' \
                 | sort -u | grep -c . || true)
               if [ "$count" -ne 10 ]; then
                 echo "FAIL: expected 10 IPAllocations for overlap-parent, got $count"
