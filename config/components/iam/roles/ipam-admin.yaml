@@ -19,6 +19,7 @@ spec:
     - ipam.miloapis.com/ipallocations.update
     - ipam.miloapis.com/ipallocations.patch
     - ipam.miloapis.com/ipallocations.delete
+    - ipam.miloapis.com/ipclasses.updateStatus
     - ipam.miloapis.com/ippools.updateStatus
     - ipam.miloapis.com/ipclaims.updateStatus
     - ipam.miloapis.com/ipallocations.updateStatus
