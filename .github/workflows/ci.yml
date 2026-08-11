@@ -234,6 +234,15 @@ jobs:
           kubectl wait --for=condition=Available \
             apiservice/v1alpha1.ipam.miloapis.com --timeout=180s
 
+      - name: Seed tenant impersonation kubeconfig and RBAC
+        # Every claim resolves its class, and resolving a class needs a project,
+        # so the suites drive the apiserver as a project tenant. Chainsaw
+        # resolves each suite's `clusters:` kubeconfig path when it loads the
+        # suite, so this has to run before `chainsaw test`.
+        run: |
+          sh test/e2e/lib/gen-impersonation-kubeconfig.sh test/e2e/.tenant-impersonation.kubeconfig
+          kubectl apply -f test/e2e/lib/tenant-rbac.yaml
+
       - name: Run Chainsaw e2e suites
         run: chainsaw test test/e2e/
 

@@ -11,6 +11,15 @@ spec:
     - Immutability of IPPool spec.cidr and spec.ipFamily
     - Mutability of spec.allocation.strategy
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: create-valid-pool
       description: Create a valid IPPool; assert Ready phase and canonical CIDR

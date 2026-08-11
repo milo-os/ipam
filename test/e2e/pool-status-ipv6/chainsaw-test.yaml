@@ -13,6 +13,15 @@ spec:
     - status.utilizationPercent stays within [0, 100], computed with
       arbitrary-precision arithmetic.
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: create-root-ipv6-pool
       description: Root IPv6 IPPool 2001:db8:e2e0::/44 (consumer, /48 children).

@@ -10,6 +10,15 @@ spec:
     - IPAllocation object created atomically in the same namespace
     - Release on delete (IPAllocation removed) and re-allocation
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: setup-pool
       description: Create root IPPool (10.128.0.0/20, allow /24-/28)

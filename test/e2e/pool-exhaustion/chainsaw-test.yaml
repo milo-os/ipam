@@ -9,6 +9,15 @@ spec:
     - Third claim returns HTTP 507 (Insufficient Storage)
     - Releasing one claim re-opens the slot
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: setup-tiny-pool
       description: Create the class and the IPPool offering it — 2 addresses, exhausted after 2 claims

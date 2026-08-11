@@ -16,6 +16,15 @@ spec:
     requests. True concurrent contention (many parallel CREATEs hitting the
     same parent row) is covered by `test/load/concurrent-claims.js`.
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: setup-pool
       description: Create IPPool 10.64.0.0/16, /24 only (256 possible /24s)
@@ -110,7 +119,7 @@ spec:
               # Verify exactly 10 IPAllocation objects exist in the same namespace,
               # each pointing at overlap-parent.
               count=$(kubectl get ipallocation -n "$NAMESPACE" \
-                -o jsonpath='{range .items[?(@.status.poolRef.name=="overlap-parent")]}{.metadata.name}{"\n"}{end}' \
+                -o jsonpath='{range .items[?(@.spec.poolRef.name=="overlap-parent")]}{.metadata.name}{"\n"}{end}' \
                 | sort -u | grep -c . || true)
               if [ "$count" -ne 10 ]; then
                 echo "FAIL: expected 10 IPAllocations for overlap-parent, got $count"

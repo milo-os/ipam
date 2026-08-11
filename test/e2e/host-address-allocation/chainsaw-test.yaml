@@ -17,6 +17,15 @@ spec:
     4. IPv6 /128 bind   — /126 pool (2001:db8::/126, 4 addresses); claim /128;
                           assert Bound and a /128 allocatedCIDR.
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     # ── Setup ───────────────────────────────────────────────────────────────
     - name: setup-pools
