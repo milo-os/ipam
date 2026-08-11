@@ -476,8 +476,9 @@ func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, poolKey, cidr, claim
 	defer metrics.ObserveQuery("insert_allocation", time.Now())
 	_, err := tx.Exec(ctx,
 		`INSERT INTO ipam_cidr_allocations
-		    (pool_key, allocated_cidr, claim_key, ip_family, reclaim_policy, owner_project)
-		 VALUES ($1, $2, $3, $4, 'Delete', $5)`,
+		    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family,
+		     reclaim_policy, owner_project)
+		 VALUES ($1, $2, $3, $3, $4, 'Delete', $5)`,
 		poolKey, cidr, claimKey, ipFamily, ownerProject,
 	)
 	if err != nil {
