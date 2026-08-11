@@ -12,6 +12,10 @@ spec:
   inheritedRoles:
     - name: ipam.miloapis.com-viewer
   includedPermissions:
+    - ipam.miloapis.com/ipclasses.create
+    - ipam.miloapis.com/ipclasses.update
+    - ipam.miloapis.com/ipclasses.patch
+    - ipam.miloapis.com/ipclasses.delete
     - ipam.miloapis.com/ippools.create
     - ipam.miloapis.com/ippools.update
     - ipam.miloapis.com/ippools.patch
