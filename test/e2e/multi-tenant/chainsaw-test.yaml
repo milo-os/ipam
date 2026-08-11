@@ -14,7 +14,7 @@ spec:
   # central assertion is that consuming another project's class without a grant
   # is DENIED. internal/allocator.resolveClassIn follows a reference across
   # projects with no authorization check, so there is nothing to assert against
-  # yet. Rewrite this suite alongside that gate.
+  # yet. Rewrite this suite alongside that gate — see #89.
   skip: true
 
   skipDelete: true
