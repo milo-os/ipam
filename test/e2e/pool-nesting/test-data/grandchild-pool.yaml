@@ -3,6 +3,8 @@ kind: IPPool
 metadata:
   name: nest-grandchild
 spec:
+  classNames:
+    - nesting-class
   visibility: platform
   parentPoolRef:
     name: nest-child

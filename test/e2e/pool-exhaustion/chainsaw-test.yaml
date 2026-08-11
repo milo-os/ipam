@@ -5,14 +5,25 @@ metadata:
 spec:
   description: |
     Pool exhaustion path:
-    - Two IPClaims (prefixLength: 32) fill the /31 IPPool (2 host addresses)
+    - Two IPClaims of a /32 class fill the /31 IPPool (2 host addresses)
     - Third claim returns HTTP 507 (Insufficient Storage)
     - Releasing one claim re-opens the slot
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: setup-tiny-pool
-      description: Create IPPool 192.168.0.0/31 (/32 only) — 2 addresses, exhausted after 2 claims
+      description: Create the class and the IPPool offering it — 2 addresses, exhausted after 2 claims
       try:
+        - create:
+            file: test-data/class.yaml
         - create:
             file: test-data/pool.yaml
         - script:
@@ -33,7 +44,7 @@ spec:
               ($error == null): true
 
     - name: fill-pool
-      description: Create two IPClaims (prefixLength 32); both must reach Bound
+      description: Create two IPClaims of the class; both must reach Bound
       try:
         - create:
             file: test-data/claim-1.yaml

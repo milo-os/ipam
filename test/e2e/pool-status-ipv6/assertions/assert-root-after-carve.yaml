@@ -6,5 +6,5 @@ status:
   phase: Ready
   ipFamily: IPv6
   # One /48 carved out of sixteen leaves the next-largest free block at /45
-  # and 1/16 (6%) utilization — both computed without int64 overflow.
-  utilizationPercent: 6
+  # and 1/16 utilization — both computed without int64 overflow.
+  utilizationPercent: 6.25

@@ -16,10 +16,21 @@ spec:
     with HTTP 409 so operators must release child claims first. This
     avoids orphaning child allocations.
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: create-environment-pool
       description: Top-of-tree environment IPPool (10.128.0.0/9, allow /12-/16)
       try:
+        - create:
+            file: test-data/class.yaml
         - create:
             file: test-data/env-pool.yaml
         - script:

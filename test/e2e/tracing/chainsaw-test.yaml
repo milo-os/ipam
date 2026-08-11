@@ -20,10 +20,20 @@ spec:
     deploys Tempo (telemetry-system) ahead of the IPAM service; without a
     running Tempo this suite will fail.
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the whole suite runs as a project tenant rather than unimpersonated.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: setup-pool
       description: Create a platform-scope root IPPool and wait for Ready.
       try:
+        - create:
+            file: test-data/class.yaml
         - create:
             file: test-data/pool.yaml
         - script:
@@ -75,6 +85,9 @@ spec:
               (contains($stdout, 'OK trace-claim Bound')): true
 
     - name: assert-span-in-tempo
+      # Tempo and the IPAM deployment live outside the tenant's project, so this
+      # step reads them as the operator rather than through the tenant context.
+      cluster: ""
       description: |
         Query Tempo's TraceQL search API for a trace carrying the
         ipam.claim.allocate span and assert a traceID is returned.

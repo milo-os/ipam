@@ -4,8 +4,6 @@ metadata:
   name: trace-claim
   namespace: ($namespace)
 spec:
-  ipFamily: IPv4
+  className: trace-class
   prefixLength: 24
-  poolRef:
-    name: trace-parent
   reclaimPolicy: Delete

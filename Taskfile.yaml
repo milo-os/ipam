@@ -171,20 +171,38 @@ tasks:
 
   # ----- E2E -----
 
-  # Generate the impersonation kubeconfig the multi-tenant / tenant-isolation
-  # suites reference via chainsaw `clusters:`. Each project context carries
-  # act-as + act-as-user-extra (iam.miloapis.com/parent-*) so native chainsaw
-  # ops drive the IPAM apiserver as a specific tenant — no curl/proxy bash.
+  # Every suite drives the apiserver as a project tenant: a claim resolves its
+  # class, and resolving a class needs a project. Each context carries act-as +
+  # act-as-user-extra (iam.miloapis.com/parent-*), so the suites stay native
+  # chainsaw ops rather than curl/proxy bash.
+  #
+  # Chainsaw resolves every `clusters:` kubeconfig path when it loads a suite,
+  # before the first step runs, so a suite cannot generate its own.
   # E2E_KUBE_CONTEXT overrides the source context (default: current context).
+  e2e:tenant-setup:
+    desc: Generate the shared impersonation kubeconfig and apply its RBAC
+    cmds:
+      # A suite that starts while the apiservice is still settling fails on
+      # ServiceUnavailable, which reads like a test bug and is not one.
+      - kubectl wait --for=condition=Available
+          apiservice/v1alpha1.ipam.miloapis.com --timeout=180s
+      - sh test/e2e/lib/gen-impersonation-kubeconfig.sh test/e2e/.tenant-impersonation.kubeconfig
+      - kubectl apply -f test/e2e/lib/tenant-rbac.yaml
+      # IPPools and IPClasses are cluster-scoped, so chainsaw's namespace
+      # teardown does not reach them and a run that fails mid-suite leaves them
+      # behind — which makes the NEXT run fail on "already exists", for a reason
+      # that has nothing to do with what changed. project-alpha and
+      # project-beta hold nothing but e2e fixtures.
+      - sh test/e2e/lib/clear-tenant-fixtures.sh
+
   e2e:
     desc: Run all chainsaw e2e suites
-    # The multi-tenant/tenant-isolation suites generate their impersonation
-    # kubeconfig in-suite (first step), so a plain `chainsaw test` behaves the
-    # same here and in CI's direct invocation — no separate generation step.
+    deps: [e2e:tenant-setup]
     cmd: chainsaw test test/e2e/
 
   e2e:suite:
-    desc: 'Run a single suite. Var: SUITE=prefix-validation|prefix-allocation|prefix-selector|prefix-hierarchy|prefix-exhaustion|prefix-overlap|asn-allocation|multi-tenant|tenant-isolation'
+    desc: 'Run a single suite. Var: SUITE=ippool|ip-claim|pool-nesting|multi-tenant|tenant-isolation|tracing|…'
+    deps: [e2e:tenant-setup]
     cmd: chainsaw test test/e2e/{{.SUITE}}
 
   # ----- k6 load tests (delegated to test/load/Taskfile.yaml) -----

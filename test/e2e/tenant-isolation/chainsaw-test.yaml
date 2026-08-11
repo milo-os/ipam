@@ -43,13 +43,13 @@ spec:
 
   clusters:
     project-alpha:
-      kubeconfig: ../.tenant-impersonation-iso.kubeconfig
+      kubeconfig: ../.tenant-impersonation.kubeconfig
       context: tenant-project-alpha
     project-beta:
-      kubeconfig: ../.tenant-impersonation-iso.kubeconfig
+      kubeconfig: ../.tenant-impersonation.kubeconfig
       context: tenant-project-beta
     platform:
-      kubeconfig: ../.tenant-impersonation-iso.kubeconfig
+      kubeconfig: ../.tenant-impersonation.kubeconfig
       context: tenant-platform
 
   timeouts:
@@ -65,17 +65,7 @@ spec:
         tenant user/extras and lets that user perform ipam CRUD. No cross-project
         `use` grants here — isolation must hold without them.
       try:
-        # Generate the impersonation kubeconfig the `clusters:` block references
-        # (in-suite so a direct `chainsaw test` invocation works, not only
-        # `task e2e`). cwd is this suite dir; cd to repo root so KUBECONFIG and
-        # the lib/output paths resolve. Per-suite filename avoids a write race.
-        - script:
-            content: |
-              cd ../../..
-              sh test/e2e/lib/gen-impersonation-kubeconfig.sh test/e2e/.tenant-impersonation-iso.kubeconfig
-            check:
-              ($error == null): true
-        - create:
+        - apply:
             file: resources/impersonation-rbac.yaml
 
     - name: seed-isolated-pools

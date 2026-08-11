@@ -3,6 +3,8 @@ kind: IPPool
 metadata:
   name: pool-suite-child
 spec:
+  classNames:
+    - pool-suite-class
   visibility: consumer
   parentPoolRef:
     name: pool-suite-root

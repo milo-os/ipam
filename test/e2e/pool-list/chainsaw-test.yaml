@@ -11,6 +11,15 @@ spec:
     fresh cluster can't reproduce it here; the deterministic check lives in the
     storage-layer Go tests. This suite is the end-to-end guard that the list
     path returns what was created.
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: create-pools
       description: Create three IPPools carrying the suite label.

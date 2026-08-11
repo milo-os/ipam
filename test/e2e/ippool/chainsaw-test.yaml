@@ -16,10 +16,21 @@ spec:
        deletable.
     6. Throughout, status.capacity.allocated/available track the live state.
 
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
   steps:
     - name: create-root-pool
       description: Root IPPool 10.220.0.0/20 (consumer, /24-/28)
       try:
+        - create:
+            file: test-data/class.yaml
         - create:
             file: test-data/root-pool.yaml
         - script:

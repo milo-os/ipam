@@ -3,6 +3,8 @@ kind: IPPool
 metadata:
   name: hier-region-1
 spec:
+  classNames:
+    - hierarchy-class
   visibility: platform
   parentPoolRef:
     name: hier-env

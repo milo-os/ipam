@@ -4,8 +4,5 @@ metadata:
   name: exhaust-claim-3
   namespace: ($namespace)
 spec:
-  ipFamily: IPv4
-  prefixLength: 32
-  poolRef:
-    name: exhaust-pool
+  className: exhaust-class
   reclaimPolicy: Delete

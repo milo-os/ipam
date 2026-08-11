@@ -4,8 +4,6 @@ metadata:
   name: claim-zero-length
   namespace: ($namespace)
 spec:
-  ipFamily: IPv4
+  className: validation-class
   prefixLength: 0
-  poolRef:
-    name: test-valid-pool
   reclaimPolicy: Delete

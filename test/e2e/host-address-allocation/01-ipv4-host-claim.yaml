@@ -6,8 +6,5 @@ metadata:
   labels:
     host-test: "true"
 spec:
-  ipFamily: IPv4
-  prefixLength: 32
-  poolRef:
-    name: host-pool-v4
+  className: host-class-v4
   reclaimPolicy: Delete

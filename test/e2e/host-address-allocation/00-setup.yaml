@@ -1,3 +1,23 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: host-class-v4
+spec:
+  ipFamily: IPv4
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: host-class-v6
+spec:
+  ipFamily: IPv6
+  allowedPrefixLengths:
+    min: 128
+    max: 128
+---
 # IPv4 /29 parent pool: 10.50.1.0 – 10.50.1.7 (8 host addresses).
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPPool
@@ -6,6 +26,8 @@ metadata:
 spec:
   cidr: 10.50.1.0/29
   ipFamily: IPv4
+  classNames:
+    - host-class-v4
   visibility: consumer
   allocation:
     minPrefixLength: 32
@@ -20,6 +42,8 @@ metadata:
 spec:
   cidr: 2001:db8::/126
   ipFamily: IPv6
+  classNames:
+    - host-class-v6
   visibility: consumer
   allocation:
     minPrefixLength: 128

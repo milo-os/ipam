@@ -1,0 +1,6 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: hierarchy-class
+spec:
+  ipFamily: IPv4

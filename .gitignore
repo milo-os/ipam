@@ -31,3 +31,4 @@ node_modules
 # Generated impersonation kubeconfigs for multi-tenant e2e suites
 # (embed cluster creds; regenerated in-suite per run, one file per suite)
 /test/e2e/.tenant-impersonation*.kubeconfig
+/test/e2e/.platform.kubeconfig

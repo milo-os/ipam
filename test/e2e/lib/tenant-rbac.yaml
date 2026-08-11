@@ -1,0 +1,76 @@
+# Impersonation and tenant-user RBAC for the single-tenant suites.
+#
+# Every claim resolves its class, and resolving a class needs a project, so a
+# suite that ran unimpersonated cannot allocate at all. These suites therefore
+# drive the apiserver as a project tenant, the same way the multi-tenant ones do
+# (see lib/gen-impersonation-kubeconfig.sh for how the extras get there).
+#
+# Kept separate from multi-tenant/resources/impersonation-rbac.yaml, which also
+# grants the cross-project bits those suites need and this one must not have.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: e2e-tenant-impersonator
+rules:
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+    resourceNames: ["e2e-tenant-tester"]
+  # The three extras that carry the project into UserInfo.Extra.
+  - apiGroups: ["authentication.k8s.io"]
+    resources:
+      - "userextras/iam.miloapis.com/parent-name"
+      - "userextras/iam.miloapis.com/parent-type"
+      - "userextras/iam.miloapis.com/parent-api-group"
+    verbs: ["impersonate"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: e2e-tenant-impersonator-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: e2e-tenant-impersonator
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:masters
+---
+# Ordinary IPAM access for the impersonated user. ipclasses is here because a
+# claim reads its class on every allocation: without it every claim 403s.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: e2e-tenant-ipam-user
+rules:
+  # chainsaw creates and tears down the per-test namespace through the same
+  # context it runs the suite with, so the tenant user needs it. Scaffolding,
+  # not part of what these suites assert.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources:
+      - "ippools"
+      - "ippools/status"
+      - "ipclasses"
+      - "ipclasses/status"
+      - "ipclaims"
+      - "ipclaims/status"
+      - "ipallocations"
+      - "ipallocations/status"
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: e2e-tenant-ipam-user-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: e2e-tenant-ipam-user
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-tester

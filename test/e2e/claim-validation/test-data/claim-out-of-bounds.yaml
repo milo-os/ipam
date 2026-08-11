@@ -4,8 +4,6 @@ metadata:
   name: claim-out-of-bounds
   namespace: ($namespace)
 spec:
-  ipFamily: IPv4
+  className: validation-class
   prefixLength: 16
-  poolRef:
-    name: test-valid-pool
   reclaimPolicy: Delete
