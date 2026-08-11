@@ -182,8 +182,18 @@ tasks:
   e2e:tenant-setup:
     desc: Generate the shared impersonation kubeconfig and apply its RBAC
     cmds:
+      # A suite that starts while the apiservice is still settling fails on
+      # ServiceUnavailable, which reads like a test bug and is not one.
+      - kubectl wait --for=condition=Available
+          apiservice/v1alpha1.ipam.miloapis.com --timeout=180s
       - sh test/e2e/lib/gen-impersonation-kubeconfig.sh test/e2e/.tenant-impersonation.kubeconfig
       - kubectl apply -f test/e2e/lib/tenant-rbac.yaml
+      # IPPools and IPClasses are cluster-scoped, so chainsaw's namespace
+      # teardown does not reach them and a run that fails mid-suite leaves them
+      # behind — which makes the NEXT run fail on "already exists", for a reason
+      # that has nothing to do with what changed. project-alpha and
+      # project-beta hold nothing but e2e fixtures.
+      - sh test/e2e/lib/clear-tenant-fixtures.sh
 
   e2e:
     desc: Run all chainsaw e2e suites

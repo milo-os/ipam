@@ -80,23 +80,6 @@ spec:
         - apply:
             file: resources/rbac.yaml
 
-    - name: clear-leftovers
-      description: |
-        The suite skips chainsaw's automatic delete, so a run that fails before
-        its finally steps leaves its pools behind and the next run cannot create
-        them. Clear them first so the suite is re-runnable.
-      try:
-        - script:
-            content: |
-              for ctx in tenant-project-alpha tenant-project-beta; do
-                KUBECONFIG=../.tenant-impersonation.kubeconfig kubectl --context "$ctx" \
-                  delete ippool mt-alpha-pool mt-beta-pool mt-shared-pool \
-                  --ignore-not-found >/dev/null 2>&1 || true
-              done
-              echo "leftovers cleared"
-            check:
-              ($error == null): true
-
     - name: seed-pools
       description: |
         Create each pool under its OWNING project's impersonation context so it

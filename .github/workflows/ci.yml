@@ -242,6 +242,7 @@ jobs:
         run: |
           sh test/e2e/lib/gen-impersonation-kubeconfig.sh test/e2e/.tenant-impersonation.kubeconfig
           kubectl apply -f test/e2e/lib/tenant-rbac.yaml
+          sh test/e2e/lib/clear-tenant-fixtures.sh
 
       - name: Run Chainsaw e2e suites
         run: chainsaw test test/e2e/
