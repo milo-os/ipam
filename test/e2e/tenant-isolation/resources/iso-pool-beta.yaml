@@ -5,6 +5,8 @@ metadata:
   labels:
     iso-suite: "true"
 spec:
+  classNames:
+    - iso-class
   cidr: 10.67.0.0/20
   ipFamily: IPv4
   visibility: consumer

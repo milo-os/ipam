@@ -4,8 +4,5 @@ metadata:
   name: host-claim-v6-1
   namespace: ($namespace)
 spec:
-  ipFamily: IPv6
-  prefixLength: 128
-  poolRef:
-    name: host-pool-v6
+  className: host-class-v6
   reclaimPolicy: Delete

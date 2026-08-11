@@ -9,8 +9,6 @@ metadata:
   labels:
     iso-suite: "true"
 spec:
-  ipFamily: IPv4
+  className: iso-class
   prefixLength: 24
-  poolRef:
-    name: iso-pool-alpha
   reclaimPolicy: Delete
