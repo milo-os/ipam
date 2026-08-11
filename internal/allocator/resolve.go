@@ -17,9 +17,9 @@ import (
 )
 
 // ResolveIPPool returns the storage key of an IPPool that satisfies the
-// supplied label selector. It lists pools belonging to the caller's project
-// (or the platform scope when ownerProject is empty), decodes each into an
-// IPPool, applies the selector, and returns the first match by storage key.
+// supplied label selector. It lists pools belonging to ownerProject, decodes
+// each into an IPPool, applies the selector, and returns the first match by
+// storage key.
 //
 // The first-match policy is deliberately simple: it is deterministic across
 // callers, requires no per-pool capacity probe, and lets operators steer
@@ -62,11 +62,11 @@ func ResolveIPPool(ctx context.Context, tx pgx.Tx, selector *metav1.LabelSelecto
 }
 
 // listPools loads (key, data) for every ipam_objects row of the given kind
-// belonging to the supplied project. Platform-scoped requests
-// (ownerProject == "") see only platform pools; project-scoped requests see
-// only their own project's pools. Cross-project shared pools are addressed
-// via spec.prefixSelector.projectRef rather than being globally visible —
-// see ResolvePrefixPoolWithProject for that path.
+// belonging to the supplied project.
+//
+// A project sees only its own pools. Cross-project sharing is checked on the
+// cross-project path; an empty ownerProject names a keyspace nothing writes to,
+// so it finds nothing rather than widening the view.
 //
 // The query uses the existing kind index plus a key-prefix LIKE filter; both
 // are indexed (idx_ipam_objects_kind, idx_ipam_objects_key_prefix), so the
