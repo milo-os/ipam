@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"time"
@@ -92,18 +93,23 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	fbSpan.SetAttributes(attribute.String(tracing.AttrResultCIDR, cidr.String()))
 	fbSpan.End()
 
+	// Before the insert, so the overlap query does not return the new block.
+	consumed, err := consumptionAfterAllocate(ctx, tx, poolKey, parents, *cidr)
+	if err != nil {
+		return "", err
+	}
+
 	if err := insertPrefixAllocation(ctx, tx, poolKey, cidr.String(), claimKey, ipFamily, ownerProject); err != nil {
 		return "", err
 	}
 
-	// Pool capacity hasn't changed and the new allocation joins the existing
-	// set, so the post-allocation utilization can be computed from data
-	// already in scope without an extra DB round-trip.
-	updated := append(append([]net.IPNet(nil), existing...), *cidr)
-	if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, updated); err != nil {
+	if err := writeConsumed(ctx, tx, poolKey, consumed); err != nil {
+		return "", err
+	}
+	if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, consumed); err != nil {
 		return "", fmt.Errorf("update pool capacity after allocation: %w", err)
 	}
-	publishPrefixUtilization(poolKey, ipFamily, parents, updated)
+	publishPrefixUtilization(poolKey, ipFamily, parents, consumed)
 
 	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", claimKey, "ownerProject", ownerProject)
 	return cidr.String(), nil
@@ -170,7 +176,8 @@ func labelsFromData(data []byte) []byte {
 func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimKey string) error {
 	rows, err := tx.Query(ctx,
 		`DELETE FROM ipam_cidr_allocations WHERE claim_key = $1
-		 RETURNING pool_key, ip_family`, claimKey,
+		 RETURNING pool_key, ip_family,
+		           host(allocated_cidr) || '/' || masklen(allocated_cidr)`, claimKey,
 	)
 	if err != nil {
 		return fmt.Errorf("release prefix: %w", err)
@@ -178,11 +185,12 @@ func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimK
 	type released struct {
 		poolKey  string
 		ipFamily string
+		cidr     string
 	}
 	var releases []released
 	for rows.Next() {
 		var r released
-		if err := rows.Scan(&r.poolKey, &r.ipFamily); err != nil {
+		if err := rows.Scan(&r.poolKey, &r.ipFamily, &r.cidr); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan released allocation: %w", err)
 		}
@@ -206,14 +214,23 @@ func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimK
 		if perr != nil {
 			return fmt.Errorf("parse pool cidr after release: %w", perr)
 		}
-		remaining, perr := loadExistingAllocations(ctx, tx, r.poolKey)
+		_, block, perr := net.ParseCIDR(r.cidr)
 		if perr != nil {
-			return fmt.Errorf("reload allocations after release: %w", perr)
+			return fmt.Errorf("parse released cidr %q: %w", r.cidr, perr)
 		}
-		if perr := persistPoolCapacity(ctx, tx, pool, r.poolKey, parents, remaining); perr != nil {
+		// After the delete, so the overlap query sees what still holds these
+		// addresses.
+		consumed, perr := consumptionAfterRelease(ctx, tx, r.poolKey, parents, *block)
+		if perr != nil {
+			return perr
+		}
+		if perr := writeConsumed(ctx, tx, r.poolKey, consumed); perr != nil {
+			return perr
+		}
+		if perr := persistPoolCapacity(ctx, tx, pool, r.poolKey, parents, consumed); perr != nil {
 			return fmt.Errorf("update pool capacity after release: %w", perr)
 		}
-		publishPrefixUtilization(r.poolKey, r.ipFamily, parents, remaining)
+		publishPrefixUtilization(r.poolKey, r.ipFamily, parents, consumed)
 	}
 	return nil
 }
@@ -222,8 +239,8 @@ func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimK
 // writes the updated pool object back to ipam_objects (+ MODIFIED changelog)
 // within the current transaction. Must be called inside the transaction that
 // inserted or deleted the allocation row so the capacity stays consistent.
-func persistPoolCapacity(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, poolKey string, parents, allocations []net.IPNet) error {
-	setPoolCapacityStatus(pool, parents, allocations)
+func persistPoolCapacity(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, poolKey string, parents []net.IPNet, consumed *big.Int) error {
+	setPoolCapacityStatus(pool, parents, consumed)
 	data, err := json.Marshal(pool)
 	if err != nil {
 		return fmt.Errorf("marshal pool: %w", err)
@@ -240,17 +257,21 @@ func persistPoolCapacity(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPo
 // Every figure comes from one Measure, so the counts and the percentage cannot
 // disagree. The counts are exact decimal strings: an IPv6 /20 holds 2^108
 // addresses, which no int64 can express.
-func setPoolCapacityStatus(pool *ipamv1alpha1.IPPool, parents, allocations []net.IPNet) {
-	m, err := allocation.Measure(parents, allocations, allocation.Reservation{})
-	if err != nil {
-		return
+// setPoolCapacityStatus writes the capacity figures from the pool's running
+// consumption total. Every figure derives from that one number, so status and
+// the published metric cannot disagree.
+func setPoolCapacityStatus(pool *ipamv1alpha1.IPPool, parents []net.IPNet, consumed *big.Int) {
+	total := totalAddresses(parents)
+	free := new(big.Int).Sub(total, consumed)
+	if free.Sign() < 0 {
+		free = new(big.Int)
 	}
 	pool.Status.Capacity = ipamv1alpha1.PoolCapacity{
-		Total:     m.Total.String(),
-		Allocated: m.Consumed.String(),
-		Available: m.Free.String(),
+		Total:     total.String(),
+		Allocated: consumed.String(),
+		Available: free.String(),
 	}
-	pool.Status.UtilizationPercent = m.UtilizationPercent
+	pool.Status.UtilizationPercent = utilizationPercent(total, consumed)
 	pool.Status.IPFamily = ipamv1alpha1.IPFamily(effectivePoolFamily(pool))
 }
 
@@ -435,29 +456,10 @@ func loadExistingAllocations(ctx context.Context, tx pgx.Tx, poolKey string) ([]
 // division is converted to float64 for the Prometheus gauge. A zero capacity
 // pool publishes 0 rather than NaN — the gauge is documented as ratio in
 // [0, 1] and dashboards/alerts assume a finite value.
-func publishPrefixUtilization(poolKey, ipFamily string, parents, allocated []net.IPNet) {
+func publishPrefixUtilization(poolKey, ipFamily string, parents []net.IPNet, consumed *big.Int) {
 	project, org := tenantsFromPoolKey(poolKey)
-	total := new(big.Int)
-	for _, p := range parents {
-		ones, bits := p.Mask.Size()
-		hostBits := bits - ones
-		if hostBits < 0 {
-			continue
-		}
-		size := new(big.Int).Lsh(big.NewInt(1), uint(hostBits))
-		total.Add(total, size)
-	}
-	used := new(big.Int)
-	for _, c := range allocated {
-		ones, bits := c.Mask.Size()
-		hostBits := bits - ones
-		if hostBits < 0 {
-			continue
-		}
-		size := new(big.Int).Lsh(big.NewInt(1), uint(hostBits))
-		used.Add(used, size)
-	}
-	usedF, _ := new(big.Float).SetInt(used).Float64()
+	total := totalAddresses(parents)
+	usedF, _ := new(big.Float).SetInt(consumed).Float64()
 	totalF, _ := new(big.Float).SetInt(total).Float64()
 	// Absolute counters are published alongside the ratio so dashboards can
 	// distinguish small/full pools from large/half-full pools at a glance.
@@ -485,4 +487,28 @@ func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, poolKey, cidr, claim
 		return fmt.Errorf("insert allocation: %w", err)
 	}
 	return nil
+}
+
+// totalAddresses counts the addresses the pool's parents cover.
+func totalAddresses(parents []net.IPNet) *big.Int {
+	total := new(big.Int)
+	for _, p := range parents {
+		ones, bits := p.Mask.Size()
+		if hostBits := bits - ones; hostBits >= 0 {
+			total.Add(total, new(big.Int).Lsh(big.NewInt(1), uint(hostBits)))
+		}
+	}
+	return total
+}
+
+// utilizationPercent reports consumed as a share of total, to four decimal
+// places. An integer percent is useless at these sizes: 256 addresses out of a
+// /12 is 0.024%, which truncates to zero and reads as an empty pool.
+func utilizationPercent(total, consumed *big.Int) float64 {
+	if total.Sign() == 0 {
+		return 0
+	}
+	ratio := new(big.Float).Quo(new(big.Float).SetInt(consumed), new(big.Float).SetInt(total))
+	pct, _ := ratio.Float64()
+	return math.Round(pct*100*10000) / 10000
 }

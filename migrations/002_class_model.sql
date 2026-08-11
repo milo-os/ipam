@@ -21,6 +21,8 @@
 --   an ordered index        (pool_key, allocated_cidr), for a bounded search
 --   a search floor          the lowest address a pool's space is known free
 --                           from, per (pool, address space)
+--   a consumption total     addresses spoken for, per pool, so capacity is not
+--                           remeasured over every allocation on each write
 --
 -- Everything here is additive: 001 is left byte-identical, and two allocations
 -- may hold the same address exactly when their scopes differ. Down is a no-op
@@ -1014,6 +1016,44 @@ DROP TRIGGER IF EXISTS ipam_cidr_alloc_lower_floor ON ipam_cidr_allocations;
 CREATE TRIGGER ipam_cidr_alloc_lower_floor
     AFTER DELETE ON ipam_cidr_allocations
     FOR EACH ROW EXECUTE FUNCTION ipam_lower_search_floor();
+
+-- 3. A RUNNING CONSUMPTION TOTAL, SO CAPACITY STOPS WALKING THE POOL
+-- Pool capacity would otherwise be answered by measuring every allocation, on
+-- the write path, inside the allocation transaction: handing out one address
+-- would cost more the more the pool already held.
+--
+-- Maintaining a total needs only the allocations that OVERLAP the block being
+-- added or removed, because every other allocation contributes the same amount
+-- before and after and cancels. That set comes from the GiST index the EXCLUDE
+-- constraint above already maintains.
+--
+-- The total counts each ADDRESS once, not each allocation. Allocations may
+-- legitimately overlap across address spaces, so summing allocation sizes
+-- reports a /28 shared by eight networks as eight times its occupancy.
+--
+-- ONE ROW PER POOL, unlike the search floor above. The floor is per address
+-- space because spaces fill independently. Consumption is not: it answers how
+-- much of the pool's address range is spoken for, and an address held in two
+-- spaces is one address.
+--
+-- No backfill. A pool with no row here has its total computed once from the
+-- full set on its next write, and maintained incrementally from then on.
+-- Computing it here would mean a second implementation of the free-region
+-- arithmetic, in PL/pgSQL, free to disagree with the Go one that maintains it.
+CREATE TABLE IF NOT EXISTS ipam_pool_consumption (
+    -- ON DELETE CASCADE, for the same reason as the floor: pool names are a
+    -- function of scope, so the next pool to take this key would inherit the
+    -- total. Here the inherited value is too HIGH, and the pool would report
+    -- space it has as consumed.
+    pool_key TEXT PRIMARY KEY REFERENCES ipam_objects(key) ON DELETE CASCADE,
+
+    -- NUMERIC because a /20 of IPv6 holds 2^108 addresses, past every integer
+    -- type.
+    consumed NUMERIC NOT NULL CHECK (consumed >= 0),
+
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 
 -- 4. HOW THE FLOOR IS RAISED, AND WHY IT IS A COMPARE-AND-SET
 -- The allocator raises the floor after a search, to the lowest free address
