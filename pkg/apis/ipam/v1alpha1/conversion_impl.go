@@ -194,6 +194,7 @@ func convert_v1alpha1_IPClass_To_ipam(in *IPClass, out *ipam.IPClass) error {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec = ipam.IPClassSpec{
+		Source:               toIpamClassSource(in.Spec.Source),
 		IPFamily:             ipam.IPFamily(in.Spec.IPFamily),
 		ParentClassName:      in.Spec.ParentClassName,
 		PoolPer:              copyStrings(in.Spec.PoolPer),
@@ -205,8 +206,6 @@ func convert_v1alpha1_IPClass_To_ipam(in *IPClass, out *ipam.IPClass) error {
 		Strategy:             ipam.PoolSelectionStrategy(in.Spec.Strategy),
 		ReclaimPolicy:        ipam.ReclaimPolicy(in.Spec.ReclaimPolicy),
 		RetentionLease:       copyDuration(in.Spec.RetentionLease),
-		Visibility:           in.Spec.Visibility,
-		BackingProjects:      copyStrings(in.Spec.BackingProjects),
 		Provisioner:          in.Spec.Provisioner,
 		Parameters:           copyParameters(in.Spec.Parameters),
 	}
@@ -223,6 +222,7 @@ func convert_ipam_IPClass_To_v1alpha1(in *ipam.IPClass, out *IPClass) error {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	out.Spec = IPClassSpec{
+		Source:               toV1ClassSource(in.Spec.Source),
 		IPFamily:             IPFamily(in.Spec.IPFamily),
 		ParentClassName:      in.Spec.ParentClassName,
 		PoolPer:              copyStrings(in.Spec.PoolPer),
@@ -234,8 +234,6 @@ func convert_ipam_IPClass_To_v1alpha1(in *ipam.IPClass, out *IPClass) error {
 		Strategy:             PoolSelectionStrategy(in.Spec.Strategy),
 		ReclaimPolicy:        ReclaimPolicy(in.Spec.ReclaimPolicy),
 		RetentionLease:       copyDuration(in.Spec.RetentionLease),
-		Visibility:           in.Spec.Visibility,
-		BackingProjects:      copyStrings(in.Spec.BackingProjects),
 		Provisioner:          in.Spec.Provisioner,
 		Parameters:           copyParameters(in.Spec.Parameters),
 	}
@@ -512,4 +510,18 @@ func convert_ipam_IPClaimList_To_v1alpha1(in *ipam.IPClaimList, out *IPClaimList
 		}
 	}
 	return nil
+}
+
+func toIpamClassSource(in *ClassSourceRef) *ipam.ClassSourceRef {
+	if in == nil {
+		return nil
+	}
+	return &ipam.ClassSourceRef{Project: in.Project, Name: in.Name}
+}
+
+func toV1ClassSource(in *ipam.ClassSourceRef) *ClassSourceRef {
+	if in == nil {
+		return nil
+	}
+	return &ClassSourceRef{Project: in.Project, Name: in.Name}
 }

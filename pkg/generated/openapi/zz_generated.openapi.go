@@ -18,6 +18,7 @@ import (
 func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenAPIDefinition {
 	return map[string]common.OpenAPIDefinition{
 		v1alpha1.AllocationSpec{}.OpenAPIModelName():      schema_pkg_apis_ipam_v1alpha1_AllocationSpec(ref),
+		v1alpha1.ClassSourceRef{}.OpenAPIModelName():      schema_pkg_apis_ipam_v1alpha1_ClassSourceRef(ref),
 		v1alpha1.IPAllocation{}.OpenAPIModelName():        schema_pkg_apis_ipam_v1alpha1_IPAllocation(ref),
 		v1alpha1.IPAllocationList{}.OpenAPIModelName():    schema_pkg_apis_ipam_v1alpha1_IPAllocationList(ref),
 		v1alpha1.IPAllocationSpec{}.OpenAPIModelName():    schema_pkg_apis_ipam_v1alpha1_IPAllocationSpec(ref),
@@ -124,6 +125,34 @@ func schema_pkg_apis_ipam_v1alpha1_AllocationSpec(ref common.ReferenceCallback) 
 						},
 					},
 				},
+			},
+		},
+	}
+}
+
+func schema_pkg_apis_ipam_v1alpha1_ClassSourceRef(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "ClassSourceRef names a class in another project.\n\nThe project is explicit rather than implied by server configuration, so which project a class comes from is a fact stated on the object and visible to anyone who can read it.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"project": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+					"name": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+				},
+				Required: []string{"project", "name"},
 			},
 		},
 	}
@@ -692,6 +721,12 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 			SchemaProps: spec.SchemaProps{
 				Type: []string{"object"},
 				Properties: map[string]spec.Schema{
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Source makes this class a reference to a class in another project rather than a definition of its own. The referenced class holds the policy; this object says only that the project may consume it.\n\nA claim naming this class resolves through Source and allocates against the referenced class, so two projects referencing one class share its pool and its address space whatever they call it locally. Pool identity keys off the referenced class, never the local name.\n\nEvery other field in this spec must be empty when Source is set. A reference that could restate UniqueWithin or PoolPer would be a copy, and two copies that drift redefine an address space they share — the failure is two holders of one address, on the success path, with each object valid in its own project.\n\nNo pool may name a class that sets this in IPPool.spec.classNames. Backing belongs to the class holding the definition; a reference that could be backed would let its project inject capacity into a class the claim reports as someone else's.",
+							Ref:         ref(v1alpha1.ClassSourceRef{}.OpenAPIModelName()),
+						},
+					},
 					"ipFamily": {
 						SchemaProps: spec.SchemaProps{
 							Description: "IPFamily is the single address family this class hands out. Required and immutable. Dual-stack is two classes, never one.",
@@ -702,7 +737,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 					},
 					"parentClassName": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ParentClassName is the class whose allocations this one carves from. Empty means allocations come from the pools that offer this class directly via IPPool.spec.classNames.\n\nImmutable: changing it strands every existing allocation outside its declared ancestry.",
+							Description: "ParentClassName is the class whose allocations this one carves from, resolved in this class's own project. Empty means allocations come from the pools that offer this class directly via IPPool.spec.classNames.\n\nImmutable: changing it strands every existing allocation outside its declared ancestry.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -793,33 +828,6 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 							Ref:         ref(v1.Duration{}.OpenAPIModelName()),
 						},
 					},
-					"visibility": {
-						SchemaProps: spec.SchemaProps{
-							Description: "Visibility controls who may name this class on a claim.",
-							Type:        []string{"string"},
-							Format:      "",
-						},
-					},
-					"backingProjects": {
-						VendorExtensible: spec.VendorExtensible{
-							Extensions: spec.Extensions{
-								"x-kubernetes-list-type": "set",
-							},
-						},
-						SchemaProps: spec.SchemaProps{
-							Description: "BackingProjects names the projects whose pools may back this class, in addition to the platform project — which may always back it and need not be listed.\n\nThis is the class *consenting* to be backed, and it is the half that IPPool.spec.classNames cannot supply. That field is a pool volunteering itself, written by the pool's owner; without a matching statement from the class side, any tenant able to create an IPPool in their own project could list a popular class name on it and start receiving other tenants' claims. They would learn that each claim happened, choose the address it received, and hold the range it came from. Consent has to come from the class because the class is the thing being consumed.\n\nEmpty — the default — means the platform project alone, which is fail-closed and is exactly the behaviour every existing class had when discovery searched only platform-authored pools.\n\nEnforced in two places on purpose. IPPool writes are rejected when the pool's project is not listed, so an operator gets an error naming the field rather than a pool that silently serves nobody. Discovery applies the same rule at read time, which is the authoritative one: consent is revocable, and a write-time check alone would let every pool that passed validation once keep serving forever after the project was removed here.",
-							Type:        []string{"array"},
-							Items: &spec.SchemaOrArray{
-								Schema: &spec.Schema{
-									SchemaProps: spec.SchemaProps{
-										Default: "",
-										Type:    []string{"string"},
-										Format:  "",
-									},
-								},
-							},
-						},
-					},
 					"provisioner": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Provisioner names the component responsible for realising allocations of this class, for classes whose addresses require action beyond bookkeeping. Empty means the IPAM service itself.",
@@ -848,7 +856,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 			},
 		},
 		Dependencies: []string{
-			v1alpha1.PrefixLengthRange{}.OpenAPIModelName(), v1alpha1.ReservationSpec{}.OpenAPIModelName(), v1alpha1.RoutingSpec{}.OpenAPIModelName(), v1.Duration{}.OpenAPIModelName()},
+			v1alpha1.ClassSourceRef{}.OpenAPIModelName(), v1alpha1.PrefixLengthRange{}.OpenAPIModelName(), v1alpha1.ReservationSpec{}.OpenAPIModelName(), v1alpha1.RoutingSpec{}.OpenAPIModelName(), v1.Duration{}.OpenAPIModelName()},
 	}
 }
 
@@ -1062,7 +1070,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) comm
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "ClassNames are the classes this pool offers itself to. A claim naming one of these classes may draw from this pool, subject to family and scope agreement. Operator-authored pools set this; it is how capacity is published to consumers without naming them.",
+							Description: "ClassNames are the classes this pool offers itself to. A claim naming one of these classes may draw from this pool, subject to family and scope agreement. Operator-authored pools set this; it is how capacity is published to consumers without naming them.\n\nA pool backs a class only when the two are in the same project. This field is a pool volunteering itself, written by the pool's owner, so on its own it is not consent: without the same-project rule, any tenant able to create an IPPool in their own project could list a popular class name here and start receiving other tenants' claims — learning that each claim happened, choosing the address it received, and holding the range it came from. Naming a class in another project is rejected at write time, and discovery applies the same rule at read time.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
@@ -1116,8 +1124,9 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolSpec(ref common.ReferenceCallback) comm
 					},
 					"visibility": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "Visibility controls whether a project other than this pool's owner may draw from it. Only \"shared\" opens it; every other value, including unset, keeps the pool to its own project. A shared pool is still subject to the \"use\" authorization check, so sharing publishes a pool rather than granting it.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},

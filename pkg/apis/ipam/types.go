@@ -109,6 +109,12 @@ type ScopeRef struct {
 	Name     string
 }
 
+// ClassSourceRef names a class in another project.
+type ClassSourceRef struct {
+	Project string
+	Name    string
+}
+
 // PrefixLengthRange bounds the sizes a claim of a class may request. A
 // fixed-size class sets Min and Max equal.
 type PrefixLengthRange struct {
@@ -156,8 +162,7 @@ type ReservationSpec struct {
 	UnitPrefixLength int32
 }
 
-// Pool visibility constants for IPPoolSpec.Visibility and
-// IPClassSpec.Visibility.
+// Visibility values for IPPoolSpec.Visibility.
 const (
 	VisibilityPlatform string = "platform"
 	VisibilityConsumer string = "consumer"
@@ -199,6 +204,11 @@ type IPClass struct {
 }
 
 type IPClassSpec struct {
+	// Source makes this class a reference to a class in another project rather
+	// than a definition of its own. Every other field must be empty when it is
+	// set, and no pool may name such a class. See the v1alpha1 type.
+	Source *ClassSourceRef
+
 	// IPFamily is the single address family this class hands out. Required and
 	// immutable. Dual-stack is two classes, never one.
 	IPFamily IPFamily
@@ -257,14 +267,6 @@ type IPClassSpec struct {
 	// indefinitely is not a lease. The effective lease is the shorter of this
 	// and the pool's MaxRetentionLease.
 	RetentionLease *metav1.Duration
-
-	// Visibility controls who may name this class on a claim.
-	Visibility string
-
-	// BackingProjects names the projects whose pools may back this class, in
-	// addition to the platform project. Empty means the platform project alone.
-	// See the v1alpha1 type for why consent has to come from the class side.
-	BackingProjects []string
 
 	// Provisioner names the component responsible for realising allocations of
 	// this class. Empty means the IPAM service itself.
