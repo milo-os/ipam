@@ -17,6 +17,7 @@ import (
 
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/metrics"
+	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/tracing"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -63,22 +64,11 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	existing, err := loadExistingAllocations(ctx, tx, poolKey)
-	if err != nil {
-		return "", err
-	}
-
-	// Trace the block search here, around the call, because the allocation
-	// library is kept dependency-free and must not import OpenTelemetry. The
-	// search does no database work, so its context is discarded and the DB calls
-	// below stay on the parent span.
 	strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
-	_, fbSpan := tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
-	fbSpan.SetAttributes(
-		attribute.String(tracing.AttrStrategy, string(strategy)),
-		attribute.Int(tracing.AttrExistingCount, len(existing)),
-	)
-	cidr, err := allocation.FindFirstAvailableBlock(parents, existing, prefixLen, strategy)
+	ctx, fbSpan := tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
+	fbSpan.SetAttributes(attribute.String(tracing.AttrStrategy, string(strategy)))
+
+	cidr, err := findBlock(ctx, tx, poolKey, parents, prefixLen, strategy)
 	if err != nil {
 		if errors.Is(err, allocation.ErrPoolExhausted) {
 			fbSpan.SetAttributes(attribute.Bool(tracing.AttrExhausted, true))
@@ -511,4 +501,40 @@ func utilizationPercent(total, consumed *big.Int) float64 {
 	ratio := new(big.Float).Quo(new(big.Float).SetInt(consumed), new(big.Float).SetInt(total))
 	pct, _ := ratio.Float64()
 	return math.Round(pct*100*10000) / 10000
+}
+
+// findBlock chooses the block to hand out.
+//
+// FirstFit reads the allocations a page at a time, from a floor recording where
+// the last search stopped, so the read is bounded by what the search examines.
+// The other strategies are defined over the whole pool — "the smallest region
+// that fits" and "the emptiest parent" cannot be known from a prefix of the
+// allocations — so they load the set and keep its cost.
+func findBlock(ctx context.Context, tx pgx.Tx, poolKey string, parents []net.IPNet, prefixLen int, strategy allocation.Strategy) (*net.IPNet, error) {
+	if strategy != "" && strategy != allocation.FirstFit {
+		existing, err := loadExistingAllocations(ctx, tx, poolKey)
+		if err != nil {
+			return nil, err
+		}
+		return allocation.FindFirstAvailableBlock(parents, existing, prefixLen, strategy)
+	}
+
+	digest := scope.EmptyAddressSpaceDigest()
+
+	// After the pool row, never before it. Every caller takes (pool, floor) in
+	// that order, so two transactions can only deadlock by taking POOLS in
+	// different orders.
+	observed, err := lockSearchFloor(ctx, tx, poolKey, digest, parents[0].IP)
+	if err != nil {
+		return nil, err
+	}
+
+	cidr, next, err := boundedFirstFit(ctx, tx, poolKey, digest, parents, prefixLen, observed)
+	if err != nil {
+		return nil, err
+	}
+	if err := raiseSearchFloor(ctx, tx, poolKey, digest, observed, next); err != nil {
+		return nil, err
+	}
+	return cidr, nil
 }
