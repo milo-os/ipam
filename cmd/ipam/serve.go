@@ -364,8 +364,10 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	etcdfeature.DefaultFeatureSupportChecker = pgstore.NewFeatureSupportChecker()
 
 	var poolChecker access.PoolAccessChecker
+	var classChecker access.ClassAccessChecker
 	if genericConfig.Authorization.Authorizer != nil {
 		poolChecker = access.NewPoolAccessChecker(genericConfig.Authorization.Authorizer)
+		classChecker = access.NewClassAccessChecker(genericConfig.Authorization.Authorizer)
 	}
 
 	return &ipamapiserver.Config{
@@ -374,6 +376,7 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 			PrefixAllocator: prefixAllocator,
 			AllocatorPool:   allocatorPool,
 			PoolChecker:     poolChecker,
+			ClassChecker:    classChecker,
 		},
 	}, nil
 }

@@ -140,6 +140,9 @@ type ScopeRef struct {
 // The project is explicit rather than implied by server configuration, so which
 // project a class comes from is a fact stated on the object and visible to
 // anyone who can read it.
+//
+// Naming another project's class requires the ipam.miloapis.com/ipclasses.use
+// permission on it, checked when the referencing class is created.
 type ClassSourceRef struct {
 	Project string `json:"project"`
 	Name    string `json:"name"`

@@ -67,6 +67,10 @@ type ExtraConfig struct {
 	// SubjectAccessReview. nil bypasses the check (e.g. when no authorizer
 	// is configured).
 	PoolChecker access.PoolAccessChecker
+	// ClassChecker authorises an IPClass that references another project's
+	// class, via a "use" SubjectAccessReview against the source class. nil
+	// refuses every such reference.
+	ClassChecker access.ClassAccessChecker
 }
 
 // Config combines generic and IPAM-specific configuration.
@@ -167,6 +171,7 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	ipClassStore, ipClassStatusStore, err := ipclass.NewClassStorage(
 		Scheme,
 		c.GenericConfig.RESTOptionsGetter,
+		c.ExtraConfig.ClassChecker,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create IPClass storage: %w", err)
