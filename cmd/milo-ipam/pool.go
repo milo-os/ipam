@@ -321,12 +321,11 @@ func (a *app) renderPoolDetail(p *ipamv1alpha1.IPPool) error {
 		utilText += " (" + label + ")"
 	}
 	t.row("Utilization", utilText)
-	// The int64 capacity counts are exact for IPv4 but saturate for IPv6
-	// address spaces, so only show the raw totals when they're meaningful;
-	// IPv6 pools are summarized by utilization and largest-free instead.
-	if poolFamily(p) != ipamv1alpha1.IPv6 {
-		t.row("Capacity", fmt.Sprintf("total=%d allocated=%d available=%d",
-			p.Status.Capacity.Total, p.Status.Capacity.Allocated, p.Status.Capacity.Available))
+	// Counts are exact decimal strings for both families, so an IPv6 pool
+	// reports the real figure rather than being summarised around a ceiling.
+	if c := p.Status.Capacity; c.Total != "" {
+		t.row("Capacity", fmt.Sprintf("total=%s allocated=%s available=%s",
+			c.Total, orZero(c.Allocated), orZero(c.Available)))
 	}
 	if alloc := p.Spec.Allocation; alloc.MinPrefixLength != 0 || alloc.MaxPrefixLength != 0 || alloc.Strategy != "" {
 		t.row("Allocation", fmt.Sprintf("min=/%d max=/%d strategy=%s",
@@ -459,4 +458,12 @@ func poolGetError(err error, name string) error {
 			withFix("list visible pools:\n       datumctl ipam pool list").withCause(err)
 	}
 	return classifyError(err)
+}
+
+// orZero renders an unreported count as 0 rather than as an empty column.
+func orZero(s string) string {
+	if s == "" {
+		return "0"
+	}
+	return s
 }

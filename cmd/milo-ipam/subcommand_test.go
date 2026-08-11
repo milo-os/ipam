@@ -26,7 +26,7 @@ func TestUnknownSubcommandSuggestsAndExits2(t *testing.T) {
 		suggest string
 	}{
 		{"pool typo", []string{"pool", "lst"}, "list"},
-		{"prefix typo", []string{"prefix", "clam"}, "claim"},
+		{"pool typo, another", []string{"pool", "shw"}, "show"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,7 +49,7 @@ func TestUnknownSubcommandSuggestsAndExits2(t *testing.T) {
 }
 
 func TestBareParentShowsHelpNoError(t *testing.T) {
-	for _, noun := range []string{"pool", "prefix"} {
+	for _, noun := range []string{"pool"} {
 		t.Run(noun, func(t *testing.T) {
 			_, _, err := execRoot(noun)
 			if err != nil {

@@ -45,10 +45,14 @@ func TestPoolListPrefersServerStatus(t *testing.T) {
 			Phase:         ipamv1alpha1.PoolReady,
 			AllocatedCIDR: "2001:db8:e2e0::/48",
 			IPFamily:      ipamv1alpha1.IPv6,
-			// Saturated counts. A client deriving utilization from these
-			// computes 0%; status.utilizationPercent below is authoritative.
-			Capacity:           ipamv1alpha1.PoolCapacity{Total: 1<<63 - 1, Allocated: 0, Available: 1<<63 - 1},
-			UtilizationPercent: 6,
+			// A /48 holds 2^80 addresses, past every integer type, which is why
+			// the counts are exact decimal strings.
+			Capacity: ipamv1alpha1.PoolCapacity{
+				Total:     "1208925819614629174706176",
+				Allocated: "75557863725914323419136",
+				Available: "1133367955888714851287040",
+			},
+			UtilizationPercent: 6.25,
 		},
 	}
 	cs := newFakeClientset(child)
@@ -122,8 +126,12 @@ func TestPoolTreePrefersServerStatus(t *testing.T) {
 		Status: ipamv1alpha1.IPPoolStatus{
 			Phase: ipamv1alpha1.PoolReady, AllocatedCIDR: "2001:db8::/36",
 			IPFamily: ipamv1alpha1.IPv6, UtilizationPercent: 12,
-			// Saturated counts, which a client deriving utilization misreads.
-			Capacity: ipamv1alpha1.PoolCapacity{Total: 1<<63 - 1, Allocated: 0, Available: 1<<63 - 1},
+			// A /36 holds 2^92 addresses; the counts are exact decimal strings.
+			Capacity: ipamv1alpha1.PoolCapacity{
+				Total:     "4951760157141521099596496896",
+				Allocated: "594211218856982531951759360",
+				Available: "4357548938284538567644737536",
+			},
 		},
 	}
 	cs := newFakeClientset(root, child)
@@ -154,7 +162,8 @@ func TestPoolReleaseDryRunListsBlastRadius(t *testing.T) {
 	child.Spec.ParentPoolRef = &ipamv1alpha1.LocalRef{Name: "backbone"}
 	claim := &ipamv1alpha1.IPClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "leaf", Namespace: "default"},
-		Spec:       ipamv1alpha1.IPClaimSpec{IPFamily: ipamv1alpha1.IPv4, PrefixLength: 24, PoolRef: &ipamv1alpha1.NamespacedRef{Name: "backbone"}},
+		Spec:       ipamv1alpha1.IPClaimSpec{ClassName: "standard", IPFamily: ipamv1alpha1.IPv4},
+		Status:     ipamv1alpha1.IPClaimStatus{PoolRef: &ipamv1alpha1.LocalRef{Name: "backbone"}},
 	}
 	cs := newFakeClientset(root, child, claim)
 	ta := newTestApp(cs, nil)
