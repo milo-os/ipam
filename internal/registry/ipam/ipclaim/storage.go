@@ -587,15 +587,6 @@ func allocationObjectKey(id tenant.Identity, namespace, name string) string {
 	return id.ApplyPrefix(fmt.Sprintf("/ipam.miloapis.com/ipallocations/%s/%s", namespace, name))
 }
 
-// poolStorageKey is the storage key for an IPPool owned by the given project
-// ("" for platform scope). Although IPPool is cluster-scoped at the API layer,
-// a pool created through a project control-plane is persisted under that
-// project's tenant prefix — so the allocator must address it with the same
-// prefix rather than at the platform root.
-func poolStorageKey(project, name string) string {
-	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
-}
-
 // allocationNameFor generates a stable, collision-resistant name for the
 // IPAllocation produced by a given claim, using a truncated SHA-256 hash of
 // the claim's namespace/name. The "alloc-" prefix makes system-generated
@@ -603,12 +594,6 @@ func poolStorageKey(project, name string) string {
 func allocationNameFor(namespace, name string) string {
 	h := sha256.Sum256([]byte(namespace + "/" + name))
 	return "alloc-" + hex.EncodeToString(h[:8])
-}
-
-// authorizeCrossProject delegates to the shared cross-project gate in
-// internal/access.
-func (r *AllocatingREST) authorizeCrossProject(ctx context.Context, tx pgx.Tx, poolKey string) error {
-	return access.AuthorizeCrossProjectPrefix(ctx, tx, poolKey, r.poolChecker)
 }
 
 func mapAllocationError(err error) error {

@@ -206,21 +206,3 @@ func exhaustionError(poolName string, family string, requested int, util float64
 
 	return newCLIError(exitExhausted, b.String()).withFix(fix).withCause(cause)
 }
-
-// noMatchingPoolError renders the "selector matched nothing" / "named pool not
-// visible" failure with the pools that do exist nearby.
-func noMatchingPoolError(ref string, selector string, candidates []string) *cliError {
-	var b strings.Builder
-	if selector != "" {
-		fmt.Fprintf(&b, "no pool matches selector %q in the active project.", selector)
-	} else {
-		fmt.Fprintf(&b, "pool %q is not visible in the active project.", ref)
-	}
-	ce := newCLIError(exitNotFound, b.String())
-	if len(candidates) > 0 {
-		ce = ce.withFix("pools that are visible here:\n       " + strings.Join(candidates, "\n       "))
-	} else {
-		ce = ce.withFix("list visible pools:\n       datumctl ipam pool list")
-	}
-	return ce
-}

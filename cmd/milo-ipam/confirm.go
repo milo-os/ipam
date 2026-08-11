@@ -21,23 +21,6 @@ func (a *app) nonInteractive() bool {
 	return !isTerminalFd(int(f.Fd()))
 }
 
-// confirmYesNo asks a yes/no question scaled to a low/medium blast radius (a
-// single prefix release). Returns true to proceed. --yes bypasses; a
-// non-interactive session proceeds (prompts auto-suppressed per the proposal).
-func (a *app) confirmYesNo(prompt string) bool {
-	if a.opts.assumeYes {
-		return true
-	}
-	if a.nonInteractive() {
-		return true
-	}
-	_, _ = fmt.Fprintf(a.io.ErrOut, "%s [y/N]: ", prompt)
-	reader := bufio.NewReader(a.io.In)
-	line, _ := reader.ReadString('\n')
-	line = strings.ToLower(strings.TrimSpace(line))
-	return line == "y" || line == "yes"
-}
-
 // confirmTyped is the high-blast-radius gate (pool release): the user must type
 // the exact resource name. --yes bypasses. A non-interactive session WITHOUT
 // --yes refuses, because the name cannot be typed — this is intentional friction
