@@ -181,17 +181,14 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// apart from one that arrived stripped of them.
 	_, resolveSpan := tracing.Tracer().Start(ctx, tracing.SpanTenantResolve)
 	resolveSpan.SetAttributes(
-		attribute.String(tracing.AttrScope, tracing.Scope(id.IsPlatform())),
 		attribute.String(tracing.AttrProject, project),
 		attribute.Bool(tracing.AttrHasParentExtras, id.APIGroup != "" || id.Kind != "" || id.Name != ""),
 	)
 	resolveSpan.End()
 
 	span.SetAttributes(
-		attribute.String(tracing.AttrTenantScope, tracing.Scope(id.IsPlatform())),
 		attribute.String(tracing.AttrTenantProject, project),
 		attribute.String(tracing.AttrTenantOrg, org),
-		attribute.Int(tracing.AttrClaimPrefix, claim.Spec.PrefixLength),
 		attribute.String(tracing.AttrClaimIPFamily, ipFamily),
 		attribute.Bool(tracing.AttrDryRun, dryRun),
 	)
@@ -221,23 +218,18 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		}
 	}
 
-	if claim.Spec.PoolRef == nil && claim.Spec.PoolSelector == nil {
+	if claim.Spec.ClassName == "" && claim.Spec.IPFamily == "" {
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, apierrors.NewBadRequest("synchronous allocation requires spec.poolRef or spec.poolSelector")
-	}
-	if claim.Spec.PoolRef != nil && claim.Spec.PoolSelector != nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, apierrors.NewBadRequest("spec.poolRef and spec.poolSelector are mutually exclusive")
+		return nil, apierrors.NewBadRequest("spec.className or spec.ipFamily is required")
 	}
 
-	if !id.IsPlatform() {
-		// Overwrite client-supplied ownerRef — requestheader CA guarantees
-		// Extra authenticity, so the tenant identity is the source of truth.
-		claim.Spec.OwnerRef = &ipam.ObjectRef{
-			APIGroup: id.APIGroup,
-			Kind:     id.Kind,
-			Name:     id.Name,
-		}
+	// Overwrite any client-supplied ownerRef. The requestheader CA guarantees
+	// the Extra headers carrying the tenant identity, so that identity is the
+	// source of truth for who this claim is for.
+	claim.Spec.OwnerRef = &ipam.ObjectRef{
+		APIGroup: id.APIGroup,
+		Kind:     id.Kind,
+		Name:     id.Name,
 	}
 
 	tx, err := r.db.Begin(ctx)
@@ -247,86 +239,43 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, fmt.Errorf("begin allocation transaction: %w", err)
 	}
 
-	// Resolve the target IPPool. spec.poolRef is a direct named lookup;
-	// spec.poolSelector lists candidate pools, filters by the supplied
-	// label selector, and picks the first match by storage key (see
-	// allocator.ResolveIPPool). IPPool is cluster-scoped, so the storage
-	// key always lives at the platform prefix regardless of the calling
-	// project's tenant identity.
-	isCrossProject := false
-	var poolKey, poolName string
-	if claim.Spec.PoolRef != nil {
-		poolName = claim.Spec.PoolRef.Name
-		isCrossProject = !id.IsPlatform() &&
-			claim.Spec.PoolRef.ProjectRef != nil &&
-			claim.Spec.PoolRef.ProjectRef.Name != id.Name
-		// The pool lives in the caller's own project unless a cross-project
-		// ProjectRef points it elsewhere; platform callers (empty id.Name)
-		// address the platform root.
-		poolProject := id.Name
-		if isCrossProject {
-			poolProject = claim.Spec.PoolRef.ProjectRef.Name
+	// A claim names a CLASS. Resolution starts in the caller's own project and
+	// follows spec.source into the project holding the definition; discovery
+	// then finds the pool that project offers. Cross-project sharing is the
+	// reference, so there is no separate cross-project path here.
+	class, err := allocator.ResolveClass(ctx, tx, claim.Spec.ClassName, v1alpha1.IPFamily(claim.Spec.IPFamily))
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "class_not_found", ipFamily, project, org)
+		failSpan(tracing.ReasonPoolNotFound)
+		if errors.Is(err, allocator.ErrClassNotFound) || errors.Is(err, allocator.ErrNoDefaultClass) {
+			return nil, apierrors.NewBadRequest(err.Error())
 		}
-		poolKey = poolStorageKey(poolProject, poolName)
-	} else {
-		// Selector lookups scan one project's pools: the caller's own, or the
-		// referenced project for cross-project shared pools.
-		ownerProject := id.Name
-		if claim.Spec.PoolSelector.ProjectRef != nil {
-			isCrossProject = !id.IsPlatform() &&
-				claim.Spec.PoolSelector.ProjectRef.Name != id.Name
-			if isCrossProject {
-				ownerProject = claim.Spec.PoolSelector.ProjectRef.Name
-			}
-		}
-		resolved, rerr := allocator.ResolveIPPool(ctx, tx, claim.Spec.PoolSelector.LabelSelector, ownerProject, string(claim.Spec.IPFamily))
-		if rerr != nil {
-			_ = tx.Rollback(ctx)
-			if errors.Is(rerr, allocator.ErrPoolNotFound) {
-				metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
-				failSpan(tracing.ReasonPoolNotFound)
-				return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
-			}
-			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-			failSpan(tracing.ReasonTxError)
-			return nil, fmt.Errorf("resolve IPPool: %w", rerr)
-		}
-		poolKey = resolved
-		poolName = poolKey[strings.LastIndex(poolKey, "/")+1:]
+		return nil, fmt.Errorf("resolve class: %w", err)
 	}
+
+	prefixLen, err := allocator.EffectivePrefixLength(class.IPClass, claim.Spec.PrefixLength)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		return nil, apierrors.NewBadRequest(err.Error())
+	}
+
+	poolKey, err := allocator.DiscoverPool(ctx, tx, class, claim.Spec.Scope)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
+		failSpan(tracing.ReasonPoolNotFound)
+		if errors.Is(err, allocator.ErrNoOfferingPool) {
+			return nil, apierrors.NewBadRequest(err.Error())
+		}
+		return nil, fmt.Errorf("discover pool: %w", err)
+	}
+	poolName := poolKey[strings.LastIndex(poolKey, "/")+1:]
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 	span.SetAttributes(attribute.String(tracing.AttrPoolName, poolName))
 
-	if isCrossProject {
-		if err := r.authorizeCrossProject(ctx, tx, poolKey); err != nil {
-			_ = tx.Rollback(ctx)
-			if errors.Is(err, access.ErrCrossProjectDenied) {
-				// Selector-driven lookups must not distinguish "no pool
-				// matched the selector" from "a pool matched but you
-				// can't use it" — that distinction is a label/existence
-				// fingerprint into another project. Direct poolRef
-				// lookups can return Forbidden because the caller already
-				// named the pool by hand.
-				if claim.Spec.PoolSelector != nil {
-					metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
-					failSpan(tracing.ReasonCrossProjectDenied)
-					return nil, apierrors.NewBadRequest("no IPPool matches spec.poolSelector")
-				}
-				metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-				failSpan(tracing.ReasonCrossProjectDenied)
-				return nil, apierrors.NewForbidden(
-					v1alpha1.Resource("ippools"),
-					poolKey,
-					fmt.Errorf("cross-project pool not accessible"),
-				)
-			}
-			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-			failSpan(tracing.ReasonTxError)
-			return nil, err
-		}
-	}
-
-	cidr, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, claim.Spec.PrefixLength, string(claim.Spec.IPFamily), claimKey, id.Name)
+	cidr, err := r.allocator.AllocatePrefix(ctx, tx, poolKey, prefixLen, string(class.Spec.IPFamily), claimKey, id.Name)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
@@ -354,6 +303,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	claim.Status.Phase = ipam.ClaimBound
 	claim.Status.AllocatedCIDR = cidr
 	claim.Status.BoundAllocationRef = &ipam.LocalRef{Name: allocationName}
+	claim.Status.PoolRef = &ipam.LocalRef{Name: poolName}
 
 	// Server dry-run: the allocator has computed the real next CIDR inside the
 	// transaction (SELECT … FOR UPDATE + FindFirstAvailableBlock), but we must
@@ -485,7 +435,6 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanClaimRelease)
 	defer span.End()
 	span.SetAttributes(
-		attribute.String(tracing.AttrTenantScope, tracing.Scope(id.IsPlatform())),
 		attribute.String(tracing.AttrTenantProject, id.Project()),
 		attribute.String(tracing.AttrClaimIPFamily, string(claim.Spec.IPFamily)),
 	)

@@ -22,12 +22,12 @@ import (
 // declared in SelectableFields. Applied idempotently by SyncIndexes.
 var FieldIndexes = []fieldindex.FieldIndex{
 	{
-		IndexName:  "idx_ipam_ipclaim_ip_family",
-		Expression: `((ipam_data_to_jsonb(data) -> 'spec' ->> 'ipFamily')) WHERE kind = 'IPClaim'`,
+		IndexName:  "idx_ipam_ipclaim_class_name",
+		Expression: `((ipam_data_to_jsonb(data) -> 'spec' ->> 'className')) WHERE kind = 'IPClaim'`,
 	},
 	{
-		IndexName:  "idx_ipam_ipclaim_pool_ref_name",
-		Expression: `((ipam_data_to_jsonb(data) -> 'spec' -> 'poolRef' ->> 'name')) WHERE kind = 'IPClaim'`,
+		IndexName:  "idx_ipam_ipclaim_status_pool_ref_name",
+		Expression: `((ipam_data_to_jsonb(data) -> 'status' -> 'poolRef' ->> 'name')) WHERE kind = 'IPClaim'`,
 	},
 }
 
@@ -82,14 +82,17 @@ func (ipClaimStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	if n.Spec.IPFamily != o.Spec.IPFamily {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "ipFamily"), "ipFamily is immutable"))
 	}
-	if n.Spec.PrefixLength != o.Spec.PrefixLength {
+	if !equality.Semantic.DeepEqual(n.Spec.PrefixLength, o.Spec.PrefixLength) {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "prefixLength"), "prefixLength is immutable"))
 	}
-	if !equality.Semantic.DeepEqual(n.Spec.PoolRef, o.Spec.PoolRef) {
-		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "poolRef"), "poolRef is immutable"))
+	if n.Spec.ClassName != o.Spec.ClassName {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "className"), "className is immutable"))
 	}
-	if !equality.Semantic.DeepEqual(n.Spec.PoolSelector, o.Spec.PoolSelector) {
-		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "poolSelector"), "poolSelector is immutable"))
+	// The scope decides which pool serves the claim and which allocations it
+	// must not collide with. Editing it would move a bound address into a
+	// different address space without moving the address.
+	if !equality.Semantic.DeepEqual(n.Spec.Scope, o.Spec.Scope) {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "scope"), "scope is immutable"))
 	}
 	return allErrs
 }
@@ -102,26 +105,31 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
-	if c.Spec.IPFamily == "" {
-		allErrs = append(allErrs, field.Required(specPath.Child("ipFamily"), "ipFamily is required"))
-	} else if c.Spec.IPFamily != ipam.IPv4 && c.Spec.IPFamily != ipam.IPv6 {
-		allErrs = append(allErrs, field.NotSupported(specPath.Child("ipFamily"), c.Spec.IPFamily, []string{string(ipam.IPv4), string(ipam.IPv6)}))
+	// A claim names a class, or a family so the default class for it can be
+	// found. The class supplies everything else, including the block size, so
+	// nothing here can validate a prefix length against a range it cannot see.
+	if c.Spec.ClassName == "" && c.Spec.IPFamily == "" {
+		allErrs = append(allErrs, field.Required(specPath, "one of className or ipFamily is required"))
 	}
-	if c.Spec.PrefixLength <= 0 {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), c.Spec.PrefixLength, "prefixLength must be greater than 0"))
+	if c.Spec.IPFamily != "" && c.Spec.IPFamily != ipam.IPv4 && c.Spec.IPFamily != ipam.IPv6 {
+		allErrs = append(allErrs, field.NotSupported(specPath.Child("ipFamily"), c.Spec.IPFamily,
+			[]string{string(ipam.IPv4), string(ipam.IPv6)}))
 	}
-	maxLen := 32
-	if c.Spec.IPFamily == ipam.IPv6 {
-		maxLen = 128
+	if p := c.Spec.PrefixLength; p != nil {
+		maxLen := int32(32)
+		if c.Spec.IPFamily == ipam.IPv6 {
+			maxLen = 128
+		}
+		if *p <= 0 || *p > maxLen {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), *p,
+				fmt.Sprintf("must be between 1 and %d", maxLen)))
+		}
 	}
-	if c.Spec.PrefixLength > maxLen {
-		allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), c.Spec.PrefixLength, fmt.Sprintf("prefixLength must not exceed %d for %s", maxLen, c.Spec.IPFamily)))
-	}
-	if c.Spec.PoolRef == nil && c.Spec.PoolSelector == nil {
-		allErrs = append(allErrs, field.Required(specPath, "exactly one of poolRef or poolSelector must be specified"))
-	}
-	if c.Spec.PoolRef != nil && c.Spec.PoolSelector != nil {
-		allErrs = append(allErrs, field.Forbidden(specPath, "poolRef and poolSelector are mutually exclusive"))
+	for role, ref := range c.Spec.Scope {
+		if ref.Kind == "" || ref.Name == "" {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("scope", role), ref,
+				"each scope reference needs a kind and a name"))
+		}
 	}
 	return allErrs
 }
@@ -136,16 +144,15 @@ func GetAttrs(obj runtime.Object) (labels.Set, fields.Set, error) {
 
 func SelectableFields(c *ipam.IPClaim) fields.Set {
 	objectMetaFields := generic.ObjectMetaFieldsSet(&c.ObjectMeta, true)
-	// spec.poolRef.name lets clients filter watches/lists by the targeted
-	// pool. Empty when the claim used a poolSelector instead, which is the
-	// right behaviour (no fixed pool to filter by).
+	// The pool is resolved by the allocator, so it is filterable on STATUS
+	// rather than on spec. Empty until the claim is bound.
 	poolRefName := ""
-	if c.Spec.PoolRef != nil {
-		poolRefName = c.Spec.PoolRef.Name
+	if c.Status.PoolRef != nil {
+		poolRefName = c.Status.PoolRef.Name
 	}
 	specific := fields.Set{
-		"spec.ipFamily":     string(c.Spec.IPFamily),
-		"spec.poolRef.name": poolRefName,
+		"spec.className":      c.Spec.ClassName,
+		"status.poolRef.name": poolRefName,
 	}
 	return generic.MergeFieldsSets(objectMetaFields, specific)
 }
