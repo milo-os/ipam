@@ -261,15 +261,27 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, apierrors.NewBadRequest(err.Error())
 	}
 
-	poolKey, err := allocator.DiscoverPool(ctx, tx, class, claim.Spec.Scope)
+	// Resolving the pool provisions any missing level of the class's chain, and
+	// each level commits on its own — so it runs BEFORE the allocation
+	// transaction opens, not inside it. A pool is durable infrastructure that
+	// outlives the claim that caused it; holding this transaction across the
+	// chain would make a herd of first claims serialise behind the slowest.
+	_ = tx.Rollback(ctx)
+	poolKey, err := allocator.ResolvePool(ctx, r.db, class, claim.Spec.Scope)
 	if err != nil {
-		_ = tx.Rollback(ctx)
 		metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
 		if errors.Is(err, allocator.ErrNoOfferingPool) {
 			return nil, apierrors.NewBadRequest(err.Error())
 		}
-		return nil, fmt.Errorf("discover pool: %w", err)
+		return nil, fmt.Errorf("resolve pool: %w", err)
+	}
+
+	tx, err = r.db.Begin(ctx)
+	if err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+		failSpan(tracing.ReasonTxError)
+		return nil, fmt.Errorf("begin allocation transaction: %w", err)
 	}
 	poolName := poolKey[strings.LastIndex(poolKey, "/")+1:]
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)

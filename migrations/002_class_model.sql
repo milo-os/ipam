@@ -474,7 +474,8 @@ ALTER TABLE ipam_cidr_allocations
 
 ALTER TABLE ipam_cidr_allocations DROP CONSTRAINT IF EXISTS ipam_cidr_alloc_purpose_check;
 ALTER TABLE ipam_cidr_allocations
-    ADD CONSTRAINT ipam_cidr_alloc_purpose_check CHECK (purpose IN ('Claim', 'Reservation'));
+    ADD CONSTRAINT ipam_cidr_alloc_purpose_check
+    CHECK (purpose IN ('Claim', 'Reservation', 'PoolCarve'));
 
 -- The hot path of every allocation: read the addresses already taken in this
 -- pool, in this address space, and hand the set to FindFirstAvailableBlock.
