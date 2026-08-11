@@ -16,9 +16,9 @@ func TestUtilizationPercent(t *testing.T) {
 		want float64
 	}{
 		{"empty total", ipamv1alpha1.PoolCapacity{}, 0},
-		{"half", ipamv1alpha1.PoolCapacity{Total: 100, Allocated: 50}, 50},
-		{"full", ipamv1alpha1.PoolCapacity{Total: 256, Allocated: 256}, 100},
-		{"73pct", ipamv1alpha1.PoolCapacity{Total: 100, Allocated: 73}, 73},
+		{"half", ipamv1alpha1.PoolCapacity{Total: "100", Allocated: "50"}, 50},
+		{"full", ipamv1alpha1.PoolCapacity{Total: "256", Allocated: "256"}, 100},
+		{"73pct", ipamv1alpha1.PoolCapacity{Total: "100", Allocated: "73"}, 73},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -46,7 +46,7 @@ func TestUtilizationLabel(t *testing.T) {
 }
 
 func TestProjectedUtilization(t *testing.T) {
-	cap := ipamv1alpha1.PoolCapacity{Total: 1024, Allocated: 256, Available: 768}
+	cap := ipamv1alpha1.PoolCapacity{Total: "1024", Allocated: "256", Available: "768"}
 	// Claiming a /24 (256 addrs) of an IPv4 pool with 256 already allocated.
 	before, after := projectedUtilization(cap, ipamv1alpha1.IPv4, 24)
 	if before != 25 {

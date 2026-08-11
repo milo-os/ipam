@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -67,9 +68,9 @@ func newPool(name, cidr string, family ipamv1alpha1.IPFamily, total, allocated i
 			Phase:         ipamv1alpha1.PoolReady,
 			AllocatedCIDR: cidr,
 			Capacity: ipamv1alpha1.PoolCapacity{
-				Total:     total,
-				Allocated: allocated,
-				Available: total - allocated,
+				Total:     strconv.FormatInt(total, 10),
+				Allocated: strconv.FormatInt(allocated, 10),
+				Available: strconv.FormatInt(total-allocated, 10),
 			},
 		},
 	}

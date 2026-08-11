@@ -72,7 +72,20 @@ tasks:
 
   lint:
     desc: Run golangci-lint
+    deps: [lint:install]
     cmd: golangci-lint run ./...
+
+  lint:install:
+    desc: Install the golangci-lint version CI uses, built with this repo's Go
+    # A binary built with an older Go refuses this module outright: it reports
+    # "the Go language version used to build golangci-lint is lower than the
+    # targeted Go version" and lints nothing. `go install` builds it with the
+    # local toolchain, so it tracks whatever go.mod targets.
+    status:
+      - test "$(golangci-lint version --short 2>/dev/null)" = "{{.GOLANGCI_VERSION}}"
+    cmd: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v{{.GOLANGCI_VERSION}}
+    vars:
+      GOLANGCI_VERSION: 2.12.2
 
   generate:
     desc: Run code generation
