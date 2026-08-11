@@ -15,8 +15,8 @@ import (
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
-// offerPool writes a pool into a project and publishes it to a class name, the
-// way the IPPool registry does on every spec write.
+// offerPool writes a pool into a project. Publishing it to the class named in
+// spec.classNames is the database's job, so nothing here writes the offer.
 func offerPool(t *testing.T, tx pgx.Tx, project, name, cidr, className string, scope map[string]ipamv1alpha1.ScopeRef) string {
 	t.Helper()
 	family := ipamv1alpha1.IPv4
@@ -43,11 +43,6 @@ func offerPool(t *testing.T, tx pgx.Tx, project, name, cidr, className string, s
 		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ($1,'IPPool',$2,$3)`,
 		key, name, data); err != nil {
 		t.Fatalf("seed pool %q: %v", key, err)
-	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO ipam_pool_class_offer (pool_key, class_name) VALUES ($1,$2)`,
-		key, className); err != nil {
-		t.Fatalf("offer pool %q to %q: %v", key, className, err)
 	}
 	return key
 }
@@ -198,5 +193,53 @@ func TestTwoProjectsReferencingOneClassShareItsPool(t *testing.T) {
 		if got != want {
 			t.Errorf("project %q discovered %q, want the definition's pool %q", project, got, want)
 		}
+	}
+}
+
+// spec.classNames is what publishes a pool to a class, and the database keeps
+// the offer table in step with it. A pool arrives by several routes — the
+// registry's own Create, the generic store, the cascade — so a hook on one of
+// them is a hook missing from the others.
+func TestEditingClassNamesRepublishesThePool(t *testing.T) {
+	pool := testdb.Pool(t)
+	tx := begin(t, pool)
+	ctx := context.Background()
+
+	definition(t, tx, "platform", "first", ipamv1alpha1.IPClassSpec{IPFamily: ipamv1alpha1.IPv4})
+	definition(t, tx, "platform", "second", ipamv1alpha1.IPClassSpec{IPFamily: ipamv1alpha1.IPv4})
+	key := offerPool(t, tx, "platform", "movable", "10.50.0.0/16", "first", nil)
+
+	offeredTo := func() []string {
+		rows, err := tx.Query(ctx,
+			`SELECT class_name FROM ipam_pool_class_offer WHERE pool_key = $1 ORDER BY class_name`, key)
+		if err != nil {
+			t.Fatalf("read offers: %v", err)
+		}
+		defer rows.Close()
+		var names []string
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err != nil {
+				t.Fatalf("scan offer: %v", err)
+			}
+			names = append(names, n)
+		}
+		return names
+	}
+
+	if got := offeredTo(); len(got) != 1 || got[0] != "first" {
+		t.Fatalf("after create, offered to %v, want [first]", got)
+	}
+
+	// Re-point the pool at the other class, the way an update to spec does.
+	if _, err := tx.Exec(ctx,
+		`UPDATE ipam_objects
+		    SET data = jsonb_set(ipam_data_to_jsonb(data), '{spec,classNames}', '["second"]')::text::bytea
+		  WHERE key = $1`, key); err != nil {
+		t.Fatalf("update classNames: %v", err)
+	}
+
+	if got := offeredTo(); len(got) != 1 || got[0] != "second" {
+		t.Errorf("after update, offered to %v, want [second]; the old offer must not survive", got)
 	}
 }

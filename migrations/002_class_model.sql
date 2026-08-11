@@ -377,6 +377,35 @@ BEGIN
         ON CONFLICT DO NOTHING;
 END;
 $$ LANGUAGE plpgsql;
+
+-- The offer table is maintained by the database, not by the registry.
+--
+-- A pool publishes itself to classes through spec.classNames, and that spec
+-- arrives by several routes: the IPPool registry's own Create, the generic
+-- store's Create and Update, and the cascade when it provisions a pool. A hook
+-- on one of them is a hook missing from the others, and a pool whose offers
+-- were never written is invisible to discovery while looking perfectly correct
+-- in the API.
+--
+-- Deletes need no trigger: ipam_pool_class_offer.pool_key cascades.
+CREATE OR REPLACE FUNCTION ipam_pool_class_offers_from_data() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.kind <> 'IPPool' THEN
+        RETURN NEW;
+    END IF;
+    PERFORM ipam_sync_pool_class_offers(
+        NEW.key,
+        ARRAY(SELECT jsonb_array_elements_text(
+            COALESCE(ipam_data_to_jsonb(NEW.data) -> 'spec' -> 'classNames', '[]'::jsonb)))
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS ipam_objects_pool_class_offers ON ipam_objects;
+CREATE TRIGGER ipam_objects_pool_class_offers
+    AFTER INSERT OR UPDATE OF data ON ipam_objects
+    FOR EACH ROW EXECUTE FUNCTION ipam_pool_class_offers_from_data();
 -- +goose StatementEnd
 
 -- 4. Allocations outlive their claims
