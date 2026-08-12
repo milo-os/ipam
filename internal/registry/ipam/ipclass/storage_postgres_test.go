@@ -69,7 +69,7 @@ func newPostgresClassStorage(t *testing.T, checker access.ClassAccessChecker) *I
 	}
 	getter.SetCodec(serializer.NewCodecFactory(scheme).LegacyCodec(ipamv1alpha1.SchemeGroupVersion))
 
-	store, _, err := NewClassStorage(scheme, getter, checker)
+	store, _, err := NewClassStorage(scheme, getter, checker, db)
 	if err != nil {
 		t.Fatalf("class storage: %v", err)
 	}

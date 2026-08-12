@@ -29,6 +29,16 @@ const (
 	labelScopeDigest   = "ipam.miloapis.com/scope-digest"
 )
 
+// What a claim does at one level of a class chain. Reported on
+// ipam_cascade_levels_total; internal/metrics documents what each one means
+// operationally.
+const (
+	levelReused      = "reused"
+	levelProvisioned = "provisioned"
+	levelLost        = "lost"
+	levelError       = "error"
+)
+
 // TxBeginner is the subset of a connection pool the cascade needs. Each level
 // commits separately, so it cannot take a transaction.
 type TxBeginner interface {
@@ -93,6 +103,12 @@ func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope
 // immediately, and holding one transaction across the whole chain would make a
 // herd of first claims serialise behind the slowest.
 func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, error) {
+	// Resolution runs outside the allocation transaction, so its cost lands in
+	// end-to-end claim latency without appearing in any query timing.
+	start := time.Now()
+	result, provisioned := "error", false
+	defer func() { metrics.ObserveCascadeResolution(result, provisioned, start) }()
+
 	planTx, err := db.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("begin cascade planning transaction: %w", err)
@@ -110,7 +126,11 @@ func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimS
 	// A leaf with no ancestry draws straight from whichever operator-authored
 	// pool offers it. There is nothing to cascade.
 	if len(levels) == 0 {
-		return discoverInTx(ctx, db, leaf, claimScope)
+		poolKey, err := discoverInTx(ctx, db, leaf, claimScope)
+		if err == nil {
+			result = "success"
+		}
+		return poolKey, err
 	}
 
 	// The root-most level carves from an operator-authored pool offering its
@@ -120,12 +140,14 @@ func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimS
 		return "", err
 	}
 	for i := range levels {
-		poolKey, err := ensureLevel(ctx, db, levels[i], source)
+		poolKey, created, err := ensureLevel(ctx, db, levels[i], source)
 		if err != nil {
 			return "", fmt.Errorf("provision pool for class %q: %w", levels[i].Class.Name, err)
 		}
+		provisioned = provisioned || created
 		source = poolKey
 	}
+	result = "success"
 	return source, nil
 }
 
@@ -181,17 +203,20 @@ func discoverInTx(ctx context.Context, db TxBeginner, class *ResolvedClass, clai
 }
 
 // ensureLevel finds or creates the pool for one level, in a transaction of its
-// own:
+// own, reporting whether it was this caller that created it:
 //
 //  1. Read the identity table with no lock. Every claim after the first into a
 //     scope takes this path and must cost one indexed read.
 //  2. Upsert the identity tuple. This is the serialisation point, deliberately
 //     BEFORE any pool row is touched, so a loser waits here holding nothing.
 //  3. Only on winning: carve a block from the source and write the pool.
-func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourcePoolKey string) (string, error) {
+func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourcePoolKey string) (poolKey string, provisioned bool, err error) {
+	outcome := levelError
+	defer func() { metrics.RecordCascadeLevel(level.Class.Name, outcome) }()
+
 	tx, err := db.Begin(ctx)
 	if err != nil {
-		return "", fmt.Errorf("begin level transaction: %w", err)
+		return "", false, fmt.Errorf("begin level transaction: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -202,43 +227,48 @@ func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourceP
 
 	existing, err := lookupPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if existing != "" {
 		if err := tx.Commit(ctx); err != nil {
-			return "", fmt.Errorf("commit identity lookup: %w", err)
+			return "", false, fmt.Errorf("commit identity lookup: %w", err)
 		}
 		committed = true
-		return existing, nil
+		outcome = levelReused
+		return existing, false, nil
 	}
 
 	poolKey, won, err := claimPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest, level.PoolKey)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if !won {
 		// The winner committed the identity row and the pool object together,
 		// so the pool is readable now. Nothing to undo: no pool lock was held
 		// and the source was never touched.
 		if err := tx.Commit(ctx); err != nil {
-			return "", fmt.Errorf("commit lost identity race: %w", err)
+			return "", false, fmt.Errorf("commit lost identity race: %w", err)
 		}
 		committed = true
+		// Every member of a first-claim herd but one loses, so a loss is an
+		// outcome on the same counter as a win, not an error.
+		outcome = levelLost
 		klog.V(2).InfoS("Lost pool-provisioning race; using the winner's pool",
 			"class", level.Class.Name, "pool", poolKey)
-		return poolKey, nil
+		return poolKey, false, nil
 	}
 
 	if err := provisionPool(ctx, tx, level, sourcePoolKey); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", fmt.Errorf("commit pool provisioning: %w", err)
+		return "", false, fmt.Errorf("commit pool provisioning: %w", err)
 	}
 	committed = true
+	outcome = levelProvisioned
 	klog.V(2).InfoS("Provisioned pool",
 		"class", level.Class.Name, "pool", poolKey, "source", sourcePoolKey)
-	return poolKey, nil
+	return poolKey, true, nil
 }
 
 // lookupPoolIdentity reads the pool a class has already provisioned for a
@@ -440,7 +470,10 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 		return nil, err
 	}
 
-	block, err := findBlock(ctx, tx, sourcePoolKey, parents, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
+	// spaceAll, not carve.ScopeDigest — which is a POOL digest and identifies
+	// nothing the search understands. The block leaves the pool, so it must be
+	// free in every space, not in one of them.
+	block, err := findBlock(ctx, tx, sourcePoolKey, spaceAll, parents, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
 	if err != nil {
 		if errors.Is(err, allocation.ErrPoolExhausted) {
 			return nil, ErrPoolExhausted

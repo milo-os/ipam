@@ -37,6 +37,7 @@ import (
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
+	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
@@ -275,6 +276,23 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	}
 	reclaimPolicy := allocator.EffectiveReclaimPolicy(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy))
 
+	// The address space this allocation must be unique in. A claim that does
+	// not carry a role its class names in uniqueWithin is refused by name
+	// rather than compared against a wider space: widening would look correct
+	// while refusing addresses the narrow comparison was meant to allow, and
+	// the operator would see a pool exhaust at a fraction of its capacity with
+	// nothing to explain it.
+	uniqueScope, scopeDigest, err := scope.ProjectAddressSpaceDigest(id.Name, claim.Spec.Scope, class.Spec.UniqueWithin, "uniqueWithin")
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+		var missing *scope.MissingRoleError
+		if errors.As(err, &missing) {
+			return nil, apierrors.NewBadRequest(fmt.Sprintf("%s (class %q)", missing.Error(), class.Name))
+		}
+		return nil, apierrors.NewBadRequest(err.Error())
+	}
+
 	// Resolving the pool provisions any missing level of the class's chain, and
 	// each level commits on its own — so it runs BEFORE the allocation
 	// transaction opens, not inside it. A pool is durable infrastructure that
@@ -313,6 +331,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		ClaimKey:      claimKey,
 		AllocationKey: allocationKey,
 		OwnerProject:  id.Name,
+		ScopeDigest:   scopeDigest,
 		ClassName:     class.Name,
 		ReclaimPolicy: reclaimPolicy,
 	})
@@ -371,13 +390,14 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			ClassName:     class.Name,
 			Purpose:       ipam.PurposeClaim,
 			ClaimRef:      &ipam.LocalRef{Name: claim.Name},
-			Scope:         claim.Spec.Scope,
+			Scope:         uniqueScope,
 			ReclaimPolicy: ipam.ReclaimPolicy(reclaimPolicy),
 			OwnerRef:      claim.Spec.OwnerRef,
 		},
 		Status: ipam.IPAllocationStatus{
 			Phase:         ipam.AllocationReady,
 			AllocatedCIDR: cidr,
+			ScopeDigest:   scopeDigest,
 		},
 	}
 	allocData, err := runtime.Encode(r.codec, alloc)

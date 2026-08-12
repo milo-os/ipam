@@ -55,21 +55,36 @@ func TestHTTPStatusCode(t *testing.T) {
 	}
 }
 
+// A 507 names the class and scope the caller asked for, plus the pools backing
+// the class. The caller never named a pool, so "which one ran out" is the fact
+// the request itself cannot supply.
 func TestExhaustionError(t *testing.T) {
-	ce := exhaustionError("env-pool", "IPv4", 22, 98, 24, nil)
+	ce := exhaustionError("tenant-endpoint-ipv4", "location=us-west network=default",
+		[]string{"us-west-v4  10.1.0.0/16  98% used"}, nil)
 	if ce.code != exitExhausted {
 		t.Fatalf("code = %d, want %d", ce.code, exitExhausted)
 	}
-	if !strings.Contains(ce.msg, "no free /22") {
-		t.Errorf("msg missing requested length: %q", ce.msg)
+	for _, want := range []string{"tenant-endpoint-ipv4", "location=us-west", "us-west-v4", "98% used"} {
+		if !strings.Contains(ce.msg, want) {
+			t.Errorf("msg missing %q: %q", want, ce.msg)
+		}
 	}
-	if !strings.Contains(ce.msg, "/24") {
-		t.Errorf("msg missing largest available: %q", ce.msg)
+	if !strings.Contains(ce.fix, "class show tenant-endpoint-ipv4") {
+		t.Errorf("fix missing remediation command: %q", ce.fix)
 	}
-	if !strings.Contains(ce.msg, "98%") {
-		t.Errorf("msg missing utilization: %q", ce.msg)
+}
+
+// With no --class, the claim asks for the family default, so the message must
+// not invent a class name nobody gave it.
+func TestExhaustionErrorDefaultClass(t *testing.T) {
+	ce := exhaustionError("", "—", nil, nil)
+	if !strings.Contains(ce.msg, "default class") {
+		t.Errorf("msg missing default-class wording: %q", ce.msg)
 	}
-	if !strings.Contains(ce.fix, "prefix list --pool env-pool") {
+	if strings.Contains(ce.msg, "in scope") {
+		t.Errorf("an em-dash scope must not be rendered: %q", ce.msg)
+	}
+	if !strings.Contains(ce.fix, "class list") {
 		t.Errorf("fix missing remediation command: %q", ce.fix)
 	}
 }
@@ -101,7 +116,7 @@ func TestRenderExitSuccess(t *testing.T) {
 func TestRenderExitPrintsFixAndCode(t *testing.T) {
 	var errBuf strings.Builder
 	io := IOStreams{Out: &strings.Builder{}, ErrOut: &errBuf}
-	ce := exhaustionError("p", "IPv4", 22, 98, 24, nil)
+	ce := exhaustionError("tenant-endpoint-ipv4", "network=default", nil, nil)
 	code := renderExit(io, ce)
 	if code != exitExhausted {
 		t.Fatalf("code = %d, want %d", code, exitExhausted)

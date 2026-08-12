@@ -3,7 +3,7 @@ kind: IPPool
 metadata:
   name: hier-env
 spec:
-  cidr: 10.128.0.0/9
+  cidr: 10.32.0.0/11
   ipFamily: IPv4
   visibility: platform
   allocation:

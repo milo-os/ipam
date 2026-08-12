@@ -168,13 +168,15 @@ func (c completedConfig) New() (*IPAMServer, error) {
 	v1alpha1Storage["ippools"] = ipPoolStore
 	v1alpha1Storage["ippools/status"] = ipPoolStatusStore
 
-	// IPClass — cluster-scoped policy, with status subresource. No allocator or
-	// db dependency: a class states what an allocation should look like and
-	// allocates nothing itself.
+	// IPClass — cluster-scoped policy, with status subresource. No allocator: a
+	// class states what an allocation should look like and allocates nothing
+	// itself. The connection pool is for admission, which reads the IPPools
+	// already offering themselves to the class being written.
 	ipClassStore, ipClassStatusStore, err := ipclass.NewClassStorage(
 		Scheme,
 		c.GenericConfig.RESTOptionsGetter,
 		c.ExtraConfig.ClassChecker,
+		c.ExtraConfig.AllocatorPool,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create IPClass storage: %w", err)

@@ -54,6 +54,16 @@ type PrefixRequest struct {
 
 	OwnerProject string
 
+	// ScopeDigest is the address space this allocation must be unique in: the
+	// claim's scope projected onto its class's uniqueWithin, digested by
+	// internal/scope. It is both what the search excludes other claims by and
+	// what the row records, so the block handed out is free in the space it is
+	// written into.
+	//
+	// Empty means the address space no refs separate — the single space a
+	// `uniqueWithin: []` class hands out from.
+	ScopeDigest string
+
 	// ClassName and ReclaimPolicy are recorded on the row because the
 	// allocation outlives the claim that chose them. An empty ReclaimPolicy
 	// is Delete.

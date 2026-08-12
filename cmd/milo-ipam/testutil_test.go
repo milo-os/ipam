@@ -56,6 +56,53 @@ func newTestApp(cs clientset.Interface, opts *globalOptions) *testApp {
 	return &testApp{app: a, out: out, err: errOut, in: in}
 }
 
+// newClass builds a minimal IPClass for table/detail tests.
+func newClass(name string, family ipamv1alpha1.IPFamily, offeringPools int32) *ipamv1alpha1.IPClass {
+	return &ipamv1alpha1.IPClass{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec:       ipamv1alpha1.IPClassSpec{IPFamily: family},
+		Status: ipamv1alpha1.IPClassStatus{
+			Phase:         ipamv1alpha1.ClassReady,
+			OfferingPools: offeringPools,
+		},
+	}
+}
+
+// newClaim builds a bound IPClaim holding cidr.
+func newClaim(name, class, cidr, pool string) *ipamv1alpha1.IPClaim {
+	return &ipamv1alpha1.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec:       ipamv1alpha1.IPClaimSpec{ClassName: class},
+		Status: ipamv1alpha1.IPClaimStatus{
+			Phase:         ipamv1alpha1.ClaimBound,
+			AllocatedCIDR: cidr,
+			PoolRef:       &ipamv1alpha1.LocalRef{Name: pool},
+		},
+	}
+}
+
+// newAllocation builds a ready IPAllocation holding cidr. A nil claim name
+// leaves ClaimRef unset, which is the retained/reserved shape.
+func newAllocation(name, class, cidr, pool, claim string) *ipamv1alpha1.IPAllocation {
+	al := &ipamv1alpha1.IPAllocation{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: ipamv1alpha1.IPAllocationSpec{
+			IPFamily:  ipamv1alpha1.IPv4,
+			PoolRef:   ipamv1alpha1.LocalRef{Name: pool},
+			ClassName: class,
+			Purpose:   ipamv1alpha1.PurposeClaim,
+		},
+		Status: ipamv1alpha1.IPAllocationStatus{
+			Phase:         ipamv1alpha1.AllocationReady,
+			AllocatedCIDR: cidr,
+		},
+	}
+	if claim != "" {
+		al.Spec.ClaimRef = &ipamv1alpha1.LocalRef{Name: claim}
+	}
+	return al
+}
+
 // newPool builds an IPPool with the given capacity for table/tree tests.
 func newPool(name, cidr string, family ipamv1alpha1.IPFamily, total, allocated int64) *ipamv1alpha1.IPPool {
 	return &ipamv1alpha1.IPPool{
