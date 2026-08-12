@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/fieldindex"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipamvalidation"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 )
 
@@ -199,6 +200,9 @@ func validateIPPool(p *ipam.IPPool) field.ErrorList {
 		))
 	}
 
+	allErrs = append(allErrs, ipamvalidation.Reservations(
+		p.Spec.Reservations, familyForValidation(p), specPath.Child("reservations"))...)
+
 	switch p.Spec.Visibility {
 	case "", "platform", "consumer", "shared":
 		// ok
@@ -208,6 +212,20 @@ func validateIPPool(p *ipam.IPPool) field.ErrorList {
 	}
 
 	return allErrs
+}
+
+// familyForValidation returns the family a pool's reservations are sized
+// against. A child pool has neither spec.ipFamily nor a carve at create time,
+// so it validates against the wider bound and the allocation library rejects a
+// unit that does not fit the carve it eventually gets.
+func familyForValidation(p *ipam.IPPool) ipam.IPFamily {
+	if p.Spec.IPFamily != "" {
+		return p.Spec.IPFamily
+	}
+	if fam, err := effectiveIPFamily(p); err == nil {
+		return ipam.IPFamily(fam)
+	}
+	return ""
 }
 
 func localRefEqual(a, b *ipam.LocalRef) bool {
