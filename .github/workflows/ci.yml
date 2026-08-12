@@ -97,6 +97,12 @@ jobs:
             echo "  ok  $f"
           done
 
+      # The suites share one project and chainsaw runs them concurrently, so
+      # overlapping root ranges fail intermittently — on whichever suite creates
+      # its root second, with an error that reads like an allocator bug.
+      - name: Verify fixture root ranges are disjoint
+        run: bash hack/verify-fixture-ranges.sh
+
   k6-validate:
     name: Validate k6 scripts
     runs-on: ubuntu-latest

@@ -1,0 +1,11 @@
+---
+# A root that overlaps nothing. Proves the check refuses overlap rather than
+# refusing root pools.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ro-disjoint
+spec:
+  cidr: 198.51.100.0/24
+  ipFamily: IPv4
+  classNames: [ro-class-v4]

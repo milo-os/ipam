@@ -1,0 +1,104 @@
+# Two ways a claim can be missing a role its class needs:
+#
+#   sv-endpoint  needs `network` for uniqueWithin
+#   sv-leaf      needs `network` AND `location`, because its parent chain
+#                provisions one pool per network-and-location
+#
+# Both must be rejected by name rather than falling back to a wider
+# comparison, which would look correct while refusing addresses the narrow
+# comparison was meant to allow — surfacing later as unexplained exhaustion
+# rather than as a missing field.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: sv-endpoint
+spec:
+  ipFamily: IPv4
+  uniqueWithin:
+    - network
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: sv-pool
+spec:
+  cidr: 10.203.0.0/24
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - sv-endpoint
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: sv-network
+spec:
+  ipFamily: IPv6
+  poolPer:
+    - network
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 48
+    max: 48
+  defaultPrefixLength: 48
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: sv-subnet
+spec:
+  ipFamily: IPv6
+  parentClassName: sv-network
+  poolPer:
+    - network
+    - location
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 64
+    max: 64
+  defaultPrefixLength: 64
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: sv-leaf
+spec:
+  ipFamily: IPv6
+  parentClassName: sv-subnet
+  uniqueWithin:
+    - network
+  allowedPrefixLengths:
+    min: 96
+    max: 96
+  defaultPrefixLength: 96
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: sv-v6-root
+spec:
+  cidr: fd31::/24
+  ipFamily: IPv6
+  visibility: platform
+  classNames:
+    - sv-network
+  allocation:
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit

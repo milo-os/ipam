@@ -1,9 +1,0 @@
-apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPClaim
-metadata:
-  name: claim-zero-length
-  namespace: ($namespace)
-spec:
-  className: validation-class
-  prefixLength: 0
-  reclaimPolicy: Delete
