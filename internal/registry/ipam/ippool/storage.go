@@ -120,6 +120,9 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 
 	if pool.Spec.ParentPoolRef == nil {
 		// Root pool — strategy.PrepareForCreate already populated status.
+		if err := r.validateNoRootOverlap(ctx, pool, tenant.FromContext(ctx)); err != nil {
+			return nil, err
+		}
 		return r.Store.Create(ctx, obj, createValidation, options)
 	}
 

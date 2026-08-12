@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/fieldindex"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipamvalidation"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 )
 
@@ -212,6 +213,12 @@ func validateDefinition(c *ipam.IPClass) field.ErrorList {
 			"reservations apply to the pools this class provisions; set spec.poolPer, "+
 				"or state them on the pool itself"))
 	}
+
+	// Apply the pool's own rule here, so a class cannot hold a reservation that
+	// the pools it provisions would refuse.
+	allErrs = append(allErrs, ipamvalidation.Reservations(
+		c.Spec.Reservations, c.Spec.IPFamily, specPath.Child("reservations"))...)
+
 	return allErrs
 }
 
