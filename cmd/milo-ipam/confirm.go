@@ -21,10 +21,28 @@ func (a *app) nonInteractive() bool {
 	return !isTerminalFd(int(f.Fd()))
 }
 
-// confirmTyped is the high-blast-radius gate (pool release): the user must type
-// the exact resource name. --yes bypasses. A non-interactive session WITHOUT
-// --yes refuses, because the name cannot be typed — this is intentional friction
-// for the most destructive action.
+// confirmYesNo asks a yes/no question scaled to a low blast radius (a single
+// claim or allocation release). Returns true to proceed. --yes bypasses; a
+// non-interactive session proceeds, since the prompt cannot be answered and the
+// action is recoverable.
+func (a *app) confirmYesNo(prompt string) bool {
+	if a.opts.assumeYes {
+		return true
+	}
+	if a.nonInteractive() {
+		return true
+	}
+	_, _ = fmt.Fprintf(a.io.ErrOut, "%s [y/N]: ", prompt)
+	reader := bufio.NewReader(a.io.In)
+	line, _ := reader.ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "y" || line == "yes"
+}
+
+// confirmTyped is the high-blast-radius gate, used by pool release: the user
+// must type the exact resource name. --yes bypasses it. A non-interactive
+// session without --yes refuses, because nobody can type the name there. The
+// friction is intentional for the most destructive action.
 func (a *app) confirmTyped(name, prompt string) (bool, error) {
 	if a.opts.assumeYes {
 		return true, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -62,25 +63,41 @@ func newPoolCreateCommand(a *app) *cobra.Command {
 		prefixLen  int
 		strategy   string
 		visibility string
+		classNames []string
+		scopeArgs  []string
 		dryRun     bool
 	)
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create a pool",
+		Short: "Create a pool and offer it to classes",
 		Args:  cobra.ExactArgs(1),
-		Example: `  # A root /8 pool
-  datumctl ipam pool create prod-backbone --cidr 10.0.0.0/8
+		Long: `Create a pool.
+
+A pool is only reachable by consumers once it offers itself to a class: --class
+is what publishes capacity, and a class no pool offers is a class whose every
+claim fails.
+
+` + scopeGrammarHelp(),
+		Example: `  # A root /8 offered to a class
+  datumctl ipam pool create prod-backbone --cidr 10.0.0.0/8 --class tenant-subnet-ipv4
 
   # A child pool carved from a parent, allowing /24–/28 leaf claims
   datumctl ipam pool create us-west --parent prod-backbone --prefix-length 16 \
-    --min-length 24 --max-length 28`,
+    --min-length 24 --max-length 28 --class tenant-endpoint-ipv4 \
+    --scope location=us-west`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
+			scope, err := buildScope(scopeArgs)
+			if err != nil {
+				return err
+			}
 			pool := &ipamv1alpha1.IPPool{
 				ObjectMeta: metav1.ObjectMeta{Name: name},
 				Spec: ipamv1alpha1.IPPoolSpec{
 					CIDR:          cidr,
 					ParentPoolRef: refOrNil(parent),
+					ClassNames:    classNames,
+					Scope:         scope,
 				},
 			}
 			setPoolGVK(pool)
@@ -124,8 +141,8 @@ func newPoolCreateCommand(a *app) *cobra.Command {
 
 			if dryRun {
 				_, _ = fmt.Fprintln(a.io.ErrOut, "Dry run — no pool was created.")
-				_, _ = fmt.Fprintf(a.io.ErrOut, "Would create pool %q (cidr %s, family %s).\n",
-					name, orDash(cidr), orDash(string(pool.Spec.IPFamily)))
+				_, _ = fmt.Fprintf(a.io.ErrOut, "Would create pool %q (cidr %s, family %s, classes %s).\n",
+					name, orDash(cidr), orDash(string(pool.Spec.IPFamily)), orDashList(classNames))
 				_, err := a.renderMachine(pool, func() string { return "ippool/" + name })
 				return err
 			}
@@ -143,6 +160,11 @@ func newPoolCreateCommand(a *app) *cobra.Command {
 				return err
 			}
 			_, _ = fmt.Fprintf(a.io.Out, "%s Created pool %q\n", successPrefix(a.color), created.Name)
+			if len(created.Spec.ClassNames) == 0 && !a.opts.quiet {
+				_, _ = fmt.Fprintln(a.io.ErrOut,
+					"This pool offers itself to no class, so no claim can draw on it.\n"+
+						"Add one with --class <name> at create time.")
+			}
 			return nil
 		},
 	}
@@ -155,6 +177,8 @@ func newPoolCreateCommand(a *app) *cobra.Command {
 	f.IntVar(&prefixLen, "prefix-length", 0, "Prefix length to carve from the parent (child pools)")
 	f.StringVar(&strategy, "strategy", "", "Allocation strategy: FirstFit|BestFit|LeastUtilized")
 	f.StringVar(&visibility, "visibility", "", "Pool visibility: platform|consumer|shared")
+	f.StringArrayVar(&classNames, "class", nil, "Offer this pool to a class (repeatable). Capacity is unreachable without one")
+	f.StringArrayVar(&scopeArgs, "scope", nil, scopeFlagUsage("Constrain this pool to claims of these references"))
 	f.BoolVar(&dryRun, "dry-run", false, "Preview the pool without creating it")
 	return cmd
 }
@@ -236,9 +260,9 @@ func (a *app) renderPoolTable(pools []ipamv1alpha1.IPPool) error {
 	sort.Slice(pools, func(i, j int) bool { return pools[i].Name < pools[j].Name })
 
 	wide := a.opts.output == outputWide
-	headers := []string{"NAME", "CIDR", "FAMILY", "UTILIZATION", "AGE"}
+	headers := []string{"NAME", "CIDR", "FAMILY", "CLASSES", "UTILIZATION", "AGE"}
 	if wide {
-		headers = []string{"NAME", "CIDR", "FAMILY", "UTILIZATION", "CHILDREN", "PREFIXES", "PHASE", "AGE"}
+		headers = []string{"NAME", "CIDR", "FAMILY", "CLASSES", "SCOPE", "UTILIZATION", "CHILDREN", "CLAIMS", "PHASE", "AGE"}
 	}
 	t := newTable(a.io.Out, headers)
 
@@ -258,15 +282,28 @@ func (a *app) renderPoolTable(pools []ipamv1alpha1.IPPool) error {
 		util := utilizationCell(poolUtilization(p), 10, a.color.enabled)
 		family := orDash(string(poolFamily(p)))
 		if wide {
-			t.row(p.Name, orDash(cidr), family, util,
+			t.row(p.Name, orDash(cidr), family, poolClassesCell(p), formatScope(p.Spec.Scope), util,
 				itoa(children[p.Name]), itoa(prefixes[p.Name]), orDash(string(p.Status.Phase)),
 				humanDuration(p.CreationTimestamp))
 		} else {
-			t.row(p.Name, orDash(cidr), family, util,
+			t.row(p.Name, orDash(cidr), family, poolClassesCell(p), util,
 				humanDuration(p.CreationTimestamp))
 		}
 	}
 	return t.flush()
+}
+
+// poolClassesCell renders the classes a pool offers itself to. A pool that
+// offers none is unreachable by any claim, so the cell says so rather than
+// leaving a reader to infer it from a blank.
+func poolClassesCell(p *ipamv1alpha1.IPPool) string {
+	if len(p.Spec.ClassNames) > 0 {
+		return strings.Join(p.Spec.ClassNames, ",")
+	}
+	if p.Spec.ClassRef != nil {
+		return "(provisioned by " + p.Spec.ClassRef.Name + ")"
+	}
+	return "— (none)"
 }
 
 // ---------------------------------------------------------------------------
@@ -311,6 +348,16 @@ func (a *app) renderPoolDetail(p *ipamv1alpha1.IPPool) error {
 	t.row("Phase", orDash(string(p.Status.Phase)))
 	if p.Spec.ParentPoolRef != nil {
 		t.row("Parent", p.Spec.ParentPoolRef.Name)
+	}
+	t.row("Offered to classes", poolClassesCell(p))
+	if p.Spec.ClassRef != nil {
+		t.row("Provisioned by", p.Spec.ClassRef.Name)
+	}
+	for _, role := range sortedScopeRoles(p.Spec.Scope) {
+		t.row("Scope "+role, formatScopeRef(p.Spec.Scope[role]))
+	}
+	if p.Status.ScopeDigest != "" {
+		t.row("Scope digest", p.Status.ScopeDigest)
 	}
 	if p.Spec.Visibility != "" {
 		t.row("Visibility", p.Spec.Visibility)

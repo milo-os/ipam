@@ -114,9 +114,9 @@ func asAPIStatus(err error) (apierrors.APIStatus, bool) {
 }
 
 // classifyError maps an arbitrary error from an API call into a cliError with
-// the right exit code. It is deliberately generic; callers that can add IPAM
-// context (the pool, requested length, …) should prefer the richer helpers
-// below and only fall back here for the unexpected.
+// the right exit code. It stays generic on purpose. Callers that can add IPAM
+// context, such as the pool or the requested length, should prefer the richer
+// helpers below and fall back here only for the unexpected.
 func classifyError(err error) *cliError {
 	if err == nil {
 		return nil
@@ -177,32 +177,35 @@ func apiMessage(err error) string {
 	return err.Error()
 }
 
-// exhaustionError renders the signature IPAM failure (HTTP 507) with the full
-// remediation context the proposal calls for: the requested length, the
-// largest block that is actually available, current utilization, and a concrete
-// next command. poolName/family/requested describe the claim; cap (which may be
-// zero-valued if the pool could not be re-fetched) supplies utilization.
-func exhaustionError(poolName string, family string, requested int, util float64, largestFree int, cause error) *cliError {
+// exhaustionError renders the signature IPAM failure (HTTP 507). Under the class
+// model the caller never named a pool, so the message works backwards: it names
+// the class and the scope that were asked for, then the pools that back that
+// class and how full they are, because "which pool ran out" is the first thing
+// the reader needs and the one thing the request did not say.
+func exhaustionError(className, scope string, poolLines []string, cause error) *cliError {
 	var b strings.Builder
-	fmt.Fprintf(&b, "pool %q has no free /%d block (requested length %d).", poolName, requested, requested)
-	if largestFree > 0 {
-		fmt.Fprintf(&b, "\n       Largest available block is /%d", largestFree)
-		if util > 0 {
-			fmt.Fprintf(&b, "; utilization is %.0f%%.", util)
-		} else {
-			b.WriteString(".")
-		}
-	} else if util > 0 {
-		fmt.Fprintf(&b, "\n       Utilization is %.0f%%.", util)
-	}
-
-	var fix string
-	if largestFree > requested {
-		fix = fmt.Sprintf("request a smaller prefix (--length %d) or free space:", largestFree)
+	if className != "" {
+		fmt.Fprintf(&b, "no address is available for class %q", className)
 	} else {
-		fix = "free space in the pool or pick a different pool:"
+		b.WriteString("no address is available for the default class")
 	}
-	fix += fmt.Sprintf("\n       datumctl ipam prefix list --pool %s", poolName)
+	if scope != "" && scope != "—" {
+		fmt.Fprintf(&b, " in scope %s", scope)
+	}
+	b.WriteString(".")
+	if len(poolLines) > 0 {
+		b.WriteString("\n       Pools backing this class:")
+		for _, line := range poolLines {
+			b.WriteString("\n         " + line)
+		}
+	}
 
+	fix := "free space in the pools above, or have an operator add capacity by offering\n" +
+		"       another pool to the class:"
+	if className != "" {
+		fix += fmt.Sprintf("\n       datumctl ipam class show %s", className)
+	} else {
+		fix += "\n       datumctl ipam class list"
+	}
 	return newCLIError(exitExhausted, b.String()).withFix(fix).withCause(cause)
 }

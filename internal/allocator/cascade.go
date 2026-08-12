@@ -470,7 +470,10 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 		return nil, err
 	}
 
-	block, err := findBlock(ctx, tx, sourcePoolKey, parents, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
+	// spaceAll, not carve.ScopeDigest — which is a POOL digest and identifies
+	// nothing the search understands. The block leaves the pool, so it must be
+	// free in every space, not in one of them.
+	block, err := findBlock(ctx, tx, sourcePoolKey, spaceAll, parents, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
 	if err != nil {
 		if errors.Is(err, allocation.ErrPoolExhausted) {
 			return nil, ErrPoolExhausted
