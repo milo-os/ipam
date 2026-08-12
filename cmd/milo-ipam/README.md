@@ -1,9 +1,9 @@
 # milo-ipam
 
 The IPAM plugin for `datumctl`. It presents the `ipam.miloapis.com/v1alpha1`
-API as a small set of resource-oriented commands (pools and prefixes), turning
-the common IPAM workflows — claim a prefix, see utilization, view the hierarchy,
-release space — into single commands instead of hand-authored YAML and `jq`.
+API using the API's own nouns — class, claim, allocation, pool — turning the
+common IPAM workflows — claim an address, see what you hold, look up who holds
+one, release it — into single commands instead of hand-authored YAML and `jq`.
 
 See the full enhancement at [`docs/enhancements/cli-plugin.md`](../../docs/enhancements/cli-plugin.md).
 
@@ -16,21 +16,53 @@ go build -o bin/milo-ipam ./cmd/milo-ipam
 ## Command surface
 
 ```text
-# Pools (IPPool — cluster-scoped)
-milo-ipam pool create <name> --cidr 10.0.0.0/8 [--family ipv4]
+# Classes (IPClass — cluster-scoped, operator-authored, read-only here)
+milo-ipam class list [--family ipv4|ipv6] [--selector k=v]
+milo-ipam class show <name>
+
+# Claims (IPClaim — namespaced)
+milo-ipam claim create --class <name> [--scope role=name ...] [--prefix-length <n>]
+                       [--address <ip>] [--name <n>] [--owner <ref>]
+                       [--reclaim-policy Delete|Retain] [--dry-run]
+milo-ipam claim list [--class <n>] [--pool <n>] [--scope role=name ...]
+milo-ipam claim show <name|address>
+milo-ipam claim release <name> [--yes] [--dry-run]
+
+# Allocations (IPAllocation — namespaced, system-created)
+milo-ipam allocation list [--class <n>] [--pool <n>] [--purpose <p>] [--unclaimed]
+milo-ipam allocation show <name|address>
+milo-ipam allocation release <name> [--yes] [--dry-run]
+
+# Reverse lookup
+milo-ipam address show <ip|cidr>
+
+# Pools (IPPool — cluster-scoped, operator surface)
+milo-ipam pool create <name> --cidr 10.0.0.0/8 [--class <n> ...] [--scope role=name ...]
 milo-ipam pool list [--selector k=v] [-o wide|json|yaml|name]
 milo-ipam pool show <name>
 milo-ipam pool tree [<name>] [--prefixes]
 milo-ipam pool release <name> [--cascade] [--yes] [--dry-run]
-
-# Prefixes (IPClaim / IPAllocation — namespaced)
-milo-ipam prefix claim --pool <name> --length <n> [--name <n>] [--dry-run]
-milo-ipam prefix list [--pool <name>] [-o wide|json|yaml|name]
-milo-ipam prefix show <cidr|name>
-milo-ipam prefix release <name> [--yes] [--dry-run]
 ```
 
-Aliases: `ls` → `list`, `rm` → `release`.
+Aliases: `ls` → `list`, `rm` → `release`, `prefix` → `claim`.
+
+## Scope
+
+A claim carries the references it is made for, keyed by role. For the roles the
+CLI knows (`location`, `network`, `project`) a bare name is enough; any other
+role takes a qualified reference:
+
+```bash
+milo-ipam claim create --class tenant-endpoint-ipv4 \
+  --scope network=default --scope location=us-central-1
+
+milo-ipam claim create --class fabric-link-ipv6 \
+  --scope site=Site.infra.example.com/dc-1
+```
+
+The class names which roles it needs (`class show`, "Claims must scope by"), and
+a claim missing one is refused before the round trip rather than falling back to
+a wider comparison.
 
 ## Transport
 
@@ -58,12 +90,15 @@ The dev kind cluster (see the repo `Taskfile.yaml` and `task test-infra:cluster-
 serves the aggregated API directly. With its kubeconfig active:
 
 ```bash
-# IPPool is cluster-scoped; claims live in a namespace (-n).
+# IPPool and IPClass are cluster-scoped; claims and allocations live in a
+# namespace (-n).
 export KUBECONFIG=$(task test-infra:kubeconfig-path)   # or your kubeconfig
 
-bin/milo-ipam pool create demo --cidr 10.128.0.0/20 --min-length 24 --max-length 28
-bin/milo-ipam pool list -o wide
-bin/milo-ipam prefix claim --pool demo --length 24 -n default
+bin/milo-ipam pool create demo --cidr 10.128.0.0/20 --min-length 24 --max-length 28 \
+  --class demo-subnet-ipv4
+bin/milo-ipam class list
+bin/milo-ipam claim create --class demo-subnet-ipv4 --prefix-length 24 -n default
+bin/milo-ipam claim list -o wide -n default
 bin/milo-ipam pool tree demo --prefixes -n default
 ```
 
@@ -95,13 +130,19 @@ Exit codes are a contract:
 
 ## Safety
 
-- Every mutation supports `--dry-run`.
-- Confirmation scales to blast radius: a `prefix claim` has none; `prefix release`
-  confirms; `pool release` requires typing the pool name and refuses
-  non-interactively without `--yes`. Prompts auto-suppress when stdin is not a
-  TTY or `CI` is set.
+- Every mutation supports `--dry-run`. `claim create --dry-run` is server-side:
+  the apiserver resolves the pool and computes the real next address inside the
+  allocation transaction, then rolls back, so the preview is exact.
+- Confirmation scales to blast radius: `claim create` has none; `claim release`
+  and `allocation release` confirm; `pool release` requires typing the pool name
+  and refuses non-interactively without `--yes`. Prompts auto-suppress when
+  stdin is not a TTY or `CI` is set.
 - A named claim (`--name`) is idempotent: a retry returns the existing
-  allocation instead of consuming a second block.
+  allocation instead of consuming a second address. Reusing that name for a
+  different class or scope is refused rather than silently answered.
+- Releasing a claim under reclaim policy `Retain` leaves its allocation held.
+  `allocation list --unclaimed` is the leak check; `allocation release` is the
+  deliberate hand-back.
 
 ## Plugin manifest
 
