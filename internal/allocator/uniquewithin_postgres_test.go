@@ -111,6 +111,20 @@ func TestTwoSpacesShareAnAddress(t *testing.T) {
 	}
 }
 
+// The other half of the same agreement: a search that ran under one digest and
+// a row recorded under another would stop blocking anything.
+func TestOneSpaceDoesNotShareAnAddress(t *testing.T) {
+	db := testdb.Pool(t)
+	poolKey := seedPool(t, db, "spaces-distinct", "10.75.0.0/16")
+
+	a := allocateInSpace(t, db, poolKey, "claim-a", spaceOf("shared"), 24)
+	b := allocateInSpace(t, db, poolKey, "claim-b", spaceOf("shared"), 24)
+
+	if a == b {
+		t.Errorf("two claims in one space both got %s", a)
+	}
+}
+
 // The whole-set path and the paged path must agree on what a space contains,
 // or a pool reports itself exhausted on another space's allocations.
 func TestTheWholeSetSearchIsAlsoPerSpace(t *testing.T) {
