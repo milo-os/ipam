@@ -13,13 +13,13 @@ import (
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
-// A herd of simultaneous first claims is the normal way a chain gets built, and
-// all but one member of it loses the race. Losing must land on the same counter
-// as winning, under its own outcome — if it were recorded as an error, routine
-// first use of a class would page somebody.
+// A herd of simultaneous first claims is how a chain normally gets built, and
+// all but one member loses the race. A loss must land on the same counter as a
+// win, under its own outcome. Recorded as an error, routine first use of a
+// class would page somebody.
 //
-// Class names are unique to this test so the counters can be read absolutely
-// rather than as deltas against whatever else the package has run.
+// The class names are unique to this test, so it can read the counters
+// absolutely rather than as deltas against whatever else the package ran.
 func TestALostRaceIsRecordedAsAnOutcomeNotAnError(t *testing.T) {
 	const (
 		parent = "metrics-backbone"
@@ -81,8 +81,8 @@ func TestALostRaceIsRecordedAsAnOutcomeNotAnError(t *testing.T) {
 		t.Errorf("%v levels provisioned, want 1", got[levelProvisioned])
 	}
 	// Every caller that did not provision either lost the race or found the pool
-	// already there. Both are counted, so the steady state stays visible and not
-	// only the moment of creation.
+	// already there. The counter records both, so the steady state stays visible
+	// and not only the moment of creation.
 	if other := got[levelLost] + got[levelReused]; other != herd-1 {
 		t.Errorf("%v levels lost or reused, want %d", other, herd-1)
 	}

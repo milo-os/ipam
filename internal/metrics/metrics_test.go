@@ -11,10 +11,9 @@ import (
 )
 
 // Labels that must never reach a metric. A series keeps its label slot for the
-// process lifetime, so an unbounded label is a memory leak that only shows up
-// under the load it was added to explain. pool_key has already had to be
-// removed from this service's cascade metrics once; the cascade's scope digest
-// and derived pool name are the same hazard by another name.
+// process lifetime, so an unbounded label is a memory leak that surfaces only
+// under the load it was added to explain. Each of these takes a new value per
+// pool, per scope, or per claim.
 var unboundedLabels = []string{
 	"pool_key", "pool_name", "scope_digest", "scope",
 	"cidr", "allocated_cidr", "allocation_key", "claim", "claim_key",
@@ -60,10 +59,10 @@ func TestCascadeMetricsCarryOnlyBoundedLabels(t *testing.T) {
 	}
 }
 
-// A lost race is an outcome of the same counter as a successful provision, not
-// a separate metric and not an error. Recording it anywhere else would make a
-// normal first-claim herd read as a fault, and would leave the steady state —
-// where every level is reused — with no series at all.
+// A lost race is an outcome on the same counter as a successful provision, not
+// a separate metric and not an error. Recorded anywhere else, a normal
+// first-claim herd would read as a fault, and the steady state, where every
+// level is reused, would have no series at all.
 func TestLostRacesAndReusesShareTheProvisioningCounter(t *testing.T) {
 	const class = "TestLostRacesAndReusesShareTheProvisioningCounter"
 

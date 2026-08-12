@@ -341,28 +341,26 @@ var (
 	// CascadeLevels counts the levels of a class chain a claim walked, by what
 	// the claim had to do at each one.
 	//
-	// Every level of every claim is counted, including the overwhelmingly
-	// common "reused" case where the pool already existed. A counter that only
-	// advanced when a pool was created would make the steady state invisible:
-	// "nothing needed provisioning" and "no claims are resolving at all" would
-	// both read as no data.
+	// This counts every level of every claim, including the common "reused" case
+	// where the pool already exists. A counter that advanced only on creation
+	// would hide the steady state: "nothing needed provisioning" and "no claims
+	// are resolving at all" would both read as no data.
 	//
 	// outcome:
-	//   reused      — the pool existed; the claim did one indexed read.
-	//   provisioned — this claim created the pool.
-	//   lost        — this claim raced another into the same scope and lost.
-	//                 Expected and healthy: exactly one winner per scope, and
-	//                 every other member of a first-claim herd records a loss
-	//                 and then uses the winner's pool. Losses sustained with
-	//                 no matching provisions mean claims are contending on an
+	//   reused      — the pool exists; the claim does one indexed read.
+	//   provisioned — this claim creates the pool.
+	//   lost        — this claim races another into the same scope and loses.
+	//                 Healthy and expected: one winner per scope, and every
+	//                 other member of a first-claim herd records a loss and
+	//                 then uses the winner's pool. Sustained losses with no
+	//                 matching provisions mean claims are contending on an
 	//                 identity row whose winner keeps aborting, which from
 	//                 outside looks only like slow claims.
-	//   error       — the level could not be resolved; the claim failed.
+	//   error       — the level did not resolve; the claim failed.
 	//
 	// class is an IPClass name, bounded by the platform's class definitions.
-	// The projected scope, the scope digest, and the pool key are all
-	// deliberately absent: each is unbounded, and pool_key as a label has
-	// already had to be removed from this service once.
+	// The projected scope, the scope digest, and the pool key stay off the
+	// metric, because each grows without bound.
 	CascadeLevels = metrics.NewCounterVec(
 		&metrics.CounterOpts{
 			Namespace:      "ipam",
@@ -376,12 +374,13 @@ var (
 	// CascadeResolutionDuration tracks the time a claim spends resolving its
 	// pool, before the allocation transaction opens.
 	//
-	// Resolution runs outside the allocation transaction and each level commits
-	// on its own, so this latency is invisible in the Postgres query histogram
-	// and shows up only as an unexplained gap in end-to-end claim latency. The
-	// `provisioned` label separates the first claim into a scope, which builds
-	// a chain, from the millions after it, which read one row — without it the
-	// two are averaged together and neither is legible.
+	// Resolution runs outside the allocation transaction, and each level commits
+	// on its own, so the Postgres query histogram never shows this latency. It
+	// appears only as an unexplained gap in end-to-end claim latency.
+	//
+	// The provisioned label separates the first claim into a scope, which builds
+	// a chain, from every claim after it, which reads one row. Without the
+	// label, the two average together and neither is legible.
 	//
 	// result: "success" | "error". provisioned: "true" when this claim created
 	// at least one pool.

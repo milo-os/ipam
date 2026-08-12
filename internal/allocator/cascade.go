@@ -29,8 +29,8 @@ const (
 	labelScopeDigest   = "ipam.miloapis.com/scope-digest"
 )
 
-// What a claim had to do at one level of a class chain. Reported on
-// ipam_cascade_levels_total; see internal/metrics for what each means
+// What a claim does at one level of a class chain. Reported on
+// ipam_cascade_levels_total; internal/metrics documents what each one means
 // operationally.
 const (
 	levelReused      = "reused"
@@ -250,8 +250,8 @@ func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourceP
 			return "", false, fmt.Errorf("commit lost identity race: %w", err)
 		}
 		committed = true
-		// Losing is the normal outcome for every member of a first-claim herd
-		// but one, so it is recorded as an outcome and logged, not as an error.
+		// Every member of a first-claim herd but one loses, so a loss is an
+		// outcome on the same counter as a win, not an error.
 		outcome = levelLost
 		klog.V(2).InfoS("Lost pool-provisioning race; using the winner's pool",
 			"class", level.Class.Name, "pool", poolKey)
