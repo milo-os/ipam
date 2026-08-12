@@ -39,10 +39,10 @@ func (a *app) confirmYesNo(prompt string) bool {
 	return line == "y" || line == "yes"
 }
 
-// confirmTyped is the high-blast-radius gate (pool release): the user must type
-// the exact resource name. --yes bypasses. A non-interactive session WITHOUT
-// --yes refuses, because the name cannot be typed — this is intentional friction
-// for the most destructive action.
+// confirmTyped is the high-blast-radius gate, used by pool release: the user
+// must type the exact resource name. --yes bypasses it. A non-interactive
+// session without --yes refuses, because nobody can type the name there. The
+// friction is intentional for the most destructive action.
 func (a *app) confirmTyped(name, prompt string) (bool, error) {
 	if a.opts.assumeYes {
 		return true, nil

@@ -262,8 +262,8 @@ func (a *app) renderClassDetail(c *ipamv1alpha1.IPClass, cs clientset.Interface)
 	if r := c.Spec.AllowedPrefixLengths; r != nil {
 		t.row("Allowed sizes", fmt.Sprintf("/%d–/%d", r.Min, r.Max))
 	}
-	// The resolved requirement is the actionable one — it is what a claim must
-	// supply — so it leads, with the inputs it was derived from underneath.
+	// The resolved requirement is what a claim must supply, so it leads, with
+	// the inputs it was derived from underneath.
 	t.row("Claims must scope by", scopeRolesCell(c.Status.RequiredScopeRoles,
 		"— (no scope required)"))
 	t.row("Unique within", scopeRolesCell(c.Spec.UniqueWithin,
@@ -299,8 +299,8 @@ func (a *app) renderClassDetail(c *ipamv1alpha1.IPClass, cs clientset.Interface)
 		return err
 	}
 
-	// Naming the pools makes "POOLS: 0" actionable — an operator sees which
-	// pools do offer the class and which one is missing the classNames entry.
+	// Naming the pools makes "POOLS: 0" actionable: an operator sees which
+	// pools do offer the class, and which one is missing the classNames entry.
 	offering, provisioned := poolsForClass(cs, c.Name)
 	if len(offering) > 0 {
 		_, _ = fmt.Fprintf(a.io.Out, "\nPools offering this class:\n")
