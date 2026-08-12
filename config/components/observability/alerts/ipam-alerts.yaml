@@ -340,3 +340,87 @@ spec:
               Likely class: apiserver middleware / serialization overhead
               (per-request cost dominates over result-set size).
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-read-latency-high.md"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Automatic pool provisioning. A claim of a class whose chain does not
+    # exist yet carves and creates the intermediate pools in-line, serialised
+    # on an identity row so a herd of simultaneous first claims produces one
+    # pool per level. Losing that race is the normal outcome for every member
+    # of the herd but one, so nothing here alerts on losses alone.
+    # Backed by ipam_cascade_levels_total and
+    # ipam_cascade_resolution_duration_seconds (internal/metrics/metrics.go).
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: ipam-cascade
+      interval: 30s
+      rules:
+        - alert: IPAMCascadeProvisioningFailing
+          # Any sustained error outcome means claims of that class are being
+          # rejected before allocation is even attempted — the pool they need
+          # cannot be created.
+          expr: |
+            sum by (class) (rate(ipam_cascade_levels_total{outcome="error"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: claim_availability
+          annotations:
+            summary: "IPAM cannot provision pools for class {{ $labels.class }}"
+            description: |
+              Pool provisioning for class {{ $labels.class }} has been failing for 5 minutes.
+              Claims of this class fail before allocation is attempted, because the pool they
+              draw from cannot be created. The usual causes are an exhausted parent pool with
+              no block left to carve, and a class chain whose root is backed by no pool at all.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-cascade-provisioning.md"
+
+        - alert: IPAMCascadeProvisioningThrashing
+          # Losses are expected in a burst around each provision. Losses with
+          # no provision alongside them mean callers keep queueing on an
+          # identity row whose winner never commits a pool: every claim pays
+          # the wait and none of them build anything. From outside this looks
+          # only like slow claims, which is why it needs its own rule.
+          expr: |
+            sum(rate(ipam_cascade_levels_total{outcome="lost"}[10m])) > 0.1
+            unless
+            sum(rate(ipam_cascade_levels_total{outcome="provisioned"}[10m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            service: ipam
+            slo: claim_latency
+          annotations:
+            summary: "IPAM claims are queueing on pool provisioning without any pool being created"
+            description: |
+              Claims have been losing the pool-provisioning race for 10 minutes with no pool
+              created in the same window. Each affected claim waits on the identity row before
+              proceeding, so this surfaces to consumers as unexplained claim latency rather
+              than as errors.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-cascade-provisioning.md"
+
+        - alert: IPAMCascadeResolutionLatencyHigh
+          # Pool resolution runs before the allocation transaction opens, so
+          # its cost is invisible in the Postgres query histogram and shows up
+          # only as a gap in end-to-end claim latency. Scoped to claims that
+          # provisioned nothing: building a chain is legitimately slower, and
+          # only the first claim into a scope pays for it.
+          expr: |
+            histogram_quantile(0.95,
+              sum by (le) (
+                rate(ipam_cascade_resolution_duration_seconds_bucket{
+                  result="success", provisioned="false"
+                }[5m])
+              )
+            ) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: claim_latency
+          annotations:
+            summary: "IPAM pool resolution p95 above 100ms for claims that provisioned nothing"
+            description: |
+              p95 pool resolution over 5m is {{ $value | humanizeDuration }} for claims whose
+              pools already existed. That path is a single indexed read and should be an order
+              of magnitude faster; this latency is charged to every claim before allocation
+              starts, and consumes the claim latency SLO budget.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-cascade-provisioning.md"
