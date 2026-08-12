@@ -371,8 +371,8 @@ func TestClaimShowByAddress(t *testing.T) {
 	}
 }
 
-// An address with no claim behind it is a Retain release, and the reverse
-// lookup is where it is found — so the miss says so rather than dead-ending.
+// An address with no claim behind it is a Retain release, which the reverse
+// lookup finds. The miss says so rather than dead-ending.
 func TestClaimShowByAddressPointsAtTheReverseLookup(t *testing.T) {
 	cs := newFakeClientset()
 	ta := newTestApp(cs, nil)

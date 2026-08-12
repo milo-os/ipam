@@ -24,9 +24,8 @@ func setClaimGVK(c *ipamv1alpha1.IPClaim) {
 func newClaimCommand(a *app) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "claim",
-		// `prefix` was this group's name before the class model, when a claim
-		// always carried a prefix length. Keep it as an alias so the muscle
-		// memory still lands somewhere, but the vocabulary is the API's now.
+		// `prefix` stays as an alias so that habit still lands somewhere, but
+		// the command's vocabulary follows the API.
 		Aliases: []string{"claims", "prefix"},
 		Short:   "Request, inspect, and release addresses (IPClaim)",
 		Long: `A claim is a long-lived request for an address of a named class. It binds one
@@ -159,9 +158,9 @@ func runClaimCreate(a *app, o *claimOptions) error {
 		}
 	}
 
-	// Deliberately after the idempotency lookup, not before it — see the comment
-	// above. Hoisting this to the top of the function reads like a tidy-up and
-	// is a behaviour change.
+	// This must stay after the idempotency lookup, for the reason above.
+	// Hoisting it to the top of the function reads like a tidy-up and changes
+	// behaviour.
 	if pErr := a.preflightClaimScope(cs, claim); pErr != nil {
 		return pErr
 	}
@@ -169,8 +168,8 @@ func runClaimCreate(a *app, o *claimOptions) error {
 	if o.dryRun {
 		// Server-side dry-run: the apiserver resolves the pool and computes the
 		// real next address inside the allocation transaction and rolls back,
-		// persisting nothing. That is what makes the preview exact rather than a
-		// client-side guess — including which pool the scope resolved to.
+		// persisting nothing. That makes the preview exact rather than a
+		// client-side guess, down to which pool the scope resolved to.
 		dryClaim, dErr := cs.IpamV1alpha1().IPClaims(ns).Create(context.Background(), claim,
 			metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
 		if dErr != nil {
@@ -191,13 +190,13 @@ func runClaimCreate(a *app, o *claimOptions) error {
 //
 // The server rejects a claim missing a required role rather than widening the
 // comparison, so this is a real failure the caller can be told about precisely:
-// the missing role names, and the flags that would supply them. Doing it client
-// side is only affordable because the class reports the resolved set — the union
-// of its own UniqueWithin with every PoolPer up its parent chain — so this is
-// one GET rather than a walk.
+// the missing role names, and the flags that supply them. Checking client side
+// costs one GET rather than a walk, because the class reports the resolved set
+// already: the union of its own UniqueWithin with every PoolPer up its parent
+// chain.
 //
-// It degrades to server-side validation on any error other than a missing class:
-// a preflight that blocks a valid request is worse than no preflight at all.
+// Any error other than a missing class falls back to server-side validation. A
+// preflight that blocks a valid request is worse than no preflight at all.
 func (a *app) preflightClaimScope(cs clientset.Interface, claim *ipamv1alpha1.IPClaim) error {
 	if claim.Spec.ClassName == "" {
 		// The server resolves the default class for the family. Re-deriving which
@@ -332,16 +331,16 @@ func parseReclaimPolicy(s string) (ipamv1alpha1.ReclaimPolicy, error) {
 // Silence on either side is not a difference, and both directions matter.
 //
 // A request that omits a flag is a question not asked, so an omission can never
-// mismatch. Less obviously, an *existing* claim silent on a field is not
-// evidence either: several of these are derivable, and a claim that named a
-// class carries no family in its spec while one that named `--family` carries
-// no class. Comparing a stated value against a derived one that was never
-// written to spec invents a difference — and it does so on exactly the ordinary
-// retry this path exists to serve, which is the failure that would matter.
+// mismatch. An existing claim silent on a field is not evidence either. Several
+// of these fields are derivable: a claim that named a class carries no family
+// in its spec, and one that named `--family` carries no class. Comparing a
+// stated value against a derived one that spec never recorded invents a
+// difference, on exactly the ordinary retry this path exists to serve.
 //
-// Scope is the exception and is compared whenever the request states one: the
-// server never derives a scope, so an empty scope on the existing claim really
-// does mean it was made without one, in a different address space.
+// Scope is the exception, and the comparison covers it whenever the request
+// states one. The server never derives a scope, so an empty scope on the
+// existing claim means it really was made without one, in a different address
+// space.
 func claimRequestDiff(requested, existing *ipamv1alpha1.IPClaim) []string {
 	var diffs []string
 	add := func(field, want, got string) {
@@ -362,9 +361,10 @@ func claimRequestDiff(requested, existing *ipamv1alpha1.IPClaim) []string {
 		add("prefix length", fmt.Sprintf("/%d", *r), fmt.Sprintf("/%d", *e))
 	}
 	// Scope decides which address space the claim lands in, so a difference here
-	// is the one that matters most: the returned address is unique within a space
-	// the caller did not ask about. Compared whole rather than per role — a scope
-	// with an extra or missing role is as different as one with a changed value.
+	// matters most: the returned address is unique within a space the caller did
+	// not ask about. Compare the scope whole rather than per role, because a
+	// scope with an extra or missing role differs as much as one with a changed
+	// value.
 	if len(requested.Spec.Scope) > 0 && !reflect.DeepEqual(requested.Spec.Scope, existing.Spec.Scope) {
 		add("scope", formatScope(requested.Spec.Scope), formatScope(existing.Spec.Scope))
 	}
@@ -684,12 +684,12 @@ func resolveClaim(cs clientset.Interface, ns, arg string) (*ipamv1alpha1.IPClaim
 				return c, nil
 			}
 		}
-		// The reverse lookup is offered for one of the two reasons this search
-		// comes up empty: an address held with no claim behind it (a Retain
-		// release) is invisible to a claim search and is precisely what `address
-		// show` answers, in this same namespace. The other reason — allocated in
-		// another project — has no command to hand off to, since `address show`
-		// reads the same tenant keyspace, so it is stated rather than deferred.
+		// This search comes up empty for one of two reasons. An address held
+		// with no claim behind it, released under Retain, is invisible to a
+		// claim search and is exactly what `address show` answers in this
+		// namespace, so the message hands off to it. An address allocated in
+		// another project has no command to hand off to, since `address show`
+		// reads the same tenant keyspace, so the message states that instead.
 		return nil, newCLIError(exitNotFound,
 			fmt.Sprintf("no claim in namespace %q holds %q", ns, arg)).
 			withFix("an address held without a claim — released under reclaim policy Retain —\n" +
@@ -851,10 +851,10 @@ owner, until something releases it explicitly.`,
 // effectiveReclaimPolicy resolves what will actually happen to a claim's address
 // when it is released: the claim's own override, else the class default.
 //
-// The claim's spec is not enough on its own — a claim that states no policy
-// inherits Retain from its class, and telling the user their address will be
-// freed when it will not is the one thing this prompt must not do. The class
-// lookup is best-effort, and its failure leaves the answer at the API default.
+// The claim's spec is not enough on its own. A claim that states no policy
+// inherits Retain from its class, and this prompt must never tell the user
+// their address will be freed when it will not. The class lookup is
+// best-effort; if it fails, the answer falls back to the API default.
 func effectiveReclaimPolicy(cs clientset.Interface, c *ipamv1alpha1.IPClaim) ipamv1alpha1.ReclaimPolicy {
 	if c.Spec.ReclaimPolicy != "" {
 		return c.Spec.ReclaimPolicy

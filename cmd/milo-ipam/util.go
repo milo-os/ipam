@@ -73,8 +73,9 @@ func poolHasServerStatus(p *ipamv1alpha1.IPPool) bool {
 }
 
 // poolFamily returns the pool's effective address family. It prefers the
-// server-reported status family — set on child pools too, which inherit rather
-// than declare spec.ipFamily — and falls back to the spec family.
+// server-reported status family, which is set on child pools too, since they
+// inherit spec.ipFamily rather than declare it. It falls back to the spec
+// family.
 func poolFamily(p *ipamv1alpha1.IPPool) ipamv1alpha1.IPFamily {
 	if p.Status.IPFamily != "" {
 		return p.Status.IPFamily

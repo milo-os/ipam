@@ -114,9 +114,9 @@ func asAPIStatus(err error) (apierrors.APIStatus, bool) {
 }
 
 // classifyError maps an arbitrary error from an API call into a cliError with
-// the right exit code. It is deliberately generic; callers that can add IPAM
-// context (the pool, requested length, …) should prefer the richer helpers
-// below and only fall back here for the unexpected.
+// the right exit code. It stays generic on purpose. Callers that can add IPAM
+// context, such as the pool or the requested length, should prefer the richer
+// helpers below and fall back here only for the unexpected.
 func classifyError(err error) *cliError {
 	if err == nil {
 		return nil

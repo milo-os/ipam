@@ -19,9 +19,9 @@ import (
 //	--scope network=default
 //	--scope location=us-central-1
 //
-// Roles outside the table — a class may name any role at all, since the
-// allocator never interprets them — take the qualified form, which reads like
-// kubectl's `resource.group` plus the familiar `kind/name`:
+// A class may name any role at all, since the allocator never interprets them.
+// Roles outside the table take the qualified form, which reads like kubectl's
+// `resource.group` plus the familiar `kind/name`:
 //
 //	--scope site=Site.infra.example.com/dc-1
 //
@@ -43,10 +43,10 @@ func wellKnownRoleNames() []string {
 	return names
 }
 
-// scopeFlagUsage is shared by every command that takes --scope. It stays to one
-// line — cobra does not wrap flag usage, and a multi-line string here shreds the
-// alignment of the whole flag block. The grammar itself is spelled out in
-// scopeGrammarHelp, which commands fold into their Long text.
+// scopeFlagUsage is shared by every command that takes --scope. It stays on one
+// line, because cobra does not wrap flag usage and a multi-line string here
+// shreds the alignment of the whole flag block. scopeGrammarHelp spells out the
+// grammar, and commands fold that into their Long text.
 func scopeFlagUsage(what string) string {
 	return fmt.Sprintf("%s, as role=name (repeatable). Known roles: %s. See the description above",
 		what, strings.Join(wellKnownRoleNames(), ", "))

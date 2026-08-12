@@ -55,8 +55,8 @@ func TestHTTPStatusCode(t *testing.T) {
 	}
 }
 
-// A 507 names the class and scope that were asked for, plus the pools backing
-// the class — the caller never named a pool, so "which one ran out" is the fact
+// A 507 names the class and scope the caller asked for, plus the pools backing
+// the class. The caller never named a pool, so "which one ran out" is the fact
 // the request itself cannot supply.
 func TestExhaustionError(t *testing.T) {
 	ce := exhaustionError("tenant-endpoint-ipv4", "location=us-west network=default",
@@ -74,8 +74,8 @@ func TestExhaustionError(t *testing.T) {
 	}
 }
 
-// With no --class the claim asked for the family default, so the message must
-// not invent a class name it was never given.
+// With no --class, the claim asks for the family default, so the message must
+// not invent a class name nobody gave it.
 func TestExhaustionErrorDefaultClass(t *testing.T) {
 	ce := exhaustionError("", "—", nil, nil)
 	if !strings.Contains(ce.msg, "default class") {

@@ -13,8 +13,8 @@ import (
 
 // generateResourceName mints a DNS-1123-safe, collision-resistant name of the
 // form "<prefix>-<10 base36 chars>" for resources the user did not name
-// explicitly. Used because the IPAM apiserver does not implement server-side
-// metadata.generateName.
+// explicitly. The IPAM apiserver does not implement server-side
+// metadata.generateName, so the client mints the name.
 func generateResourceName(prefix string) string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
 	const n = 10
@@ -78,8 +78,8 @@ func sortedKeys(m map[string]string) []string {
 }
 
 // int32Ptr returns a pointer to n. Optional numeric API fields are pointers so
-// "not requested" is distinguishable from "requested zero" — for prefix length
-// the difference is "use the class default" versus "give me a /0".
+// that "not requested" stays distinct from "requested zero". For prefix length,
+// that is the difference between "use the class default" and "give me a /0".
 func int32Ptr(n int32) *int32 { return &n }
 
 // refOrNil returns a *LocalRef for a non-empty name, else nil.

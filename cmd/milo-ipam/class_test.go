@@ -98,8 +98,8 @@ func TestClassShowDetail(t *testing.T) {
 }
 
 // A referencing class holds no policy of its own, and a local pool listing says
-// nothing about whether it works — so the "no pool offers this" warning, which
-// would be wrong here, must not fire.
+// nothing about whether it works. The "no pool offers this" warning would be
+// wrong here, so it must not fire.
 func TestClassShowReference(t *testing.T) {
 	class := newClass("shared-anycast", ipamv1alpha1.IPv4, 0)
 	class.Spec.Source = &ipamv1alpha1.ClassSourceRef{Project: "platform", Name: "anycast-ipv4"}

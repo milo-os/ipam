@@ -173,8 +173,8 @@ func allocationAddress(al *ipamv1alpha1.IPAllocation) string {
 }
 
 // allocationClaimName names the claim bound to an allocation, or says why there
-// is none — the distinction between reserved space and a retained address is
-// what an operator is scanning this column for.
+// is none. Operators scan this column to tell reserved space from a retained
+// address.
 func allocationClaimName(al *ipamv1alpha1.IPAllocation) string {
 	if al.Spec.ClaimRef != nil {
 		return al.Spec.ClaimRef.Name
@@ -446,14 +446,14 @@ func newAddressShowCommand(a *app) *cobra.Command {
 // lookupAllocationsByAddress finds every allocation holding an address. An exact
 // match on the address or the block wins; failing that, the most specific block
 // containing the address does, so asking about a host inside a claimed /24 still
-// names its holder. The result is never empty — a miss is returned as an error.
+// names its holder. The result is never empty, because a miss returns an error.
 //
-// It returns every match rather than the first because two holders of one
-// address is precisely the condition this command is reached for. Two root pools
-// over one range hand the same address to unrelated claims; returning one of
-// them names a single claim, gives no hint a second exists, and picks between
-// equally specific blocks arbitrarily — an unstable answer, not merely an
-// incomplete one.
+// It returns every match rather than the first, because two holders of one
+// address is the condition this command exists to expose. Two root pools over
+// one range hand the same address to unrelated claims. Returning one of them
+// names a single claim, gives no hint a second exists, and picks between
+// equally specific blocks arbitrarily, which is unstable rather than merely
+// incomplete.
 func (a *app) lookupAllocationsByAddress(cs clientset.Interface, ns, arg string) ([]*ipamv1alpha1.IPAllocation, error) {
 	list, err := cs.IpamV1alpha1().IPAllocations(ns).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
@@ -530,12 +530,13 @@ func (a *app) warnMultipleHolders(arg string, holders []*ipamv1alpha1.IPAllocati
 //
 // Two things bound the search, and the message names them in the order they
 // bite. The lookup reads one namespace, which is the failure people hit first
-// and the one always worth retrying. Beyond that the caller's tenant identity
-// bounds it — and whether that can be changed from here depends entirely on the
-// transport, so the message asks which one is in use rather than guessing.
+// and the one always worth retrying. The caller's tenant identity bounds it
+// beyond that, and whether they can change it from here depends on the
+// transport, so the message asks which transport is in use rather than
+// guessing.
 //
-// There is deliberately no "widen the search" suggestion: no cluster-wide
-// reverse lookup exists, and pointing at `allocation list` implies one does.
+// The message offers no "widen the search" suggestion, because no cluster-wide
+// reverse lookup exists and pointing at `allocation list` would imply one does.
 func (a *app) addressNotFoundFix(arg string) string {
 	var b strings.Builder
 	b.WriteString("the reverse lookup reads one namespace. If the address belongs to a\n")
