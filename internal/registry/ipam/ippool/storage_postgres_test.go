@@ -171,7 +171,7 @@ func TestTheSameBadReservationIsRefusedOnAPoolAndOnAClass(t *testing.T) {
 	getter := newRESTOptionsGetter(t, scheme, db)
 
 	poolStore := newPostgresPoolStorage(t, db)
-	classStore, _, err := ipclass.NewClassStorage(scheme, getter, nil)
+	classStore, _, err := ipclass.NewClassStorage(scheme, getter, nil, db)
 	if err != nil {
 		t.Fatalf("class storage: %v", err)
 	}
