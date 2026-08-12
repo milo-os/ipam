@@ -370,13 +370,22 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		classChecker = access.NewClassAccessChecker(genericConfig.Authorization.Authorizer)
 	}
 
+	// ClientConfig comes from --kubeconfig via CoreAPI.ApplyTo, which runs
+	// whether or not quota is enabled, so this check is live in dev and e2e too.
+	// With no kubeconfig it disables itself.
+	namespaceChecker := access.NewNamespaceChecker(genericConfig.ClientConfig)
+	if namespaceChecker == nil {
+		klog.InfoS("no client config: IPClaim namespace-liveness checking is disabled")
+	}
+
 	return &ipamapiserver.Config{
 		GenericConfig: genericConfig,
 		ExtraConfig: ipamapiserver.ExtraConfig{
-			PrefixAllocator: prefixAllocator,
-			AllocatorPool:   allocatorPool,
-			PoolChecker:     poolChecker,
-			ClassChecker:    classChecker,
+			PrefixAllocator:  prefixAllocator,
+			AllocatorPool:    allocatorPool,
+			PoolChecker:      poolChecker,
+			ClassChecker:     classChecker,
+			NamespaceChecker: namespaceChecker,
 		},
 	}, nil
 }

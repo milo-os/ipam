@@ -77,7 +77,7 @@ func newLifecycleREST(t *testing.T, classPolicy ipamv1alpha1.ReclaimPolicy) (*Al
 	getter.SetCodec(codec)
 
 	alloc := allocator.NewPostgresPrefixAllocator()
-	claimREST, _, err := NewAllocatingStorage(scheme, getter, alloc, db, codec, nil)
+	claimREST, _, err := NewAllocatingStorage(scheme, getter, alloc, db, codec, nil, nil)
 	if err != nil {
 		t.Fatalf("claim storage: %v", err)
 	}
