@@ -3,10 +3,12 @@ package ipclaim
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
@@ -201,5 +203,40 @@ func TestCreateRefusesACallerWithNoProject(t *testing.T) {
 
 	if _, err := r.Create(ctx, newClassClaim(), nil, &metav1.CreateOptions{}); err == nil {
 		t.Fatal("Create succeeded for a caller carrying no project")
+	}
+}
+
+// Creating the same claim name twice is a name collision, not a service
+// fault: the second create is refused with a 409 that names the claim and
+// carries no schema detail, so a controller creating by a stable name can
+// recognise it.
+func TestCreatingTheSameClaimNameTwiceConflicts(t *testing.T) {
+	r, _ := newPostgresREST(t)
+	ctx := claimCtx(testProject)
+
+	if _, err := r.Create(ctx, newClassClaim(), nil, &metav1.CreateOptions{}); err != nil {
+		t.Fatalf("first Create: %v", err)
+	}
+
+	_, err := r.Create(ctx, newClassClaim(), nil, &metav1.CreateOptions{})
+	if err == nil {
+		t.Fatal("second Create succeeded; a duplicate claim name must be refused")
+	}
+	var statusErr *apierrors.StatusError
+	if errors.As(err, &statusErr) {
+		t.Logf("second create: code=%d message=%s", statusErr.ErrStatus.Code, statusErr.ErrStatus.Message)
+	} else {
+		t.Logf("second create: %T %v", err, err)
+	}
+	if !apierrors.IsConflict(err) {
+		t.Errorf("Create returned %v (%T), want a 409 Conflict", err, err)
+	}
+	for _, leak := range []string{"ipam_cidr_allocations", "ipam_objects", "constraint", "SQLSTATE", "23505"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("conflict message leaks schema detail %q: %v", leak, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "claim-1") {
+		t.Errorf("conflict message does not name the claim: %v", err)
 	}
 }

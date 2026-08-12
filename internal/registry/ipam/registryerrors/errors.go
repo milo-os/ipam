@@ -5,8 +5,11 @@
 package registryerrors
 
 import (
+	"errors"
 	"net/http"
+	"slices"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -24,3 +27,21 @@ func NewInsufficientStorage(message string) *apierrors.StatusError {
 		},
 	}
 }
+
+// HolderConstraint is the unique index on ipam_cidr_allocations.claim_key:
+// the holder of an allocation row, a claim or a child pool. A create under a
+// name that already holds an allocation is refused there, before it reaches
+// the allocation's own identity.
+const HolderConstraint = "ipam_cidr_allocations_claim_key_key"
+
+// IsUniqueViolation reports whether err is a Postgres unique violation on one
+// of the named constraints.
+func IsUniqueViolation(err error, constraints ...string) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != pgUniqueViolation {
+		return false
+	}
+	return slices.Contains(constraints, pgErr.ConstraintName)
+}
+
+const pgUniqueViolation = "23505"

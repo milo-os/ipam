@@ -195,6 +195,11 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 	})
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		if registryerrors.IsUniqueViolation(err, registryerrors.HolderConstraint) {
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
+			span.SetStatus(codes.Error, "duplicate child pool name")
+			return nil, duplicatePoolConflict(pool.Name)
+		}
 		switch {
 		case errors.Is(err, allocator.ErrPoolExhausted):
 			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonExhausted))
@@ -232,6 +237,11 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 	rv, err := r.allocator.InsertObject(ctx, tx, childKey, "IPPool", "", pool.Name, data)
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		// The pool row is the last write, so a collision here means the name is
+		// taken by a pool holding no allocation row of its own — a root pool.
+		if registryerrors.IsUniqueViolation(err, "ipam_objects_pkey") {
+			return nil, duplicatePoolConflict(pool.Name)
+		}
 		return nil, fmt.Errorf("persist child pool: %w", err)
 	}
 	versioner := storage.APIObjectVersioner{}
@@ -366,6 +376,16 @@ func effectiveIPFamily(pool *ipam.IPPool) (string, error) {
 // mapAllocationError translates allocator sentinel errors into the matching
 // HTTP-shaped registry errors. Pool exhaustion is HTTP 507; unknown pool is
 // a client error (the named parent does not exist).
+// duplicatePoolConflict is the refusal a caller gets for a pool name already
+// in use. It carries no schema detail: a caller keys off the 409.
+func duplicatePoolConflict(poolName string) error {
+	return apierrors.NewConflict(
+		schema.GroupResource{Group: v1alpha1.GroupName, Resource: "ippools"},
+		poolName,
+		errors.New("an IPPool of this name already exists; delete it or carve the child under a different name"),
+	)
+}
+
 func mapAllocationError(err error) error {
 	switch {
 	case errors.Is(err, allocator.ErrPoolExhausted):
