@@ -95,13 +95,21 @@ func boundedFirstFit(
 	return &block, scan.FirstFree(), nil
 }
 
-// searchFilter must match the exclusion constraint. A Claim's block belongs to
-// one address space and blocks only that space; reservations and the carves
-// backing child pools block every space, because that space has left the pool.
+// spaceAll is the search digest of a caller that must avoid every allocation in
+// the pool whatever space holds it — a carve, which takes address space out of
+// the pool for a child pool to own, so no space may still be holding any of it.
+//
+// It is not an address space and nothing is ever written under it.
+const spaceAll = ""
+
+// searchFilter selects the blocks a search must treat as occupied. A Claim's
+// block belongs to one address space and blocks only that space; reservations
+// and the carves backing child pools block every space, because that space has
+// left the pool. Under spaceAll every block is occupied.
 //
 // Do not add an owner_project term. A search narrower than the constraint
 // presents as unexplained exhaustion rather than as an error.
-const searchFilter = `pool_key = $1 AND (purpose <> 'Claim' OR scope_digest = $2)`
+const searchFilter = `pool_key = $1 AND ($2 = '' OR purpose <> 'Claim' OR scope_digest = $2)`
 
 // loadBlocksCovering returns the allocations that contain from. It is a
 // correctness lookup, not an optimisation.

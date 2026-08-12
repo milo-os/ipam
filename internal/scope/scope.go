@@ -388,12 +388,16 @@ func ProjectPoolDigest(tenant string, s map[string]ipam.ScopeRef, roles []string
 //
 // This is the claim path's entry point, and the one whose result is written to
 // ipam_cidr_allocations.scope_digest on a Claim row.
-func ProjectAddressSpaceDigest(tenant string, s map[string]ipam.ScopeRef, roles []string, required string) (string, error) {
+//
+// It returns the projection as well as the digest because the allocation
+// records both, and a caller that projected twice could record a scope its
+// digest was not taken over.
+func ProjectAddressSpaceDigest(tenant string, s map[string]ipam.ScopeRef, roles []string, required string) (map[string]ipam.ScopeRef, string, error) {
 	sub, err := ProjectFor(s, roles, required)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
-	return AddressSpaceDigest(tenant, sub), nil
+	return sub, AddressSpaceDigest(tenant, sub), nil
 }
 
 // Validate reports the first structural problem with a scope. It is not called
