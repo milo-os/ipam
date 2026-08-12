@@ -5,6 +5,7 @@
 package registryerrors
 
 import (
+	"fmt"
 	"net/http"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,4 +24,21 @@ func NewInsufficientStorage(message string) *apierrors.StatusError {
 			Message: message,
 		},
 	}
+}
+
+// NewPoolExhausted returns the 507 for a pool that has no room left, naming the
+// pool in Status.Details.
+//
+// A claim names a class, not a pool, so the caller cannot know which pool ran
+// out. Without the name they get "IPPool exhausted" and no way to tell which of
+// the class's pools to widen. The name goes in Details rather than only in the
+// message so a client can read it without parsing prose.
+func NewPoolExhausted(poolName string) *apierrors.StatusError {
+	err := NewInsufficientStorage(fmt.Sprintf("IPPool %q is exhausted", poolName))
+	err.ErrStatus.Details = &metav1.StatusDetails{
+		Name:  poolName,
+		Group: "ipam.miloapis.com",
+		Kind:  "ippools",
+	}
+	return err
 }
