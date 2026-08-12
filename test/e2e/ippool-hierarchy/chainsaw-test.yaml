@@ -27,7 +27,7 @@ spec:
 
   steps:
     - name: create-environment-pool
-      description: Top-of-tree environment IPPool (10.128.0.0/9, allow /12-/16)
+      description: Top-of-tree environment IPPool (10.32.0.0/11, allow /12-/16)
       try:
         - create:
             file: test-data/class.yaml
@@ -79,7 +79,7 @@ spec:
               python3 -c "
               import ipaddress, sys
               child = ipaddress.ip_network('$cidr')
-              parent = ipaddress.ip_network('10.128.0.0/9')
+              parent = ipaddress.ip_network('10.32.0.0/11')
               if child.prefixlen != 12:
                   print(f'FAIL: expected /12, got {child}', file=sys.stderr); sys.exit(1)
               if not child.subnet_of(parent):
