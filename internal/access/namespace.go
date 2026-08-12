@@ -2,36 +2,36 @@ package access
 
 // Namespace liveness.
 //
-// # What is enforced, and what deliberately is not
+// # What this enforces, and what it does not
 //
 // Ownership of a namespace is not IPAM's problem. RBAC already decides whether
-// a caller may write into one, and IPAM does not need its own model of who owns
-// what.
+// a caller may write into one.
 //
-// What IPAM must not do is bind an address into a namespace nothing will ever
-// collect. Namespace deletion IS the collector: when a namespace goes, the
+// What IPAM must not do is bind an address into a namespace that nothing will
+// ever collect. Namespace deletion is the collector: when a namespace goes, the
 // claims in it go, and the allocator releases their addresses. A claim admitted
-// into a namespace that is already Terminating is an allocation with no
-// collector — it survives, holds its address, and nothing names it afterwards.
-// A namespace that never existed has no collector either, so both answers refuse
+// into a namespace that is already terminating is an allocation with no
+// collector. It survives, holds its address, and nothing names it afterwards. A
+// namespace that never existed has no collector either, so both answers refuse
 // through the same path.
 //
-// So the property is LIVENESS, not existence and not ownership.
+// The property is liveness, not existence and not ownership.
 //
 // # Why this is not an admission plugin
 //
-// It would be the natural home and it is the wrong one. IPAM installs admission
-// plugins ONLY under --enable-quota, and the dev overlay and every e2e suite set
-// ENABLE_QUOTA=false — so an admission-based check would be inert exactly where
-// it is exercised. This is called from the claim registry, which always runs.
+// Admission would be the natural home and the wrong one. IPAM installs
+// admission plugins only under --enable-quota, and the dev overlay and every
+// e2e suite set ENABLE_QUOTA=false, so an admission-based check would be inert
+// exactly where it is exercised. The claim registry calls this instead, and the
+// registry always runs.
 //
 // # Where the namespace is looked up
 //
 // Not in the root cluster. A project-scoped claim's namespace lives in that
 // project's control plane, so validating against the root would reject
-// legitimate claims — which is also why enabling upstream NamespaceLifecycle
-// does not work here. The routing is the one milo's quota plugin already uses: a
-// base rest.Config whose Host is rewritten to
+// legitimate claims. That is also why upstream NamespaceLifecycle does not work
+// here. The routing matches the one milo's quota plugin uses: a base
+// rest.Config whose Host is rewritten to
 // /apis/resourcemanager.miloapis.com/v1alpha1/projects/<id>/control-plane.
 
 import (
@@ -53,9 +53,8 @@ import (
 // NamespaceState is what the claim path needs to know about a namespace.
 //
 // Unknown is a distinct value rather than an error folded into Live, because
-// "the namespace is fine" and "we could not tell" must not collapse. They lead
-// to the same admission decision today (both proceed) and to different
-// operator-facing messages.
+// "the namespace is fine" and "the lookup gave no answer" must not collapse.
+// Both admit the claim, but they produce different operator-facing messages.
 type NamespaceState int
 
 const (
@@ -87,17 +86,17 @@ func (s NamespaceState) String() string {
 // NamespaceChecker answers whether a namespace can still collect what is bound
 // into it.
 //
-// # Failing open is a deliberate decision
+// # Failing open is a deliberate choice
 //
-// A lookup that ERRORS returns NamespaceUnknown and the claim proceeds. Only a
+// A lookup that errors returns NamespaceUnknown and the claim proceeds. Only a
 // definitive Terminating or Missing refuses.
 //
-// The asymmetry is not close. Admitting a claim into a doomed namespace costs
-// one orphaned allocation: recoverable, rare, and visible. Failing closed puts
+// The asymmetry is wide. Admitting a claim into a doomed namespace costs one
+// orphaned allocation: recoverable, rare, and visible. Failing closed puts
 // another service's availability in the hot path of every allocation, so a
-// partial outage of the control plane becomes a total outage of addressing.
-// IPAM exists to hand out addresses; it must not stop doing that because a
-// namespace lookup timed out.
+// partial control-plane outage becomes a total addressing outage. IPAM exists
+// to hand out addresses, and must keep doing so when a namespace lookup times
+// out.
 type NamespaceChecker interface {
 	// State reports the namespace's liveness within a project. An error is
 	// returned alongside NamespaceUnknown so the caller can log the cause; the
@@ -122,39 +121,38 @@ var _ NamespaceChecker = (*projectNamespaceChecker)(nil)
 // liveTTL is how long a Live answer is reused, and maxLiveEntries bounds how
 // many are held.
 //
-// # Only the positive answer is cached, and that direction is the safe one
+// # Only the positive answer is cached, which is the safe direction
 //
-// Caching Live briefly risks admitting a claim into a namespace that began
-// terminating within the window — bounded by the TTL, and the same single
-// orphaned allocation the fail-open decision already accepts.
+// Caching Live briefly risks admitting a claim into a namespace that started
+// terminating inside the window. The TTL bounds that, and the cost is the same
+// single orphaned allocation the fail-open choice already accepts.
 //
-// Caching a REFUSAL would be the unsafe direction: a namespace that was
-// Terminating or Missing and is now fine would keep being refused for the
-// window, so a real claim fails for a state that no longer holds. Refusals are
-// therefore never cached and are always a fresh lookup.
+// Caching a refusal is the unsafe direction: a namespace that was Terminating
+// or Missing and is now fine would keep being refused for the window, failing a
+// real claim for a state that no longer holds. Refusals always take a fresh
+// lookup.
 //
-// A TTL cache rather than an informer: an informer would hold an open watch and
-// a full namespace cache per project IPAM has ever served, which is unbounded in
-// the number of projects and pays for namespaces no claim ever names. The cache
-// exists because this runs on the claim hot path, where a control-plane round
-// trip per create is the largest addition to a latency budget the allocation
-// transaction already spends.
+// This is a TTL cache rather than an informer. An informer would hold an open
+// watch and a full namespace cache for every project IPAM has served, unbounded
+// in the number of projects and paying for namespaces no claim ever names. The
+// cache exists because this runs on the claim hot path, where a control-plane
+// round trip per create is the largest addition to the latency budget.
 const (
 	liveTTL        = 10 * time.Second
 	maxLiveEntries = 4096
 )
 
 // servingTTL is how long the answer to "does this project have a control plane
-// at all?" is reused. Whether one exists changes on the timescale of a cluster
-// being built, not of a claim, so it is held far longer than a namespace's
-// state — and, like Live, only the positive answer is kept.
+// at all?" is reused. That changes on the timescale of a cluster being built,
+// not of a claim, so it is held far longer than a namespace's state. As with
+// Live, only the positive answer is kept.
 const servingTTL = 5 * time.Minute
 
 // NewNamespaceChecker builds a checker over a base config, or returns nil when
 // there is none.
 //
-// A nil checker DISABLES the check rather than denying every claim, which is the
-// opposite of ClassAccessChecker's nil behaviour and is deliberate: the class
+// A nil checker disables the check rather than denying every claim. That is the
+// opposite of ClassAccessChecker's nil behaviour, and intentional: the class
 // check is an authorization boundary and must fail closed, while this is a
 // liveness check and must fail open.
 func NewNamespaceChecker(base *rest.Config) NamespaceChecker {
@@ -173,9 +171,9 @@ func NewNamespaceChecker(base *rest.Config) NamespaceChecker {
 
 // projectControlPlaneHost rewrites a base host to a project's control plane.
 //
-// The same path milo's quota plugin targets. Kept here rather than imported
-// because the quota plugin builds it internally, and this check must work
-// without --enable-quota.
+// This is the path milo's quota plugin targets. It lives here rather than being
+// imported, because the quota plugin builds it internally and this check must
+// work without --enable-quota.
 func projectControlPlaneHost(base, project string) string {
 	return fmt.Sprintf("%s/apis/resourcemanager.miloapis.com/v1alpha1/projects/%s/control-plane",
 		strings.TrimSuffix(base, "/"), project)
@@ -223,10 +221,11 @@ func (c *projectNamespaceChecker) State(ctx context.Context, project, namespace 
 	case apierrors.IsNotFound(err):
 		// "This namespace is not there" and "nothing is there" both arrive as a
 		// 404, and only the first is an answer. Where projects have no control
-		// planes — a kind cluster, every e2e run — the whole control-plane path
-		// is absent and every claim would otherwise read as bound for a missing
-		// namespace. So a 404 refuses only once the control plane is confirmed
-		// to be serving; otherwise this is a failed lookup like any other.
+		// planes, such as a kind cluster or an e2e run, the whole control-plane
+		// path is absent, and every claim would otherwise read as bound for a
+		// missing namespace. A 404 therefore refuses only once the probe
+		// confirms the control plane is serving. Otherwise it is a failed lookup
+		// like any other.
 		if serving, probeErr := c.controlPlaneServes(ctx, project, cl); !serving {
 			return NamespaceUnknown, fmt.Errorf("project %q has no reachable control plane: %w", project, probeErr)
 		}
@@ -236,10 +235,10 @@ func (c *projectNamespaceChecker) State(ctx context.Context, project, namespace 
 	}
 
 	if ns.Status.Phase == corev1.NamespaceTerminating || ns.DeletionTimestamp != nil {
-		// Both signals, not just the phase. DeletionTimestamp is set the moment
-		// deletion is requested; Phase follows when the namespace controller
-		// observes it. Reading only Phase leaves a window in which deletion has
-		// begun and the namespace still reports Active.
+		// Read both signals, not just the phase. DeletionTimestamp is set the
+		// moment deletion is requested, and Phase follows when the namespace
+		// controller observes it. Reading only Phase leaves a window in which
+		// deletion has begun and the namespace still reports Active.
 		return NamespaceTerminating, nil
 	}
 
@@ -289,8 +288,8 @@ func (c *projectNamespaceChecker) cacheLive(key string) {
 // RefuseNamespace builds the error for a namespace that cannot accept a claim,
 // or nil for a state that admits it.
 //
-// The wording deliberately mirrors what stock Kubernetes returns for the same
-// condition, because that is the sentence operators already recognise.
+// The wording mirrors what stock Kubernetes returns for the same condition,
+// because that is the sentence operators already recognise.
 func RefuseNamespace(state NamespaceState, namespace string, gr schema.GroupResource) error {
 	switch state {
 	case NamespaceTerminating:
@@ -309,10 +308,10 @@ func RefuseNamespace(state NamespaceState, namespace string, gr schema.GroupReso
 
 // LogUndetermined records a lookup that produced no answer.
 //
-// Separate from the refusal path on purpose. "The namespace is terminating" and
-// "we could not determine the namespace state" are different answers, and a
-// deployment where the second happens constantly is one where this check is
-// silently doing nothing — the failure mode that otherwise hides.
+// This stays separate from the refusal path on purpose. "The namespace is
+// terminating" and "the namespace state is undetermined" are different answers.
+// A deployment where the second happens constantly is one where this check does
+// nothing, which is the failure mode that otherwise hides.
 func LogUndetermined(project, namespace string, err error) {
 	klog.V(2).InfoS("Could not determine namespace state; admitting the claim",
 		"project", project, "namespace", namespace, "err", err)

@@ -110,9 +110,9 @@ func TestStateReportsAMissingNamespace(t *testing.T) {
 	}
 }
 
-// Where projects have no control planes — a kind cluster, every e2e run — the
-// whole control-plane path 404s. Reading that as "the namespace is gone" would
-// refuse every claim in those environments.
+// Where projects have no control planes, such as a kind cluster or an e2e run,
+// the whole control-plane path 404s. Reading that as "the namespace is gone"
+// would refuse every claim in those environments.
 func TestStateDoesNotReadAnAbsentControlPlaneAsAMissingNamespace(t *testing.T) {
 	s := newNSServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

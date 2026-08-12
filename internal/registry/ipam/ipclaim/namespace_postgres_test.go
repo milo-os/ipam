@@ -23,7 +23,7 @@ func (c stubNamespaceChecker) State(context.Context, string, string) (access.Nam
 	return c.state, c.err
 }
 
-// A claim into a namespace that is still there binds as it always did.
+// A live namespace can collect what is bound into it, so the claim binds.
 func TestCreateBindsAClaimInALiveNamespace(t *testing.T) {
 	r, _ := newPostgresREST(t)
 	r.nsChecker = stubNamespaceChecker{state: access.NamespaceLive}
@@ -38,7 +38,7 @@ func TestCreateBindsAClaimInALiveNamespace(t *testing.T) {
 }
 
 // An address bound into a namespace with no collector is never released, so the
-// claim is refused — and nothing is written or reserved on the way out.
+// claim is refused, and nothing is written or reserved on the way out.
 func TestCreateRefusesANamespaceThatCannotCollectTheClaim(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -74,8 +74,8 @@ func TestCreateRefusesANamespaceThatCannotCollectTheClaim(t *testing.T) {
 	}
 }
 
-// "We could not tell" is not "the namespace is gone". A control plane IPAM
-// cannot reach must not stop it handing out addresses.
+// An undetermined namespace is not a missing one. A control plane IPAM cannot
+// reach must not stop it handing out addresses.
 func TestCreateAdmitsWhenTheNamespaceLookupFails(t *testing.T) {
 	r, _ := newPostgresREST(t)
 	r.nsChecker = stubNamespaceChecker{

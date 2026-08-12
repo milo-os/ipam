@@ -428,12 +428,12 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	return claim, nil
 }
 
-// checkNamespaceLiveness refuses a claim whose namespace cannot collect it,
-// and returns nil for every other outcome — including a lookup that failed.
+// checkNamespaceLiveness refuses a claim whose namespace cannot collect it, and
+// returns nil for every other outcome, including a lookup that failed.
 //
-// Fail-open is the decision recorded in internal/access/namespace.go: an
-// unreachable control plane must not stop IPAM handing out addresses, and a
-// lookup error must never be reported to the caller as a missing namespace.
+// internal/access/namespace.go records why this fails open: an unreachable
+// control plane must not stop IPAM handing out addresses, and a lookup error
+// must never reach the caller as a missing namespace.
 func (r *AllocatingREST) checkNamespaceLiveness(ctx context.Context, project, namespace string) error {
 	if r.nsChecker == nil {
 		return nil
