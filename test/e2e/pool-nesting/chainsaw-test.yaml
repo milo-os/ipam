@@ -10,7 +10,7 @@ spec:
     correctly, so deeper hierarchies can be built the same way two-level ones
     are.
 
-    - Root IPPool (10.0.0.0/8, IPv4) reaches Ready
+    - Root IPPool (10.0.0.0/11, IPv4) reaches Ready
     - Child IPPool (parentPoolRef=root, /12) reaches Ready
     - Grandchild IPPool (parentPoolRef=child, /16) reaches Ready and carves a
       sub-prefix within the child's range. Before the fix this CREATE fails.
@@ -27,7 +27,7 @@ spec:
 
   steps:
     - name: create-root-pool
-      description: Root IPPool 10.0.0.0/8, explicit ipFamily IPv4
+      description: Root IPPool 10.0.0.0/11, explicit ipFamily IPv4
       try:
         - create:
             file: test-data/class.yaml
@@ -75,7 +75,7 @@ spec:
               python3 -c "
               import ipaddress, sys
               child = ipaddress.ip_network('$cidr')
-              if child.prefixlen != 12 or not child.subnet_of(ipaddress.ip_network('10.0.0.0/8')):
+              if child.prefixlen != 12 or not child.subnet_of(ipaddress.ip_network('10.0.0.0/11')):
                   print(f'FAIL: bad child cidr {child}', file=sys.stderr); sys.exit(1)
               print(f'OK nest-child cidr={child}')
               "
