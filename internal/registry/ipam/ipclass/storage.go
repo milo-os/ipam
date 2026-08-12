@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,6 +24,7 @@ type IPClassStorage struct {
 	*genericregistry.Store
 
 	classChecker access.ClassAccessChecker
+	db           *pgxpool.Pool
 }
 
 // Create admits a class, requiring the "use" permission on the source class
@@ -34,6 +36,9 @@ type IPClassStorage struct {
 // already created — deleting the reference is what withdraws the access.
 func (s *IPClassStorage) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
 	if err := s.authorizeSource(ctx, obj); err != nil {
+		return nil, err
+	}
+	if err := s.validateOfferAgreement(ctx, obj); err != nil {
 		return nil, err
 	}
 	return s.Store.Create(ctx, obj, createValidation, options)
@@ -100,12 +105,12 @@ func (s *IPClassStatusStorage) ConvertToTable(ctx context.Context, obj runtime.O
 }
 
 // NewClassStorage builds the IPClass REST storage and its /status subresource.
-// A class is policy, not an allocation, so this carries no allocator or db
-// dependency.
+// A class is policy, not an allocation, so this carries no allocator.
 //
 // classChecker authorises references into another project. A nil checker
-// refuses them.
-func NewClassStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, classChecker access.ClassAccessChecker) (*IPClassStorage, *IPClassStatusStorage, error) {
+// refuses them. db is required: admitting a class means reading the pools that
+// already offer themselves to its name.
+func NewClassStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, classChecker access.ClassAccessChecker, db *pgxpool.Pool) (*IPClassStorage, *IPClassStatusStorage, error) {
 	strategy := NewStrategy(scheme)
 	statusStrategy := NewStatusStrategy(scheme)
 
@@ -131,5 +136,5 @@ func NewClassStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGette
 	statusStore.UpdateStrategy = statusStrategy
 	statusStore.ResetFieldsStrategy = statusStrategy
 
-	return &IPClassStorage{Store: store, classChecker: classChecker}, &IPClassStatusStorage{store: &statusStore}, nil
+	return &IPClassStorage{Store: store, classChecker: classChecker, db: db}, &IPClassStatusStorage{store: &statusStore}, nil
 }

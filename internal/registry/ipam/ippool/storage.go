@@ -118,6 +118,10 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		return nil, fmt.Errorf("expected *ipam.IPPool, got %T", obj)
 	}
 
+	if err := r.validateClassOffers(ctx, pool); err != nil {
+		return nil, err
+	}
+
 	if pool.Spec.ParentPoolRef == nil {
 		// Root pool — strategy.PrepareForCreate already populated status.
 		return r.Store.Create(ctx, obj, createValidation, options)
