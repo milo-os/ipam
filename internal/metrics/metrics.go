@@ -11,6 +11,7 @@
 package metrics
 
 import (
+	"strconv"
 	"time"
 
 	"k8s.io/component-base/metrics"
@@ -336,6 +337,64 @@ var (
 		},
 		[]string{"resource"},
 	)
+
+	// CascadeLevels counts the levels of a class chain a claim walked, by what
+	// the claim had to do at each one.
+	//
+	// Every level of every claim is counted, including the overwhelmingly
+	// common "reused" case where the pool already existed. A counter that only
+	// advanced when a pool was created would make the steady state invisible:
+	// "nothing needed provisioning" and "no claims are resolving at all" would
+	// both read as no data.
+	//
+	// outcome:
+	//   reused      — the pool existed; the claim did one indexed read.
+	//   provisioned — this claim created the pool.
+	//   lost        — this claim raced another into the same scope and lost.
+	//                 Expected and healthy: exactly one winner per scope, and
+	//                 every other member of a first-claim herd records a loss
+	//                 and then uses the winner's pool. Losses sustained with
+	//                 no matching provisions mean claims are contending on an
+	//                 identity row whose winner keeps aborting, which from
+	//                 outside looks only like slow claims.
+	//   error       — the level could not be resolved; the claim failed.
+	//
+	// class is an IPClass name, bounded by the platform's class definitions.
+	// The projected scope, the scope digest, and the pool key are all
+	// deliberately absent: each is unbounded, and pool_key as a label has
+	// already had to be removed from this service once.
+	CascadeLevels = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Namespace:      "ipam",
+			Name:           "cascade_levels_total",
+			Help:           "Class-chain levels walked during pool resolution, by outcome",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"class", "outcome"},
+	)
+
+	// CascadeResolutionDuration tracks the time a claim spends resolving its
+	// pool, before the allocation transaction opens.
+	//
+	// Resolution runs outside the allocation transaction and each level commits
+	// on its own, so this latency is invisible in the Postgres query histogram
+	// and shows up only as an unexplained gap in end-to-end claim latency. The
+	// `provisioned` label separates the first claim into a scope, which builds
+	// a chain, from the millions after it, which read one row — without it the
+	// two are averaged together and neither is legible.
+	//
+	// result: "success" | "error". provisioned: "true" when this claim created
+	// at least one pool.
+	CascadeResolutionDuration = metrics.NewHistogramVec(
+		&metrics.HistogramOpts{
+			Namespace:      "ipam",
+			Name:           "cascade_resolution_duration_seconds",
+			Help:           "Duration of pool resolution, including any pools provisioned on the way",
+			Buckets:        metrics.DefBuckets,
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"result", "provisioned"},
+	)
 )
 
 func init() {
@@ -358,7 +417,31 @@ func init() {
 		WatcherDrainCycles,
 		Releases,
 		Retentions,
+		CascadeLevels,
+		CascadeResolutionDuration,
 	)
+}
+
+// RecordCascadeLevel records one class-chain level a claim walked. outcome is
+// "reused", "provisioned", "lost", or "error".
+func RecordCascadeLevel(className, outcome string) {
+	CascadeLevels.WithLabelValues(className, outcome).Inc()
+}
+
+// ObserveCascadeResolution records one pool resolution. result is "success" or
+// "error"; provisioned reports whether the claim created any pool. Intended as
+//
+//	start := time.Now()
+//	result, provisioned := "error", false
+//	defer func() {
+//	    metrics.ObserveCascadeResolution(result, provisioned, start)
+//	}()
+//
+// where the surrounding code sets result before each successful return.
+func ObserveCascadeResolution(result string, provisioned bool, start time.Time) {
+	CascadeResolutionDuration.
+		WithLabelValues(result, strconv.FormatBool(provisioned)).
+		Observe(time.Since(start).Seconds())
 }
 
 // RecordPollBatch records the number of rows returned by one pollChanges call.

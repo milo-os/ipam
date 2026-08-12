@@ -414,6 +414,60 @@ local watchPollBatchPanel = common.tsPanel(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Row: Automatic pool provisioning
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Where each claim's class chain came from. Every level of every claim is
+// counted, so "reused" carries the traffic and the other outcomes are the
+// exceptions standing out against it. Stacked, because the split is the point.
+local cascadeOutcomePanel = common.tsPanel(
+  'Class-chain levels by outcome',
+  [
+    {
+      expr: 'sum by (outcome) (rate(ipam_cascade_levels_total{%(sel)s}[5m]))' % { sel: ipamSel },
+      legend: '{{outcome}}',
+    },
+  ],
+  unit='reqps',
+  stack=true,
+  description='What each claim had to do at each level of its class chain: reuse an existing pool, create one, or lose the race to create it. Losses come in a burst around each creation — that is one claim building the pool and the rest of the herd waiting for it, and it is healthy. Sustained losses with no creations mean claims are queueing without anything being built (IPAMCascadeProvisioningThrashing).'
+);
+
+// Pools nobody created by hand. Split by class so a chain that keeps rebuilding
+// itself is attributable.
+local cascadeProvisionedPanel = common.tsPanel(
+  'Pools created automatically',
+  [
+    {
+      expr: 'sum by (class) (increase(ipam_cascade_levels_total{%(sel)s, outcome="provisioned"}[1h]))' % { sel: ipamSel },
+      legend: '{{class}}',
+    },
+  ],
+  unit='short',
+  description='Pools IPAM created on its own to satisfy a claim, per hour, by the class that caused them. This is the answer to "where did this pool come from" — a pool with no human author appears here, attributed to a class. Steady state is zero: a chain is built once per scope and reused thereafter.'
+);
+
+// Resolution runs before the allocation transaction, so this latency is charged
+// to the claim without appearing in any query timing.
+local cascadeLatencyPanel = common.tsPanel(
+  'Pool resolution p95 (before allocation)',
+  [
+    {
+      expr: |||
+        histogram_quantile(0.95,
+          sum by (le, provisioned) (
+            rate(ipam_cascade_resolution_duration_seconds_bucket{%(sel)s, result="success"}[5m])
+          )
+        )
+      ||| % { sel: ipamSel },
+      legend: 'provisioned={{provisioned}}',
+    },
+  ],
+  unit='s',
+  description='Time each claim spends finding its pool, before the allocation transaction opens. provisioned=false is the common path and should be a few milliseconds; provisioned=true is the first claim into a scope paying to build the chain, and is legitimately slower. This cost is invisible in the Postgres query panels — if end-to-end claim latency is high and the query breakdown does not explain it, look here.'
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Layout helper: place a panel on the grid.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -477,4 +531,9 @@ dashboard.new('IPAM — Provider')
   at(watchLagP99Panel, 0, 78, 12, 7),
   at(watchEventRatePanel, 12, 78, 12, 7),
   at(watchPollBatchPanel, 0, 85, 24, 7),
+
+  rowAt('Automatic pool provisioning', 92),
+  at(cascadeOutcomePanel, 0, 93, 12, 7),
+  at(cascadeProvisionedPanel, 12, 93, 12, 7),
+  at(cascadeLatencyPanel, 0, 100, 24, 7),
 ])

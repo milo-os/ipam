@@ -35,6 +35,9 @@ runbook, the on-call experience regresses.
 | `IPAMWatcherStuck` | warning | [`ipam-watcher-stuck.md`](ipam-watcher-stuck.md) |
 | `IPAMWatcherBacklogSaturated` | warning | [`ipam-watch-lag-high.md`](ipam-watch-lag-high.md) |
 | `IPAMReadLatencyHigh` | warning | [`ipam-read-latency-high.md`](ipam-read-latency-high.md) |
+| `IPAMCascadeProvisioningFailing` | warning | [`ipam-cascade-provisioning.md`](ipam-cascade-provisioning.md) |
+| `IPAMCascadeProvisioningThrashing` | warning | [`ipam-cascade-provisioning.md`](ipam-cascade-provisioning.md) |
+| `IPAMCascadeResolutionLatencyHigh` | warning | [`ipam-cascade-provisioning.md`](ipam-cascade-provisioning.md) |
 
 ## First 5 minutes — universal checklist
 
@@ -132,6 +135,7 @@ team's wiki, not here.
 
 - [`ipam-apiserver-down.md`](ipam-apiserver-down.md)
 - [`ipam-allocation-error-rate-high.md`](ipam-allocation-error-rate-high.md)
+- [`ipam-cascade-provisioning.md`](ipam-cascade-provisioning.md)
 - [`ipam-claim-latency-high.md`](ipam-claim-latency-high.md)
 - [`ipam-db-connection-pool-saturated.md`](ipam-db-connection-pool-saturated.md)
 - [`ipam-pool-exhaustion-imminent.md`](ipam-pool-exhaustion-imminent.md)
