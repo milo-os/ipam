@@ -56,6 +56,13 @@ func NewPostgresPrefixAllocator() *PostgresPrefixAllocator {
 func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, req PrefixRequest) (string, error) {
 	poolKey, prefixLen, ipFamily := req.PoolKey, req.PrefixLen, req.IPFamily
 
+	// Normalised once, here, and read from req by both the search and the
+	// insert. A block searched under one digest and recorded under another
+	// would not block the allocations it overlaps.
+	if req.ScopeDigest == "" {
+		req.ScopeDigest = scope.EmptyAddressSpaceDigest()
+	}
+
 	pool, err := lockAndDecodeIPPool(ctx, tx, poolKey)
 	if err != nil {
 		return "", err
@@ -70,7 +77,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	ctx, fbSpan := tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
 	fbSpan.SetAttributes(attribute.String(tracing.AttrStrategy, string(strategy)))
 
-	cidr, err := findBlock(ctx, tx, poolKey, parents, prefixLen, strategy)
+	cidr, err := findBlock(ctx, tx, poolKey, req.ScopeDigest, parents, prefixLen, strategy)
 	if err != nil {
 		if errors.Is(err, allocation.ErrPoolExhausted) {
 			fbSpan.SetAttributes(attribute.Bool(tracing.AttrExhausted, true))
@@ -477,36 +484,31 @@ func parsePoolCIDR(pool *ipamv1alpha1.IPPool) ([]net.IPNet, error) {
 	return []net.IPNet{*ipnet}, nil
 }
 
-// loadExistingAllocations returns the CIDRs currently tracked against poolKey.
+// loadAllocationsInSpace returns the blocks a new allocation in scopeDigest
+// must avoid: the claims of that space, plus the reservations and pool carves
+// that hold their address in every space.
+//
+// searchFilter is the same predicate the paged search applies, so the two
+// strategy paths see one set of occupied blocks.
+func loadAllocationsInSpace(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string) ([]net.IPNet, error) {
+	defer metrics.ObserveQuery("load_allocations_in_space", time.Now())
+	return queryAllocationCIDRs(ctx, tx,
+		`SELECT host(allocated_cidr) || '/' || masklen(allocated_cidr)
+		   FROM ipam_cidr_allocations
+		  WHERE `+searchFilter,
+		poolKey, scopeDigest)
+}
+
+// loadExistingAllocations returns the CIDRs currently tracked against poolKey,
+// across every address space in it. It measures occupancy, which counts an
+// address once however many spaces hold it; it is not a search.
 func loadExistingAllocations(ctx context.Context, tx pgx.Tx, poolKey string) ([]net.IPNet, error) {
 	defer metrics.ObserveQuery("load_existing_allocations", time.Now())
-	rows, err := tx.Query(ctx,
+	return queryAllocationCIDRs(ctx, tx,
 		`SELECT host(allocated_cidr) || '/' || masklen(allocated_cidr)
 		   FROM ipam_cidr_allocations
 		  WHERE pool_key = $1`,
-		poolKey,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("load existing allocations: %w", err)
-	}
-	defer rows.Close()
-
-	var existing []net.IPNet
-	for rows.Next() {
-		var cidrStr string
-		if err := rows.Scan(&cidrStr); err != nil {
-			return nil, fmt.Errorf("scan allocation row: %w", err)
-		}
-		_, ipnet, err := net.ParseCIDR(cidrStr)
-		if err != nil {
-			return nil, fmt.Errorf("parse stored cidr %q: %w", cidrStr, err)
-		}
-		existing = append(existing, *ipnet)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate allocation rows: %w", err)
-	}
-	return existing, nil
+		poolKey)
 }
 
 // publishPrefixUtilization recomputes allocated/total for the supplied pool
@@ -539,10 +541,7 @@ func publishPrefixUtilization(poolKey, ipFamily string, parents []net.IPNet, con
 // was handed out under has to be readable from the row itself.
 //
 // scope_digest is the digest findBlock searched under, so the row lands in the
-// address space the search proved free. It is not the claim's scope digest;
-// projecting a claim's scope onto its class is not wired through the search
-// yet, and a row in a space the search did not consider would not block the
-// allocations it overlaps.
+// address space the search proved free.
 func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, cidr string) error {
 	defer metrics.ObserveQuery("insert_allocation", time.Now())
 	allocationKey := req.AllocationKey
@@ -559,7 +558,7 @@ func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, c
 		     purpose, class_name, scope_digest, reclaim_policy, owner_project)
 		 VALUES ($1, $2, $3, $4, $5, 'Claim', $6, $7, $8, $9)`,
 		req.PoolKey, cidr, req.ClaimKey, allocationKey, req.IPFamily,
-		req.ClassName, scope.EmptyAddressSpaceDigest(), string(policy), req.OwnerProject,
+		req.ClassName, req.ScopeDigest, string(policy), req.OwnerProject,
 	)
 	if err != nil {
 		return fmt.Errorf("insert allocation: %w", err)
@@ -591,37 +590,48 @@ func utilizationPercent(total, consumed *big.Int) float64 {
 	return math.Round(pct*100*10000) / 10000
 }
 
-// findBlock chooses the block to hand out.
+// findBlock chooses the block to hand out within one address space.
+//
+// Both strategy paths search under scopeDigest, so a pool whose strategy
+// changes hands out the same set of blocks. A whole-pool search would report a
+// pool exhausted on the strength of allocations another address space holds.
 //
 // FirstFit reads the allocations a page at a time, from a floor recording where
 // the last search stopped, so the read is bounded by what the search examines.
 // The other strategies are defined over the whole pool — "the smallest region
 // that fits" and "the emptiest parent" cannot be known from a prefix of the
-// allocations — so they load the set and keep its cost.
-func findBlock(ctx context.Context, tx pgx.Tx, poolKey string, parents []net.IPNet, prefixLen int, strategy allocation.Strategy) (*net.IPNet, error) {
+// allocations — so they load the space and keep its cost.
+func findBlock(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, parents []net.IPNet, prefixLen int, strategy allocation.Strategy) (*net.IPNet, error) {
 	if strategy != "" && strategy != allocation.FirstFit {
-		existing, err := loadExistingAllocations(ctx, tx, poolKey)
+		existing, err := loadAllocationsInSpace(ctx, tx, poolKey, scopeDigest)
 		if err != nil {
 			return nil, err
 		}
 		return allocation.FindFirstAvailableBlock(parents, existing, prefixLen, strategy)
 	}
 
-	digest := scope.EmptyAddressSpaceDigest()
+	if scopeDigest == spaceAll {
+		// A search over every space has no floor to stand on. One would have to
+		// be lowered whenever any space released, and the trigger that lowers
+		// floors moves only the released row's own space — leaving a floor
+		// above free addresses, the one direction that loses them.
+		cidr, _, err := boundedFirstFit(ctx, tx, poolKey, spaceAll, parents, prefixLen, nil)
+		return cidr, err
+	}
 
 	// After the pool row, never before it. Every caller takes (pool, floor) in
 	// that order, so two transactions can only deadlock by taking POOLS in
 	// different orders.
-	observed, err := lockSearchFloor(ctx, tx, poolKey, digest, parents[0].IP)
+	observed, err := lockSearchFloor(ctx, tx, poolKey, scopeDigest, parents[0].IP)
 	if err != nil {
 		return nil, err
 	}
 
-	cidr, next, err := boundedFirstFit(ctx, tx, poolKey, digest, parents, prefixLen, observed)
+	cidr, next, err := boundedFirstFit(ctx, tx, poolKey, scopeDigest, parents, prefixLen, observed)
 	if err != nil {
 		return nil, err
 	}
-	if err := raiseSearchFloor(ctx, tx, poolKey, digest, observed, next); err != nil {
+	if err := raiseSearchFloor(ctx, tx, poolKey, scopeDigest, observed, next); err != nil {
 		return nil, err
 	}
 	return cidr, nil
