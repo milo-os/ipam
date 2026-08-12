@@ -214,8 +214,8 @@ func validateDefinition(c *ipam.IPClass) field.ErrorList {
 				"or state them on the pool itself"))
 	}
 
-	// The same rule the pool applies, so a class cannot state a reservation the
-	// pool it provisions would refuse.
+	// Apply the pool's own rule here, so a class cannot hold a reservation that
+	// the pools it provisions would refuse.
 	allErrs = append(allErrs, ipamvalidation.Reservations(
 		c.Spec.Reservations, c.Spec.IPFamily, specPath.Child("reservations"))...)
 

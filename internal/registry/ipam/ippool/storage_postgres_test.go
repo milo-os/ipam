@@ -82,7 +82,7 @@ func createPool(t *testing.T, s *AllocatingIPPoolREST, ctx context.Context, p *i
 }
 
 // A second root pool over space the first already holds would hand the same
-// address to unrelated claims, because uniqueness is enforced within a pool.
+// address to unrelated claims, because IPAM enforces uniqueness within a pool.
 func TestOverlappingRootPoolsAreRefusedWithinAProject(t *testing.T) {
 	s := newPostgresPoolStorage(t, testdb.Pool(t))
 	ctx := poolCtx("tenant-a")
@@ -162,9 +162,9 @@ func TestRecreatingARootPoolReportsAlreadyExists(t *testing.T) {
 	}
 }
 
-// A reservation is stated on a pool and on the class that provisions pools, and
-// the two must refuse the same thing for the same reason. A rule enforced on
-// one alone lets a class record a reservation the pool it builds would reject.
+// A pool and the class that provisions pools must refuse the same reservations.
+// A rule enforced on one alone lets a class hold a reservation that its own
+// pools reject.
 func TestTheSameBadReservationIsRefusedOnAPoolAndOnAClass(t *testing.T) {
 	db := testdb.Pool(t)
 	scheme := newTestScheme()

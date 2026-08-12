@@ -215,9 +215,9 @@ func validateIPPool(p *ipam.IPPool) field.ErrorList {
 }
 
 // familyForValidation returns the family a pool's reservations are sized
-// against. A child pool has neither spec.ipFamily nor a carve at create time,
-// so it validates against the wider bound and the allocation library rejects a
-// unit that does not fit the carve it eventually gets.
+// against. A child pool has no spec.ipFamily and no carve at create time, so it
+// validates against the wider bound. The allocation library then rejects a unit
+// that does not fit the carve the pool receives.
 func familyForValidation(p *ipam.IPPool) ipam.IPFamily {
 	if p.Spec.IPFamily != "" {
 		return p.Spec.IPFamily

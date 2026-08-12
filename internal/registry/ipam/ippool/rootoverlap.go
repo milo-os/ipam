@@ -15,21 +15,21 @@ import (
 )
 
 // validateNoRootOverlap refuses a root pool whose range overlaps another root
-// pool already owned by the same tenant.
+// pool the same tenant already owns.
 //
 // Two root pools over one range hand the same address to unrelated claims, and
-// nothing downstream notices: address uniqueness is enforced per pool, by an
-// exclusion constraint keyed on pool_key, so rows in different pools never
-// conflict however much their ranges do.
+// nothing downstream catches it: an exclusion constraint keyed on pool_key
+// enforces uniqueness within a pool, so rows in different pools never conflict,
+// however much their ranges overlap.
 //
-// The check is deliberately narrow:
+// The check is narrow by design:
 //
-//   - Root pools only. A child's range is carved from its parent and is nested
-//     by construction, so checking it would reject every child.
-//   - One tenant only. Private space is tenant-scoped and overlap-safe across
-//     tenants; two tenants holding 10.0.0.0/8 are separate address spaces.
-//   - Create time only. It reads no stored row and rewrites nothing, so a
-//     tenant that already holds an overlapping pair keeps it.
+//   - Root pools only. A child carves its range from its parent, so it always
+//     nests, and checking it would reject every child.
+//   - One tenant only. Private space is tenant-scoped, so two tenants both
+//     holding 10.0.0.0/8 are separate address spaces.
+//   - Create only. Nothing rewrites stored pools, so a tenant that already
+//     holds an overlapping pair keeps it.
 func (r *AllocatingIPPoolREST) validateNoRootOverlap(ctx context.Context, pool *ipam.IPPool, id tenant.Identity) error {
 	if pool.Spec.ParentPoolRef != nil || pool.Spec.CIDR == "" {
 		return nil
@@ -54,18 +54,18 @@ func (r *AllocatingIPPoolREST) validateNoRootOverlap(ctx context.Context, pool *
 // overlapConflict builds the refusal for a root pool that collides with
 // another.
 //
-// 409 rather than 422: the request is well formed and the refusal is about the
-// state of the world, which is also what makes it actionable — deleting or
-// re-ranging the named pool makes the same request succeed. It names the other
-// pool and both ranges, because "Conflict" with no subject sends the operator
-// to the database to find out what they collided with.
+// It returns 409 rather than 422 because the request is well formed and the
+// state of the world is what refuses it. That also makes the refusal
+// actionable: deleting or re-ranging the named pool lets the same request
+// succeed. The message names the other pool and both ranges, because a bare
+// "Conflict" sends the operator to the database to find out what they hit.
 func overlapConflict(name, cidr string, other rootPool) error {
 	return apierrors.NewConflict(
 		schema.GroupResource{Group: v1alpha1.GroupName, Resource: "ippools"},
 		name,
 		fmt.Errorf("spec.cidr %s overlaps root IPPool %q (%s) in this project; "+
 			"two root pools over one range hand the same address to unrelated claims, "+
-			"because address uniqueness is enforced within a pool and not across pools. "+
+			"because IPAM enforces address uniqueness within a pool, not across pools. "+
 			"Narrow one of the ranges, or carve this pool from %q by setting spec.parentPoolRef",
 			cidr, other.name, other.cidr.String(), other.name),
 	)
@@ -77,24 +77,23 @@ type rootPool struct {
 	cidr net.IPNet
 }
 
-// tenantRootPoolCIDRs returns the ranges of every root pool this tenant already
-// owns, excluding the name being created.
+// tenantRootPoolCIDRs returns the range of every root pool this tenant owns,
+// except the name being created.
 //
-// Excluding the name matters: without it, re-creating an existing pool reports
-// an overlap with itself rather than AlreadyExists, which is the worse message
-// for the far more common mistake.
+// Excluding that name keeps a repeated create reporting AlreadyExists rather
+// than an overlap with itself, which is the better message for the more common
+// mistake.
 //
-// The parentPoolRef test is IS NULL, which covers a key that is absent as well
-// as one explicitly null — a root pool omits the field entirely, since it is
-// omitempty on the wire. The overlap comparison itself stays in Go: no index
-// could serve an inet predicate here, so it is a sequential scan either way,
-// and one implementation of "do these ranges overlap" cannot disagree with
-// itself.
+// The query tests parentPoolRef IS NULL, which matches an absent key as well as
+// an explicit null; a root pool omits the field, since it is omitempty on the
+// wire. Overlap comparison stays in Go: no index serves an inet predicate here,
+// so the scan is sequential either way, and a single implementation of "do
+// these ranges overlap" cannot disagree with itself.
 func (r *AllocatingIPPoolREST) tenantRootPoolCIDRs(ctx context.Context, id tenant.Identity, excludeName string) ([]rootPool, error) {
-	// Derived from ResourceKey rather than formatted here, so it stays in step
-	// with the keys the allocator locks and the registry writes. The prefix
-	// selects this tenant's pools on its own, so the query does not filter on
-	// the kind column.
+	// Build the prefix from ResourceKey rather than formatting it here, so it
+	// stays in step with the keys the allocator locks and the registry writes.
+	// The prefix already selects this tenant's pools, so the query does not
+	// filter on the kind column.
 	prefix := id.ResourceKey("ippools", "")
 
 	rows, err := r.db.Query(ctx,
@@ -119,9 +118,9 @@ func (r *AllocatingIPPoolREST) tenantRootPoolCIDRs(ctx context.Context, id tenan
 		}
 		_, ipnet, perr := net.ParseCIDR(cidrStr)
 		if perr != nil {
-			// A stored pool whose CIDR does not parse cannot be compared
-			// against, and it cannot be allocating anything either. Skipping it
-			// keeps one malformed row from refusing every subsequent create.
+			// A stored CIDR that does not parse cannot be compared against, and
+			// cannot be allocating anything either. Skipping it keeps one
+			// malformed row from refusing every later create.
 			continue
 		}
 		out = append(out, rootPool{name: name, cidr: *ipnet})
