@@ -113,6 +113,7 @@ type AllocatingREST struct {
 	db          txBeginner
 	strategy    ipClaimStrategy
 	poolChecker access.PoolAccessChecker
+	nsChecker   access.NamespaceChecker
 	codec       runtime.Codec
 }
 
@@ -129,7 +130,8 @@ type txBeginner interface {
 // the generated IPAllocation into ipam_objects so subsequent GETs return
 // fully-populated objects. poolChecker may be nil; when non-nil it
 // authorises cross-project claims via SubjectAccessReview before allocation.
-func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
+// nsChecker may be nil, which disables the namespace-liveness check.
+func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker, nsChecker access.NamespaceChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
 	claimStore, statusStore, err := newInnerStorage(scheme, optsGetter)
 	if err != nil {
 		return nil, nil, err
@@ -140,6 +142,7 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 		db:             db,
 		strategy:       NewStrategy(scheme),
 		poolChecker:    poolChecker,
+		nsChecker:      nsChecker,
 		codec:          codec,
 	}, statusStore, nil
 }
@@ -218,6 +221,14 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 			return nil, err
 		}
+	}
+
+	// Before any capacity is reserved: an address bound into a namespace that
+	// is gone, or going, is never released.
+	if err := r.checkNamespaceLiveness(ctx, project, claim.Namespace); err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "namespace_not_live", ipFamily, project, org)
+		failSpan(tracing.ReasonNamespaceNotLive)
+		return nil, err
 	}
 
 	if claim.Spec.ClassName == "" && claim.Spec.IPFamily == "" {
@@ -415,6 +426,24 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 
 	result = "success"
 	return claim, nil
+}
+
+// checkNamespaceLiveness refuses a claim whose namespace cannot collect it,
+// and returns nil for every other outcome — including a lookup that failed.
+//
+// Fail-open is the decision recorded in internal/access/namespace.go: an
+// unreachable control plane must not stop IPAM handing out addresses, and a
+// lookup error must never be reported to the caller as a missing namespace.
+func (r *AllocatingREST) checkNamespaceLiveness(ctx context.Context, project, namespace string) error {
+	if r.nsChecker == nil {
+		return nil
+	}
+	state, err := r.nsChecker.State(ctx, project, namespace)
+	if err != nil {
+		access.LogUndetermined(project, namespace, err)
+		return nil
+	}
+	return access.RefuseNamespace(state, namespace, v1alpha1.Resource("ipclaims"))
 }
 
 // isDryRun reports whether a create/delete options' DryRun slice requests a

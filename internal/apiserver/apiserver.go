@@ -71,6 +71,11 @@ type ExtraConfig struct {
 	// class, via a "use" SubjectAccessReview against the source class. nil
 	// refuses every such reference.
 	ClassChecker access.ClassAccessChecker
+	// NamespaceChecker refuses an IPClaim whose namespace is missing or
+	// terminating, so no address is bound where nothing will release it. nil
+	// disables the check — the opposite of ClassChecker, deliberately: see
+	// internal/access/namespace.go.
+	NamespaceChecker access.NamespaceChecker
 }
 
 // Config combines generic and IPAM-specific configuration.
@@ -203,6 +208,7 @@ func (c completedConfig) New() (*IPAMServer, error) {
 		c.ExtraConfig.AllocatorPool,
 		allocCodec,
 		c.ExtraConfig.PoolChecker,
+		c.ExtraConfig.NamespaceChecker,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create IPClaim storage: %w", err)
