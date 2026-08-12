@@ -10,60 +10,17 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/apiserver/pkg/authentication/user"
-	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/apiserver/pkg/registry/rest"
 
-	"go.miloapis.com/ipam/internal/allocator"
-	pgstore "go.miloapis.com/ipam/internal/storage/postgres"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/testdb"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
-	ipaminstall "go.miloapis.com/ipam/pkg/apis/ipam/install"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
 const offerProject = "tenant-a"
 
 func TestMain(m *testing.M) { testdb.TestMain(m) }
-
-// poolCtx is the context a project-scoped caller arrives with. IPPool is
-// cluster-scoped, but the generic store still reads the namespace the endpoint
-// handler would have set.
-func poolCtx(project string) context.Context {
-	ctx := genericapirequest.WithUser(context.Background(), &user.DefaultInfo{
-		Name: "someone",
-		Extra: map[string][]string{
-			tenant.ExtraParentAPIGroup: {tenant.ParentAPIGroupProject},
-			tenant.ExtraParentType:     {tenant.ParentTypeProject},
-			tenant.ExtraParentName:     {project},
-		},
-	})
-	return genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
-}
-
-func newPostgresPoolStorage(t *testing.T) (*AllocatingIPPoolREST, *pgxpool.Pool) {
-	t.Helper()
-	db := testdb.Pool(t)
-
-	scheme := runtime.NewScheme()
-	ipaminstall.Install(scheme)
-	codec := serializer.NewCodecFactory(scheme).LegacyCodec(ipamv1alpha1.SchemeGroupVersion)
-
-	getter, err := pgstore.NewRESTOptionsGetter(db.Config().ConnString())
-	if err != nil {
-		t.Fatalf("rest options getter: %v", err)
-	}
-	getter.SetCodec(codec)
-
-	store, _, err := NewIPPoolStorage(scheme, getter, allocator.NewPostgresPrefixAllocator(), db, codec)
-	if err != nil {
-		t.Fatalf("pool storage: %v", err)
-	}
-	t.Cleanup(store.Destroy)
-	return store, db
-}
 
 // seedClass writes a class definition straight to storage: these tests are
 // about the pool's admission, not the class registry's.
@@ -86,7 +43,7 @@ func seedClass(t *testing.T, db *pgxpool.Pool, project, name string, uniqueWithi
 	}
 }
 
-func rootPool(name string, classNames ...string) *ipam.IPPool {
+func poolOffering(name string, classNames ...string) *ipam.IPPool {
 	return &ipam.IPPool{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: ipam.IPPoolSpec{
@@ -101,11 +58,12 @@ func rootPool(name string, classNames ...string) *ipam.IPPool {
 // claim drawing from it derives the same address-space digest, so the exclusion
 // constraint sees them all.
 func TestPoolOfferedToAgreeingClassesIsAccepted(t *testing.T) {
-	store, db := newPostgresPoolStorage(t)
+	db := testdb.Pool(t)
+	store := newPostgresPoolStorage(t, db)
 	seedClass(t, db, offerProject, "public", []string{"network"})
 	seedClass(t, db, offerProject, "private", []string{"network"})
 
-	if _, err := store.Create(poolCtx(offerProject), rootPool("shared", "public", "private"), nil, &metav1.CreateOptions{}); err != nil {
+	if _, err := store.Create(poolCtx(offerProject), poolOffering("shared", "public", "private"), nil, &metav1.CreateOptions{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 }
@@ -114,11 +72,12 @@ func TestPoolOfferedToAgreeingClassesIsAccepted(t *testing.T) {
 // cannot see each other, so the second class hands out addresses the first
 // already holds with nothing to report the collision.
 func TestPoolOfferedToDisagreeingClassesIsRejected(t *testing.T) {
-	store, db := newPostgresPoolStorage(t)
+	db := testdb.Pool(t)
+	store := newPostgresPoolStorage(t, db)
 	seedClass(t, db, offerProject, "flat", nil)
 	seedClass(t, db, offerProject, "per-network", []string{"network"})
 
-	_, err := store.Create(poolCtx(offerProject), rootPool("shared", "flat", "per-network"), nil, &metav1.CreateOptions{})
+	_, err := store.Create(poolCtx(offerProject), poolOffering("shared", "flat", "per-network"), nil, &metav1.CreateOptions{})
 	if !apierrors.IsInvalid(err) {
 		t.Fatalf("Create returned %v, want Invalid", err)
 	}
@@ -136,21 +95,23 @@ func TestPoolOfferedToDisagreeingClassesIsRejected(t *testing.T) {
 // Ordering differences are not disagreement: uniqueWithin is a set, and
 // [network, location] is the same address space as [location, network].
 func TestRoleOrderIsNotDisagreement(t *testing.T) {
-	store, db := newPostgresPoolStorage(t)
+	db := testdb.Pool(t)
+	store := newPostgresPoolStorage(t, db)
 	seedClass(t, db, offerProject, "a", []string{"network", "location"})
 	seedClass(t, db, offerProject, "b", []string{"location", "network"})
 
-	if _, err := store.Create(poolCtx(offerProject), rootPool("shared", "a", "b"), nil, &metav1.CreateOptions{}); err != nil {
+	if _, err := store.Create(poolCtx(offerProject), poolOffering("shared", "a", "b"), nil, &metav1.CreateOptions{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 }
 
 // A pool with one class has nothing to disagree with, whatever that class says.
 func TestPoolOfferedToOneClassIsUnaffected(t *testing.T) {
-	store, db := newPostgresPoolStorage(t)
+	db := testdb.Pool(t)
+	store := newPostgresPoolStorage(t, db)
 	seedClass(t, db, offerProject, "per-network", []string{"network"})
 
-	if _, err := store.Create(poolCtx(offerProject), rootPool("solo", "per-network"), nil, &metav1.CreateOptions{}); err != nil {
+	if _, err := store.Create(poolCtx(offerProject), poolOffering("solo", "per-network"), nil, &metav1.CreateOptions{}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 }
@@ -158,7 +119,8 @@ func TestPoolOfferedToOneClassIsUnaffected(t *testing.T) {
 // A stored pool that already breaks the rule gets no exemption on its next
 // edit: an update leaving the two classes in place republishes the hazard.
 func TestUpdateOfAPreExistingViolationIsRejected(t *testing.T) {
-	store, db := newPostgresPoolStorage(t)
+	db := testdb.Pool(t)
+	store := newPostgresPoolStorage(t, db)
 	seedClass(t, db, offerProject, "flat", nil)
 	seedClass(t, db, offerProject, "per-network", []string{"network"})
 	seedPool(t, db, offerProject, "legacy", "flat", "per-network")
@@ -177,7 +139,8 @@ func TestUpdateOfAPreExistingViolationIsRejected(t *testing.T) {
 // That strands nobody: the offending field is mutable, so dropping one class
 // lets the same edit through.
 func TestUpdateThatResolvesTheViolationIsAccepted(t *testing.T) {
-	store, db := newPostgresPoolStorage(t)
+	db := testdb.Pool(t)
+	store := newPostgresPoolStorage(t, db)
 	seedClass(t, db, offerProject, "flat", nil)
 	seedClass(t, db, offerProject, "per-network", []string{"network"})
 	seedPool(t, db, offerProject, "legacy", "flat", "per-network")
