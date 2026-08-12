@@ -72,9 +72,7 @@ type ExtraConfig struct {
 	// refuses every such reference.
 	ClassChecker access.ClassAccessChecker
 	// NamespaceChecker refuses an IPClaim whose namespace is missing or
-	// terminating, so no address is bound where nothing will release it. nil
-	// disables the check, which is the opposite of ClassChecker and
-	// intentional. See internal/access/namespace.go.
+	// terminating. nil disables it — unlike ClassChecker, which fails closed.
 	NamespaceChecker access.NamespaceChecker
 }
 

@@ -110,9 +110,8 @@ func TestStateReportsAMissingNamespace(t *testing.T) {
 	}
 }
 
-// Where projects have no control planes, such as a kind cluster or an e2e run,
-// the whole control-plane path 404s. Reading that as "the namespace is gone"
-// would refuse every claim in those environments.
+// Where projects have no control planes, as in kind and e2e, the whole path
+// 404s. Reading that as "the namespace is gone" would refuse every claim.
 func TestStateDoesNotReadAnAbsentControlPlaneAsAMissingNamespace(t *testing.T) {
 	s := newNSServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -205,8 +204,8 @@ func TestStateCachesOnlyTheLiveAnswer(t *testing.T) {
 		t.Errorf("%d lookups for a repeated live namespace, want 1", got)
 	}
 
-	// Past the TTL the answer is taken again, and a refusal is never held: a
-	// namespace that is no longer terminating must not stay refused.
+	// Past the TTL the answer is taken again. Refusals are never cached, so a
+	// namespace that stops terminating stops being refused.
 	c.now = func() time.Time { return time.Now().Add(2 * liveTTL) }
 	mu.Lock()
 	phase = corev1.NamespaceTerminating
@@ -225,8 +224,7 @@ func TestStateCachesOnlyTheLiveAnswer(t *testing.T) {
 	}
 }
 
-// A caller with no project has already been refused by the tenancy layer, and a
-// cluster-scoped object has no namespace. Neither is a lookup.
+// Neither an untenanted caller nor a cluster-scoped object is a lookup.
 func TestStateAnswersUnknownWithNothingToLookUp(t *testing.T) {
 	s := newNSServer(t, func(_ http.ResponseWriter, _ *http.Request) {
 		t.Error("a lookup was issued with no project or no namespace")

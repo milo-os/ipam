@@ -223,8 +223,8 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		}
 	}
 
-	// Before any capacity is reserved: an address bound into a namespace that
-	// is gone, or going, is never released.
+	// Before any capacity is reserved: a namespace that is gone, or going,
+	// never releases what is bound into it.
 	if err := r.checkNamespaceLiveness(ctx, project, claim.Namespace); err != nil {
 		metrics.RecordAllocationFailure("ipclaim", "namespace_not_live", ipFamily, project, org)
 		failSpan(tracing.ReasonNamespaceNotLive)
@@ -428,12 +428,9 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	return claim, nil
 }
 
-// checkNamespaceLiveness refuses a claim whose namespace cannot collect it, and
-// returns nil for every other outcome, including a lookup that failed.
-//
-// internal/access/namespace.go records why this fails open: an unreachable
-// control plane must not stop IPAM handing out addresses, and a lookup error
-// must never reach the caller as a missing namespace.
+// checkNamespaceLiveness refuses a claim whose namespace cannot collect it. Every
+// other outcome returns nil, including a failed lookup — see
+// internal/access/namespace.go on failing open.
 func (r *AllocatingREST) checkNamespaceLiveness(ctx context.Context, project, namespace string) error {
 	if r.nsChecker == nil {
 		return nil

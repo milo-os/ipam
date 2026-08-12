@@ -37,8 +37,8 @@ func TestCreateBindsAClaimInALiveNamespace(t *testing.T) {
 	}
 }
 
-// An address bound into a namespace with no collector is never released, so the
-// claim is refused, and nothing is written or reserved on the way out.
+// An address in a namespace with no collector is never released. Refuse, and
+// write and reserve nothing on the way out.
 func TestCreateRefusesANamespaceThatCannotCollectTheClaim(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

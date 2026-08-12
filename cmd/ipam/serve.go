@@ -371,9 +371,8 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	}
 
 	// ClientConfig comes from --kubeconfig via CoreAPI.ApplyTo, which runs
-	// whether or not quota is enabled, so this check is live in the dev and e2e
-	// configurations too. Without a kubeconfig there is nothing to look a
-	// namespace up in, and the check disables itself.
+	// whether or not quota is enabled, so this check is live in dev and e2e too.
+	// With no kubeconfig it disables itself.
 	namespaceChecker := access.NewNamespaceChecker(genericConfig.ClientConfig)
 	if namespaceChecker == nil {
 		klog.InfoS("no client config: IPClaim namespace-liveness checking is disabled")
