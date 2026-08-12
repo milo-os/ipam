@@ -27,6 +27,9 @@ func TestUnknownSubcommandSuggestsAndExits2(t *testing.T) {
 	}{
 		{"pool typo", []string{"pool", "lst"}, "list"},
 		{"pool typo, another", []string{"pool", "shw"}, "show"},
+		{"claim typo", []string{"claim", "creat"}, "create"},
+		{"allocation typo", []string{"allocation", "releas"}, "release"},
+		{"class typo", []string{"class", "lst"}, "list"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -49,13 +52,41 @@ func TestUnknownSubcommandSuggestsAndExits2(t *testing.T) {
 }
 
 func TestBareParentShowsHelpNoError(t *testing.T) {
-	for _, noun := range []string{"pool"} {
+	for _, noun := range []string{"class", "claim", "allocation", "address", "pool"} {
 		t.Run(noun, func(t *testing.T) {
 			_, _, err := execRoot(noun)
 			if err != nil {
 				t.Fatalf("bare %q should print help and not error, got: %v", noun, err)
 			}
 		})
+	}
+}
+
+// The whole consumer workflow lives under these nouns; a root that registers
+// only some of them ships a plugin that cannot claim an address.
+func TestRootRegistersEveryNoun(t *testing.T) {
+	root := newRootCommand(IOStreams{In: strings.NewReader(""), Out: &bytes.Buffer{}, ErrOut: &bytes.Buffer{}})
+	registered := map[string]bool{}
+	for _, c := range root.Commands() {
+		registered[c.Name()] = true
+	}
+	for _, want := range []string{"class", "claim", "allocation", "address", "pool", "version"} {
+		if !registered[want] {
+			t.Errorf("root does not register %q", want)
+		}
+	}
+}
+
+// `prefix` was this group's name before the class model. It stays an alias so
+// existing muscle memory and scripts still land somewhere.
+func TestPrefixAliasResolvesToClaim(t *testing.T) {
+	root := newRootCommand(IOStreams{In: strings.NewReader(""), Out: &bytes.Buffer{}, ErrOut: &bytes.Buffer{}})
+	cmd, _, err := root.Find([]string{"prefix", "list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Name() != "list" || cmd.Parent().Name() != "claim" {
+		t.Fatalf("prefix list resolved to %s under %s, want list under claim", cmd.Name(), cmd.Parent().Name())
 	}
 }
 

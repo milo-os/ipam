@@ -14,18 +14,26 @@ func newRootCommand(io IOStreams) *cobra.Command {
 
 	root := &cobra.Command{
 		Use:   "ipam",
-		Short: "Manage IP address space (pools and prefixes) on Datum",
+		Short: "Manage IP address space on Datum",
 		Long: `Manage IP address space on Datum.
 
-The ipam plugin presents the IPAM service as a small set of resource-oriented
-commands. The two nouns that matter most:
+The ipam plugin presents the IPAM service using the API's own nouns, so what you
+read here and what you read in the API docs are the same vocabulary:
 
-  pool     an allocatable block of address space (IPPool)
-  prefix   a sub-block claimed from a pool (IPClaim / IPAllocation)
+  class        a kind of address space you can claim from (IPClass)
+  claim        a long-lived request for an address of a class (IPClaim)
+  allocation   the record of an address handed out (IPAllocation)
+  pool         an allocatable block of address space (IPPool)
+  address      reverse lookup: who holds a given address
 
-Claiming a prefix returns the allocated CIDR synchronously:
+You claim by naming a class and the scope the address is for. You never name a
+pool, a CIDR, or a location — those follow from the class and the scope, and the
+server reports the pool it resolved in the claim's status:
 
-  datumctl ipam prefix claim --pool prod-backbone --length 24
+  datumctl ipam claim create --class tenant-endpoint-ipv4 \
+    --scope network=default --scope location=us-central-1
+
+The allocated address comes back in that same call.
 
 Output is a human table by default; -o json|yaml is a stable contract for
 scripts (data on stdout, diagnostics on stderr). Exit codes are documented and
@@ -71,6 +79,10 @@ distinct per failure class (notably 7 = IPAM_POOL_EXHAUSTED).`,
 	pf.StringVar(&opts.org, "org", "", "Override the active organization for this invocation")
 	pf.StringVar(&opts.project, "project", "", "Override the active project for this invocation")
 
+	root.AddCommand(newClassCommand(a))
+	root.AddCommand(newClaimCommand(a))
+	root.AddCommand(newAllocationCommand(a))
+	root.AddCommand(newAddressCommand(a))
 	root.AddCommand(newPoolCommand(a))
 	root.AddCommand(newVersionCommand(io))
 
