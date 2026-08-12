@@ -108,8 +108,8 @@ func (s *IPClassStatusStorage) ConvertToTable(ctx context.Context, obj runtime.O
 // A class is policy, not an allocation, so this carries no allocator.
 //
 // classChecker authorises references into another project. A nil checker
-// refuses them. db is required: admitting a class means reading the pools that
-// already offer themselves to its name.
+// refuses them. db is required, because admitting a class means reading the
+// IPPools that already offer themselves to its name.
 func NewClassStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, classChecker access.ClassAccessChecker, db *pgxpool.Pool) (*IPClassStorage, *IPClassStatusStorage, error) {
 	strategy := NewStrategy(scheme)
 	statusStrategy := NewStatusStrategy(scheme)

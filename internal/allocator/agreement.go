@@ -36,7 +36,7 @@ type Disagreement struct {
 func (d *Disagreement) Error() string {
 	return fmt.Sprintf("IPClass %q is unique within %s but IPClass %q is unique within %s; "+
 		"a pool serving both would let one class hand out addresses the other already holds, "+
-		"because non-overlap is only enforced inside a single address space",
+		"because IPAM enforces non-overlap only inside a single address space",
 		d.A.Name, describeRoles(d.A.UniqueWithin), d.B.Name, describeRoles(d.B.UniqueWithin))
 }
 
@@ -59,17 +59,17 @@ func FirstDisagreement(spaces []ClassSpace) *Disagreement {
 	return nil
 }
 
-// OfferedSpaces returns one ClassSpace per named class that would really
-// allocate from a pool in project.
+// OfferedSpaces returns one ClassSpace per named class that can really allocate
+// from a pool in project.
 //
-// The set matches DiscoverPool's. A pool backs only class definitions held in
-// its own project, discovery keys on the definition's own name, and only the
-// root of a parent chain draws from the pools offering it. Every other name a
-// pool lists is inert — no claim reaches the pool through it — so holding those
-// to the agreement rule would reject offers that cannot collide. Names that do
-// not resolve are inert for the same reason and are skipped rather than
-// reported: whether a pool may name a class that does not exist is a separate
-// question from whether its classes agree.
+// The set matches DiscoverPool's. A pool backs only class definitions in its own
+// project, discovery keys on the definition's own name, and only the root of a
+// parent chain draws from the pools offering it. Every other name a pool lists
+// is inert, because no claim reaches the pool through it, so holding those names
+// to the agreement rule would reject offers that cannot collide.
+//
+// A name that does not resolve is inert for the same reason, so this skips it.
+// Whether a pool may name a class that does not exist is a separate question.
 func OfferedSpaces(ctx context.Context, tx pgx.Tx, project string, names []string) ([]ClassSpace, error) {
 	spaces := make([]ClassSpace, 0, len(names))
 	for _, name := range names {
@@ -133,12 +133,12 @@ func PoolsOffering(ctx context.Context, tx pgx.Tx, project, className string) ([
 	return out, nil
 }
 
-// ClassJoinsDisagreement reports a pool that already offers class.Name and
-// serves another class that disagrees with it, naming the pool.
+// ClassJoinsDisagreement names the first pool that already offers class.Name and
+// also serves a class disagreeing with it.
 //
-// This is the pool's own rule asked from the other side, for the case where the
-// class is the thing arriving: a pool may list a class that does not exist yet,
-// and a class deleted and recreated keeps every pool that named it.
+// This applies the pool's own rule from the other side, for when the class is
+// what arrives: a pool may list a class that does not exist yet, and a class
+// that is deleted and recreated keeps every pool that named it.
 func ClassJoinsDisagreement(ctx context.Context, tx pgx.Tx, project string, class ClassSpace) (string, *Disagreement, error) {
 	offers, err := PoolsOffering(ctx, tx, project, class.Name)
 	if err != nil {

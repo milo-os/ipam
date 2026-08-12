@@ -17,21 +17,23 @@ import (
 // a class with a different uniqueWithin.
 //
 // One pool split across two address spaces hands the same address to two
-// holders, and the pool's own admission covers that from the pool's side. This
-// covers the case where the class is the thing arriving: a pool may name a
-// class that does not exist yet, and a class deleted and recreated keeps every
-// pool that named it.
+// holders. The pool's own admission catches that from the pool's side; this
+// catches it when the class is what arrives, because a pool may name a class
+// that does not exist yet, and a class that is deleted and recreated keeps
+// every pool that named it.
 //
-// Only creation needs it. spec.uniqueWithin is immutable, so a class already
-// serving a pool cannot drift into disagreement with the classes beside it.
+// Only creation needs the check. spec.uniqueWithin is immutable, so a class
+// already serving a pool cannot drift into disagreement with the classes
+// beside it.
 func (s *IPClassStorage) validateOfferAgreement(ctx context.Context, obj runtime.Object) error {
 	class, ok := obj.(*ipam.IPClass)
 	if !ok {
 		return fmt.Errorf("expected *ipam.IPClass, got %T", obj)
 	}
 	// A reference states no policy, and discovery keys on the definition's own
-	// name, so no pool reaches a class through one. A class with a parent draws
-	// from what its ancestry provisions rather than from the pools offering it.
+	// name, so no pool reaches a class through a reference. A class with a
+	// parent draws from what its ancestry provisions, not from the pools
+	// offering it.
 	if class.Spec.Source != nil || class.Spec.ParentClassName != "" {
 		return nil
 	}

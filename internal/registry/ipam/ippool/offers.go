@@ -18,12 +18,12 @@ import (
 // Update applies the same offer check as Create to the object the update
 // produces.
 //
-// A pool that already breaks the rule is not grandfathered. The classes are
-// compared as the pool will read after the write, so an update that leaves two
-// disagreeing classes in place is republishing the hazard rather than
-// inheriting it. Nothing is stranded by that: spec.classNames is mutable, the
-// error names the two classes to reconcile, and the fix can ride along in the
-// same request as whatever else the pool was being edited for.
+// A pool that already breaks the rule gets no exemption. The check compares the
+// classes as the pool will read after the write, so an update that leaves two
+// disagreeing classes in place republishes the hazard rather than inheriting
+// it. That strands nobody: spec.classNames is mutable, the error names the two
+// classes to reconcile, and the fix can ride along in the same request as
+// whatever else the edit changes.
 func (r *AllocatingIPPoolREST) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, forceAllowCreate bool, options *metav1.UpdateOptions) (runtime.Object, bool, error) {
 	validate := func(ctx context.Context, obj, old runtime.Object) error {
 		if updateValidation != nil {
@@ -43,23 +43,21 @@ func (r *AllocatingIPPoolREST) Update(ctx context.Context, name string, objInfo 
 // validateClassOffers rejects a pool offered to two classes that disagree about
 // what makes one address space.
 //
-// Non-overlap is enforced per address space: the exclusion constraint compares
-// allocations sharing a (pool_key, scope_digest), and the allocator's search
-// reads only the allocations in the claim's own space. Both are correct only
-// while every claim drawing from a pool derives that digest the same way. Two
-// classes with different uniqueWithin break that premise — the pool holds one
-// class's allocations under one digest and the other's under another, so
-// neither the constraint nor the search ever compares them, and the second
-// class hands out addresses the first already holds. It surfaces as two holders
-// of one address with no constraint violation and nothing logged, which is the
-// worst shape a fault in this service can take.
+// IPAM enforces non-overlap per address space: the exclusion constraint compares
+// allocations that share a (pool_key, scope_digest), and the allocator's search
+// reads only the allocations in the claim's own space. Both hold only while
+// every claim drawing from a pool derives that digest the same way.
 //
-// It is checked here rather than during allocation because the pool is where
-// the two classes meet, and because a claim cannot report a conflict it is
-// structurally unable to see.
+// Two classes with different uniqueWithin break that. The pool stores one
+// class's allocations under one digest and the other's under another, so neither
+// the constraint nor the search ever compares them, and the second class hands
+// out addresses the first already holds. The result is two holders of one
+// address, with no constraint violation and nothing logged.
 //
-// It lives outside the strategy because the rule needs the class catalog, and a
-// strategy has no store to read.
+// The check belongs here rather than in the allocation path, because the pool is
+// where the two classes meet and a claim cannot report a conflict it is unable
+// to see. It sits outside the strategy because the rule reads the class catalog,
+// and a strategy has no store.
 func (r *AllocatingIPPoolREST) validateClassOffers(ctx context.Context, pool *ipam.IPPool) error {
 	if len(pool.Spec.ClassNames) < 2 {
 		return nil

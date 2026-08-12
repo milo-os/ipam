@@ -53,9 +53,9 @@ func TestClassJoiningAnAgreeingPoolIsAccepted(t *testing.T) {
 	}
 }
 
-// A pool in another project never backs this class — discovery restricts a pool
-// to the project holding the definition — so its offers say nothing about what
-// this class may declare.
+// Discovery restricts a pool to the project holding the class definition, so a
+// pool in another project never backs this class and its offers say nothing
+// about what this class may declare.
 func TestPoolInAnotherProjectDoesNotConstrainTheClass(t *testing.T) {
 	s := newPostgresClassStorage(t, &fakeChecker{allow: true})
 	db := storageDB(t, s)

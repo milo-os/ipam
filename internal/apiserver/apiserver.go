@@ -167,8 +167,8 @@ func (c completedConfig) New() (*IPAMServer, error) {
 
 	// IPClass — cluster-scoped policy, with status subresource. No allocator: a
 	// class states what an allocation should look like and allocates nothing
-	// itself. The pool is for admission, which reads the pools already offering
-	// themselves to the class being written.
+	// itself. The connection pool is for admission, which reads the IPPools
+	// already offering themselves to the class being written.
 	ipClassStore, ipClassStatusStore, err := ipclass.NewClassStorage(
 		Scheme,
 		c.GenericConfig.RESTOptionsGetter,

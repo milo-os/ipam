@@ -155,9 +155,8 @@ func TestPoolOfferedToOneClassIsUnaffected(t *testing.T) {
 	}
 }
 
-// A pool written before this rule existed is held to it on its next edit
-// rather than grandfathered: an update that leaves the two classes in place
-// republishes the hazard.
+// A stored pool that already breaks the rule gets no exemption on its next
+// edit: an update leaving the two classes in place republishes the hazard.
 func TestUpdateOfAPreExistingViolationIsRejected(t *testing.T) {
 	store, db := newPostgresPoolStorage(t)
 	seedClass(t, db, offerProject, "flat", nil)
@@ -175,8 +174,8 @@ func TestUpdateOfAPreExistingViolationIsRejected(t *testing.T) {
 	}
 }
 
-// Nothing is stranded by that: the offending field is mutable, and dropping one
-// class lets the same edit through.
+// That strands nobody: the offending field is mutable, so dropping one class
+// lets the same edit through.
 func TestUpdateThatResolvesTheViolationIsAccepted(t *testing.T) {
 	store, db := newPostgresPoolStorage(t)
 	seedClass(t, db, offerProject, "flat", nil)
@@ -195,8 +194,8 @@ func TestUpdateThatResolvesTheViolationIsAccepted(t *testing.T) {
 	}
 }
 
-// seedPool writes a pool straight to storage, standing in for one created
-// before the agreement rule existed.
+// seedPool writes a pool straight to storage, bypassing admission, so a test
+// can start from a stored pool that the rule would reject.
 func seedPool(t *testing.T, db *pgxpool.Pool, project, name string, classNames ...string) {
 	t.Helper()
 	pool := &ipamv1alpha1.IPPool{
