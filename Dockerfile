@@ -12,8 +12,10 @@ ARG BUILD_DATE=unknown
 ARG RACE=""
 # Cross-compilation targets — set automatically by docker buildx for
 # multi-platform builds, enabling native Go cross-compilation without QEMU.
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# here be dragons: declaring a default here would shadow the value buildx
+# supplies and every platform would build for that default instead.
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /workspace
 
@@ -32,10 +34,11 @@ COPY migrations/ migrations/
 
 # Build the binary. Race builds need CGO (and a real libc at runtime); the
 # default build keeps CGO_ENABLED=0 and is statically linked.
-# For non-race builds, GOARCH=$TARGETARCH enables native Go cross-compilation
-# on the amd64 build host — no QEMU needed for arm64.
+# Both branches set GOOS/GOARCH from the buildx target so the binary matches the
+# platform the image claims. Race builds additionally need a matching CGO
+# toolchain, so they are only expected to work when target == build host.
 RUN if [ -n "$RACE" ]; then \
-      CGO_ENABLED=1 GOOS=linux \
+      CGO_ENABLED=1 GOOS=$TARGETOS GOARCH=$TARGETARCH \
       go build ${RACE} \
         -ldflags="-X 'go.miloapis.com/ipam/internal/version.Version=${VERSION}' \
                   -X 'go.miloapis.com/ipam/internal/version.GitCommit=${GIT_COMMIT}' \
