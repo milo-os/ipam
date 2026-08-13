@@ -181,7 +181,7 @@ tasks:
   # E2E_KUBE_CONTEXT overrides the source context (default: current context).
   e2e:verify-ranges:
     desc: Refuse overlapping root-pool ranges between fixture suites
-    cmd: bash hack/verify-fixture-ranges.sh
+    cmd: go test ./test/fixtures/ -run TestFixtureRootRangesAreDisjoint -count=1 -v
 
   e2e:tenant-setup:
     desc: Generate the shared impersonation kubeconfig and apply its RBAC
@@ -190,7 +190,7 @@ tasks:
       # two suites holding overlapping roots fail intermittently, on whichever
       # one creates its root second. Cheap to check, and the failure it
       # prevents reads like an unrelated allocator bug.
-      - bash hack/verify-fixture-ranges.sh
+      - go test ./test/fixtures/ -run TestFixtureRootRangesAreDisjoint -count=1
       # A suite that starts while the apiservice is still settling fails on
       # ServiceUnavailable, which reads like a test bug and is not one.
       - kubectl wait --for=condition=Available
