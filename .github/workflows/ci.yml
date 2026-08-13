@@ -162,6 +162,17 @@ jobs:
           tar -xzf /tmp/chainsaw.tgz -C /tmp chainsaw
           sudo mv /tmp/chainsaw /usr/local/bin/chainsaw
 
+      # Chainsaw validates a suite against its own schema, so this catches a
+      # misspelled field that parsing the YAML cannot. It runs before the
+      # cluster so a typo fails in seconds rather than after the bring-up.
+      - name: Lint chainsaw suites
+        run: |
+          set -euo pipefail
+          for suite in test/e2e/*/chainsaw-test.yaml; do
+            chainsaw lint test -f "${suite}" >/dev/null
+            echo "  ok  ${suite}"
+          done
+
       - name: Spin up kind cluster (test-infra)
         run: task --yes test-infra:cluster-up
 
