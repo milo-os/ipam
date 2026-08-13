@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -114,6 +113,7 @@ type AllocatingREST struct {
 	db          txBeginner
 	strategy    ipClaimStrategy
 	poolChecker access.PoolAccessChecker
+	nsChecker   access.NamespaceChecker
 	codec       runtime.Codec
 }
 
@@ -130,7 +130,8 @@ type txBeginner interface {
 // the generated IPAllocation into ipam_objects so subsequent GETs return
 // fully-populated objects. poolChecker may be nil; when non-nil it
 // authorises cross-project claims via SubjectAccessReview before allocation.
-func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
+// nsChecker may be nil, which disables the namespace-liveness check.
+func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker, nsChecker access.NamespaceChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
 	claimStore, statusStore, err := newInnerStorage(scheme, optsGetter)
 	if err != nil {
 		return nil, nil, err
@@ -141,6 +142,7 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 		db:             db,
 		strategy:       NewStrategy(scheme),
 		poolChecker:    poolChecker,
+		nsChecker:      nsChecker,
 		codec:          codec,
 	}, statusStore, nil
 }
@@ -219,6 +221,14 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 			return nil, err
 		}
+	}
+
+	// Before any capacity is reserved: a namespace that is gone, or going,
+	// never releases what is bound into it.
+	if err := r.checkNamespaceLiveness(ctx, project, claim.Namespace); err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "namespace_not_live", ipFamily, project, org)
+		failSpan(tracing.ReasonNamespaceNotLive)
+		return nil, err
 	}
 
 	if claim.Spec.ClassName == "" && claim.Spec.IPFamily == "" {
@@ -339,10 +349,13 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		ReclaimPolicy: reclaimPolicy,
 	})
 	if err != nil {
-		if isIdentityCollision(err) {
+		if isClaimNameCollision(err) || isIdentityCollision(err) {
 			_ = tx.Rollback(ctx)
 			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
 			failSpan(tracing.ReasonTxError)
+			if isClaimNameCollision(err) {
+				return nil, duplicateClaimConflict(claim.Name)
+			}
 			return nil, retainedAllocationConflict(claim.Name, allocationName)
 		}
 		_ = tx.Rollback(ctx)
@@ -432,6 +445,12 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		// The claim row is the last write, so a collision here means the name
+		// is taken by a claim holding no live allocation row of its own.
+		if isIdentityCollision(err) {
+			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
+			return nil, duplicateClaimConflict(claim.Name)
+		}
 		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
 		return nil, fmt.Errorf("persist claim: %w", err)
 	}
@@ -449,6 +468,21 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 
 	result = "success"
 	return claim, nil
+}
+
+// checkNamespaceLiveness refuses a claim whose namespace cannot collect it. Every
+// other outcome returns nil, including a failed lookup — see
+// internal/access/namespace.go on failing open.
+func (r *AllocatingREST) checkNamespaceLiveness(ctx context.Context, project, namespace string) error {
+	if r.nsChecker == nil {
+		return nil
+	}
+	state, err := r.nsChecker.State(ctx, project, namespace)
+	if err != nil {
+		access.LogUndetermined(project, namespace, err)
+		return nil
+	}
+	return access.RefuseNamespace(state, namespace, v1alpha1.Resource("ipclaims"))
 }
 
 // isDryRun reports whether a create/delete options' DryRun slice requests a
@@ -720,19 +754,25 @@ func allocationNameFor(namespace, name string) string {
 // recomputes that address's identity. Both the object row and the allocation
 // row refuse it, and neither refusal is an internal error.
 func isIdentityCollision(err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != pgUniqueViolation {
-		return false
-	}
-	switch pgErr.ConstraintName {
-	case "ipam_cidr_alloc_allocation_key_key", "ipam_objects_pkey":
-		return true
-	default:
-		return false
-	}
+	return registryerrors.IsUniqueViolation(err, "ipam_cidr_alloc_allocation_key_key", "ipam_objects_pkey")
 }
 
-const pgUniqueViolation = "23505"
+// isClaimNameCollision reports whether err is the refusal a second create
+// under a name that already holds an allocation hits.
+func isClaimNameCollision(err error) bool {
+	return registryerrors.IsUniqueViolation(err, registryerrors.HolderConstraint)
+}
+
+// duplicateClaimConflict is the refusal a caller gets for a name it already
+// owns. It carries no schema detail: a controller creating by a stable name
+// keys off the 409, not off a constraint.
+func duplicateClaimConflict(claimName string) error {
+	return apierrors.NewConflict(
+		v1alpha1.Resource("ipclaims"),
+		claimName,
+		errors.New("an IPClaim of this name already holds an allocation; delete it to release the address, or claim under a different name"),
+	)
+}
 
 func retainedAllocationConflict(claimName, allocationName string) error {
 	return apierrors.NewConflict(

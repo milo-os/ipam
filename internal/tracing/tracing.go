@@ -63,7 +63,7 @@ const (
 	AttrExhausted     = "exhausted"
 
 	// failure
-	AttrErrorReason = "ipam.error.reason" // pool_not_found | exhausted | cross_project_denied | tx_error
+	AttrErrorReason = "ipam.error.reason" // pool_not_found | exhausted | cross_project_denied | namespace_not_live | tx_error
 )
 
 // Scope returns the canonical scope attribute value for an identity.
@@ -79,5 +79,6 @@ const (
 	ReasonPoolNotFound       = "pool_not_found"
 	ReasonExhausted          = "exhausted"
 	ReasonCrossProjectDenied = "cross_project_denied"
+	ReasonNamespaceNotLive   = "namespace_not_live"
 	ReasonTxError            = "tx_error"
 )

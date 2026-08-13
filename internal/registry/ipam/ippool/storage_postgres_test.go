@@ -81,6 +81,47 @@ func createPool(t *testing.T, s *AllocatingIPPoolREST, ctx context.Context, p *i
 	return err
 }
 
+// Carving a child pool under a name already taken is a name collision, not a
+// service fault: the second create is refused with a 409 that names the pool
+// and carries no schema detail.
+func TestCreatingTheSameChildPoolNameTwiceConflicts(t *testing.T) {
+	s := newPostgresPoolStorage(t, testdb.Pool(t))
+	ctx := poolCtx("tenant-a")
+
+	if err := createPool(t, s, ctx, rootPoolObj("parent", "10.171.0.0/16", ipam.IPv4)); err != nil {
+		t.Fatalf("create root pool: %v", err)
+	}
+	child := func() *ipam.IPPool {
+		return &ipam.IPPool{
+			ObjectMeta: metav1.ObjectMeta{Name: "child"},
+			Spec: ipam.IPPoolSpec{
+				ParentPoolRef: &ipam.LocalRef{Name: "parent"},
+				PrefixLength:  24,
+			},
+		}
+	}
+	if err := createPool(t, s, ctx, child()); err != nil {
+		t.Fatalf("create child pool: %v", err)
+	}
+
+	err := createPool(t, s, ctx, child())
+	if err == nil {
+		t.Fatal("second Create succeeded; a duplicate child pool name must be refused")
+	}
+	t.Logf("second create: %v", err)
+	if !apierrors.IsConflict(err) {
+		t.Errorf("Create returned %v (%T), want a 409 Conflict", err, err)
+	}
+	for _, leak := range []string{"ipam_cidr_allocations", "ipam_objects", "constraint", "SQLSTATE", "23505"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("conflict message leaks schema detail %q: %v", leak, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "child") {
+		t.Errorf("conflict message does not name the pool: %v", err)
+	}
+}
+
 // A second root pool over space the first already holds would hand the same
 // address to unrelated claims, because IPAM enforces uniqueness within a pool.
 func TestOverlappingRootPoolsAreRefusedWithinAProject(t *testing.T) {

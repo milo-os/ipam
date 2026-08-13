@@ -1,0 +1,171 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: name-conflict
+spec:
+  description: |
+    Creating a claim or a child pool under a name that is already taken must
+    report a conflict, not a server fault.
+
+    This is the shape a controller depends on. Controllers create by a stable
+    name and read "already exists" as "adopt it", so the difference between 409
+    and 500 is the difference between a reconcile that converges and one that
+    retries forever. A claim interrupted between allocating its address and
+    recording the result comes back to a name it already owns; if that reads as
+    a server fault, the address stays allocated and nothing can ever claim it.
+
+    Both resources allocate through the same path and collided the same way, so
+    both are covered here.
+
+    The assertions check the refusal is a conflict AND that it carries no
+    database detail. A message naming a table or a constraint is one consumers
+    end up matching on, which couples them to the schema.
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 60s
+
+  steps:
+    - name: setup
+      description: A class and the root pool backing it.
+      try:
+        - apply:
+            file: test-data/setup.yaml
+        - assert:
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: conflict-root
+              status:
+                phase: Ready
+
+    - name: first-claim-binds
+      description: |
+        The positive control. Every step after this asserts a refusal, and a
+        suite of nothing but refusals passes against a server that refuses
+        everything.
+      try:
+        - create:
+            file: test-data/claim.yaml
+        - assert:
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: conflict-claim
+              status:
+                phase: Bound
+
+    - name: repeating-the-claim-name-conflicts
+      description: |
+        The same name again. A controller re-creating after a restart lands
+        here, and needs a conflict it can act on.
+
+        Driven with kubectl rather than chainsaw's `create`, which checks for
+        the object client-side and refuses without ever calling the server —
+        so the request under test would never be made.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              set -e
+              out=$(kubectl create -n "$NAMESPACE" -f test-data/claim.yaml 2>&1) && rc=0 || rc=$?
+              echo "$out"
+              if [ "$rc" = "0" ]; then
+                echo "FAIL: the duplicate name was accepted"
+                exit 1
+              fi
+              # A server fault tells a controller to back off, which is the
+              # wrong move for a name it already owns.
+              if echo "$out" | grep -q 'Internal error occurred'; then
+                echo "FAIL: duplicate name reported as a server fault, not a conflict"
+                exit 1
+              fi
+              # A consumer with nothing else to match on matches on schema
+              # detail, and then owns our table names.
+              for leak in ipam_cidr_allocations ipam_objects constraint SQLSTATE 23505; do
+                if echo "$out" | grep -q "$leak"; then
+                  echo "FAIL: refusal leaks schema detail '$leak'"
+                  exit 1
+                fi
+              done
+              if ! echo "$out" | grep -q 'already holds an allocation'; then
+                echo "FAIL: refusal does not say the name is taken"
+                exit 1
+              fi
+              echo "OK: duplicate claim name refused as a conflict"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: duplicate claim name refused as a conflict'))": true
+
+    - name: first-child-pool-carves
+      description: A child pool allocates through the same path a claim does.
+      try:
+        - create:
+            file: test-data/child-pool.yaml
+        - assert:
+            resource:
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: conflict-child
+              status:
+                phase: Ready
+
+    - name: repeating-the-child-pool-name-conflicts
+      description: The same collision, reached through the pool API.
+      try:
+        - script:
+            timeout: 60s
+            content: |
+              set -e
+              out=$(kubectl create -f test-data/child-pool.yaml 2>&1) && rc=0 || rc=$?
+              echo "$out"
+              if [ "$rc" = "0" ]; then
+                echo "FAIL: the duplicate child pool name was accepted"
+                exit 1
+              fi
+              if echo "$out" | grep -q 'Internal error occurred'; then
+                echo "FAIL: duplicate name reported as a server fault, not a conflict"
+                exit 1
+              fi
+              for leak in ipam_cidr_allocations ipam_objects constraint SQLSTATE 23505; do
+                if echo "$out" | grep -q "$leak"; then
+                  echo "FAIL: refusal leaks schema detail '$leak'"
+                  exit 1
+                fi
+              done
+              echo "OK: duplicate child pool name refused as a conflict"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: duplicate child pool name refused as a conflict'))": true
+
+      finally:
+        # IPPools and IPClasses are cluster-scoped, so chainsaw's namespace
+        # teardown does not reach them.
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" conflict-claim --ignore-not-found
+              kubectl delete ippool conflict-child --ignore-not-found
+              kubectl delete ippool conflict-root --ignore-not-found
+              kubectl delete ipclass conflict-class --ignore-not-found
+              echo "name-conflict cleanup done"
+            check:
+              ($error == null): true

@@ -555,7 +555,7 @@ func ObserveAllocationDuration(resource, result, ipFamily, project, org string, 
 // AllocationDuration histogram count.
 //
 // Allowed reasons: "pool_exhausted" | "pool_not_found" |
-// "verification_required" | "tx_error" | "internal".
+// "verification_required" | "namespace_not_live" | "tx_error" | "internal".
 // ipFamily mirrors the value passed to ObserveAllocationDuration ("IPv4" |
 // "IPv6" | "ASN", or "" for failures that fire before the claim spec is
 // readable).
