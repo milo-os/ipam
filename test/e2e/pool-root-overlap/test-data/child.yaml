@@ -1,0 +1,11 @@
+---
+# A child carved from ro-root. Its range is INSIDE its parent's by construction,
+# which is exactly what a naive cross-pool overlap rule would reject.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ro-child
+spec:
+  parentPoolRef: {name: ro-root}
+  prefixLength: 28
+  classNames: [ro-class-v4]

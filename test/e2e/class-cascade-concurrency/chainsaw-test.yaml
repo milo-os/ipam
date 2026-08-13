@@ -1,0 +1,212 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: class-cascade-concurrency
+spec:
+  description: |
+    Ten claims into one brand-new scope, posted genuinely in parallel, must
+    produce non-overlapping addresses and exactly one set of parent pools.
+
+    The parallelism is real here. Chainsaw's `create:` applies manifests
+    sequentially within a step, which is why the older pool-overlap suite says
+    outright that it tests distinctness rather than contention. This suite
+    backgrounds ten separate `kubectl create` processes so all ten cascades
+    race for the same non-existent network pool at once.
+
+    Ten OS processes, deliberately, rather than one client issuing ten
+    requests. The next person writing a concurrency test here will reach for an
+    HTTP client, and every one of them pools connections and caps in-flight
+    requests per host — k6's `batchPerHost` defaults to 6, so a script
+    advertising 50-way contention delivers about six waves of six. That failure
+    is invisible: the test passes while exercising a fraction of what it
+    claims. Separate processes share no client state, so the concurrency here
+    is bounded only by the apiserver.
+
+    Two independent things can break, and only concurrency exposes either:
+      - Two cascades both observe no pool and both create one, leaving the
+        network with two /48s and its claims split across unrelated space.
+        The loser must read the winner's pool instead of failing.
+      - Two claims are handed the same address because the free-space search
+        ran outside the lock.
+
+    Note: a crash of the apiserver under this load is issue #71, a pre-existing
+    heap-corruption bug unrelated to the class model. If this suite fails by
+    the connection dropping rather than by an assertion, that is #71.
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    - name: setup
+      try:
+        - create:
+            file: test-data/setup.yaml
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              wait_pool_ready cc-root
+              # The scope must genuinely not exist yet, or the race never
+              # happens and the suite proves nothing.
+              expect_pool_count 0 cc-network network=vpc-race
+              expect_pool_count 0 cc-subnet network=vpc-race location=us-central-1
+              echo "OK: starting from a clean scope"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: starting from a clean scope'))": true
+
+    - name: ten-parallel-claims-into-one-new-scope
+      description: All ten cascades race for the same missing network and subnet pools
+      try:
+        - script:
+            timeout: 180s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              work=$(mktemp -d)
+              i=1
+              while [ "$i" -le 10 ]; do
+                cat > "$work/claim-$i.yaml" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: cc-race-$i
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-cascade-concurrency
+              spec:
+                className: cc-endpoint
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-race
+                  location:
+                    apiGroup: networking.datumapis.com
+                    kind: Location
+                    name: us-central-1
+              EOF
+                i=$((i + 1))
+              done
+
+              # Fire all ten at once and collect each one's exit status.
+              i=1
+              while [ "$i" -le 10 ]; do
+                ( kubectl create -n "$NAMESPACE" -f "$work/claim-$i.yaml" >"$work/out-$i" 2>&1
+                  echo $? > "$work/rc-$i" ) &
+                i=$((i + 1))
+              done
+              wait
+
+              failed=0
+              i=1
+              while [ "$i" -le 10 ]; do
+                rc=$(cat "$work/rc-$i" 2>/dev/null || echo 1)
+                if [ "$rc" != "0" ]; then
+                  failed=$((failed + 1))
+                  echo "  claim $i failed: $(cat "$work/out-$i" 2>/dev/null | tail -2)"
+                fi
+                i=$((i + 1))
+              done
+              if [ "$failed" != "0" ]; then
+                echo "FAIL: $failed of 10 concurrent claims were refused."
+                echo "      Under contention the loser of a pool-creation race must read"
+                echo "      the winner's pool, not fail."
+                exit 1
+              fi
+
+              for i in 1 2 3 4 5 6 7 8 9 10; do
+                wait_claim_bound "$NAMESPACE" "cc-race-$i" 120
+              done
+              rm -rf "$work"
+              echo "OK: all 10 concurrent claims Bound"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: all 10 concurrent claims Bound'))": true
+
+    - name: exactly-one-set-of-parent-pools
+      description: |
+        The cascade must have run once, not ten times. Two /48s for one network
+        is the failure this step exists to catch, and it is invisible from the
+        claims alone — they would all still be Bound, just split across two
+        unrelated blocks.
+      try:
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              expect_pool_count 1 cc-network network=vpc-race
+              expect_pool_count 1 cc-subnet network=vpc-race location=us-central-1
+              echo "OK: the cascade ran exactly once"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the cascade ran exactly once'))": true
+
+    - name: ten-distinct-non-overlapping-addresses
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              cidrs=$(kubectl get ipclaim -n "$NAMESPACE" -l suite=class-cascade-concurrency \
+                -o jsonpath='{.items[*].status.allocatedCIDR}')
+              n=$(printf '%s' "$cidrs" | tr ' ' '\n' | grep -c . || true)
+              if [ "$n" != "10" ]; then
+                echo "FAIL: expected 10 allocated CIDRs, found $n"
+                exit 1
+              fi
+
+              # Pairwise disjointness also catches duplicates, since a prefix
+              # overlaps itself.
+              assert_disjoint $cidrs
+
+              subnet=$(pool_cidr "$(pools_for_scope cc-subnet network=vpc-race location=us-central-1)")
+              for c in $cidrs; do
+                assert_prefix_len "$c" 96 "race claim"
+                assert_within "$c" "$subnet" "race claim"
+              done
+
+              # One allocation per claim — no orphans left by a rolled-back
+              # transaction, no doubles left by a retried one.
+              allocs=$(kubectl get ipallocation -n "$NAMESPACE" -o json | jq -r \
+                '[.items[] | select(.spec.className == "cc-endpoint")] | length')
+              if [ "$allocs" != "10" ]; then
+                echo "FAIL: expected 10 cc-endpoint allocations, found $allocs"
+                exit 1
+              fi
+              echo "OK: 10 distinct addresses, 10 allocations, one subnet"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: 10 distinct addresses, 10 allocations, one subnet'))": true
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" -l suite=class-cascade-concurrency --ignore-not-found >/dev/null 2>&1 || true
+              for cls in cc-subnet cc-network; do
+                for p in $(kubectl get ippool -o json 2>/dev/null \
+                    | jq -r ".items[] | select(.spec.classRef.name == \"$cls\") | .metadata.name"); do
+                  kubectl delete ippool "$p" --ignore-not-found >/dev/null 2>&1 || true
+                done
+              done
+              kubectl delete ippool cc-root --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipclass cc-endpoint cc-subnet cc-network --ignore-not-found >/dev/null 2>&1 || true
+              echo "class-cascade-concurrency cleanup done"
+            check:
+              ($error == null): true

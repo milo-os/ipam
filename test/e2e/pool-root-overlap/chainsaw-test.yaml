@@ -1,0 +1,205 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pool-root-overlap
+spec:
+  description: |
+    Two root IPPools whose ranges overlap are refused; a child pool carved from
+    its parent — whose range overlaps by construction — is not.
+
+    BOTH HALVES ARE LOAD-BEARING, and the second is the reason this suite is
+    worth its runtime. Overlapping roots handed the same address to unrelated
+    claims and nothing noticed (#87): 10.171.0.0/16 and 10.171.0.0/24 in one
+    project gave out 10.171.0.0, .1 and .2 twice over, deterministically, on the
+    first claim from each pool.
+
+    The database does carry a constraint for this —
+
+      EXCLUDE USING gist (pool_key WITH =, scope_digest WITH =,
+                          allocated_cidr inet_ops WITH &&)
+
+    — but it leads with pool_key, so rows in different pools can never conflict
+    whatever their digest. The colliding rows carried the SAME scope_digest, so
+    by the class model's own definition they were in one address space. The
+    invariant is enforced per pool and stated per address space, and the defect
+    lives entirely in the gap between those two sentences.
+
+    Dropping pool_key from that EXCLUDE is the intuitive fix and it destroys the
+    cascade. Measured against real data it would have rejected 104 existing
+    legitimate row pairs — 87 PoolCarve/Claim, 9 PoolCarve/Reservation, 8
+    PoolCarve/PoolCarve — to catch 3 genuinely wrong ones, because a child
+    pool's allocations are SUPPOSED to sit inside the carve that created it.
+
+    So a suite that only asserted the refusal would pass against that fix while
+    the cascade broke in production. Step 3 is what fails against it, and it is
+    the step to keep if any are ever dropped.
+
+    Scope of what is asserted here: this is the create-time guard only. It
+    leaves pools created before it alone, so it does NOT prove no overlapping
+    pair exists — see #87, where real cross-pool enforcement is a separate,
+    larger decision that needs a migration.
+
+    Ranges are TEST-NET-3 (203.0.113.0/24) and TEST-NET-2 (198.51.100.0/24)
+    rather than RFC1918. That is not fastidiousness: this suite runs in the
+    platform project alongside the load fixtures, one of which is a 10.0.0.0/8
+    root, so every RFC1918 range this suite could want now legitimately collides
+    with it — the first run of this suite was refused by its own subject.
+    Documentation space is the only range nothing else here claims.
+
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 120s
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    - name: setup
+      description: A class and one root pool covering 203.0.113.0/24.
+      try:
+        - apply:
+            file: test-data/setup.yaml
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              wait_pool_ready ro-root
+
+    - name: overlapping-root-is-refused
+      description: |
+        Three shapes of overlap, all refused with 409 naming the pool they
+        collided with. A refusal that does not say what it collided with sends
+        the operator to the database to find out.
+
+        The contained case is first because it is the one that was measured
+        handing out duplicates, and the identical case is included because the
+        pair that exists on the dev cluster today is identical rather than
+        merely overlapping.
+      try:
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              set -e
+
+              # Wholly inside the existing root, sharing its base address.
+              cat <<'YAML' | expect_rejected default 409 'ro-root' 'contained root'
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: ro-contained
+              spec:
+                cidr: 203.0.113.0/28
+                ipFamily: IPv4
+              YAML
+
+              # Identical range.
+              cat <<'YAML' | expect_rejected default 409 'ro-root' 'identical root'
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: ro-identical
+              spec:
+                cidr: 203.0.113.0/24
+                ipFamily: IPv4
+              YAML
+
+              # Containing the existing root, stated the other way round — the
+              # comparison must be symmetric.
+              cat <<'YAML' | expect_rejected default 409 'ro-root' 'containing root'
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: ro-containing
+              spec:
+                cidr: 203.0.112.0/23
+                ipFamily: IPv4
+              YAML
+
+              # None of the three may exist afterwards. A refusal that still
+              # wrote the object would be the worst outcome of all, and the
+              # status code alone cannot tell you.
+              for p in ro-contained ro-identical ro-containing; do
+                if $KUBECTL get ippool "$p" >/dev/null 2>&1; then
+                  echo "FAIL: $p was refused but exists anyway"
+                  exit 1
+                fi
+              done
+              echo "OK: no refused pool was written"
+
+    - name: child-pool-is-unaffected
+      description: |
+        THE HALF THAT CATCHES A NAIVE FIX. A child carved from ro-root overlaps
+        its parent by construction, and must still be created, reach Ready, and
+        serve a claim. Any rule that cannot tell "nested by construction" from
+        "colliding independently" fails here.
+      try:
+        - apply:
+            file: test-data/child.yaml
+        - script:
+            timeout: 90s
+            content: |
+              . ../lib/ipam.sh
+              set -e
+              wait_pool_ready ro-child
+              # The carve really is inside the parent — otherwise "the child was
+              # created" would be true of a child that got space from nowhere.
+              assert_within "$(pool_cidr ro-child)" "$(pool_cidr ro-root)" "child carve"
+              assert_prefix_len "$(pool_cidr ro-child)" 28 "child carve"
+        - apply:
+            file: test-data/claim.yaml
+        - script:
+            timeout: 90s
+            # The claim lands in chainsaw's ephemeral namespace, not `default`:
+            # the manifest names none, so chainsaw injects its own. Waiting on
+            # `default` waits forever on a claim that was never there.
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              set -e
+              wait_claim_bound "$NAMESPACE" ro-claim
+              # Allocation still works through the hierarchy, not just pool
+              # creation. A rule applied at allocation time rather than at pool
+              # create would pass everything above and fail here.
+              addr=$(claim_cidr "$NAMESPACE" ro-claim)
+              assert_within "$addr" "$(pool_cidr ro-root)" "claim inside root"
+              echo "OK: claim $addr allocated through the hierarchy"
+
+    - name: disjoint-root-is-accepted
+      description: |
+        A second root that overlaps nothing is created normally. Without this,
+        a check that refused every root pool would pass every step above.
+      try:
+        - apply:
+            file: test-data/disjoint-root.yaml
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              set -e
+              wait_pool_ready ro-disjoint
+              assert_disjoint "$(pool_cidr ro-disjoint)" "$(pool_cidr ro-root)"
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              # Runs even when a step above failed. Without it, an aborted run
+              # leaves ro-class-v4 behind and the NEXT run fails at setup with
+              # AlreadyExists — which reads as a failure of this suite's subject
+              # and is not. That happened on this suite's first run.
+              kubectl delete ipclaim ro-claim -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool ro-child ro-disjoint --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ippool ro-root --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipclass ro-class-v4 --ignore-not-found >/dev/null 2>&1 || true
+              echo "pool-root-overlap cleanup done"

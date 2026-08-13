@@ -1,0 +1,23 @@
+---
+# The class the root pool offers. uniqueWithin [] is deliberate: it is the
+# shape that put two claims in ONE address space in the measurement behind this
+# suite, so it is the shape a regression would reappear in.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ro-class-v4
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths: {min: 32, max: 32}
+  defaultPrefixLength: 32
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ro-root
+spec:
+  cidr: 203.0.113.0/24
+  ipFamily: IPv4
+  classNames: [ro-class-v4]

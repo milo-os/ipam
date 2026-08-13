@@ -1,0 +1,79 @@
+# A deliberately tiny pool: a /30 handing out /32s is exactly four addresses.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ex-endpoint
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ex-pool
+spec:
+  cidr: 10.204.0.0/30
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - ex-endpoint
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+# The cascade-exhaustion fixture. The root pool is exactly one /48, so the
+# first network consumes all of it and the second network's cascade has
+# nowhere to go — the failure happens a level above the class the claim named.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ex-network
+spec:
+  ipFamily: IPv6
+  poolPer:
+    - network
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 48
+    max: 48
+  defaultPrefixLength: 48
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ex-subnet
+spec:
+  ipFamily: IPv6
+  parentClassName: ex-network
+  uniqueWithin:
+    - network
+  allowedPrefixLengths:
+    min: 64
+    max: 64
+  defaultPrefixLength: 64
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ex-v6-root
+spec:
+  cidr: fd50::/48
+  ipFamily: IPv6
+  visibility: platform
+  classNames:
+    - ex-network
+  allocation:
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit

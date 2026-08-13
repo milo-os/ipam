@@ -1,0 +1,10 @@
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ro-claim
+spec:
+  className: ro-class-v4
+  scope:
+    network: {apiGroup: networking.datumapis.com, kind: Network, name: ro-net}
+  reclaimPolicy: Delete

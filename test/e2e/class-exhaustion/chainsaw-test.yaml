@@ -1,0 +1,257 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: class-exhaustion
+spec:
+  description: |
+    Exhaustion must be a distinct, actionable answer — HTTP 507 Insufficient
+    Storage — and not a generic 500 that reads as "the service is broken".
+
+    Two cases:
+      a. A leaf pool runs out. The claim's own level is the one that failed.
+      b. A cascade runs out a level *above* the class the claim named. The
+         error must name the level that ran out, not the level that was asked
+         for, or an operator goes looking in the wrong pool.
+
+    The status code is read from kubectl's own transport log (`-v=8` prints
+    `Response Status:`) rather than by string-matching the error message.
+    Matching on the message would pass just as happily against a 500 whose
+    body happened to say "exhausted".
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    - name: setup
+      description: Create the tiny IPv4 pool and the single-/48 IPv6 root
+      try:
+        - create:
+            file: test-data/setup.yaml
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              wait_pool_ready ex-pool
+              wait_pool_ready ex-v6-root
+              echo "OK: pools Ready"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: pools Ready'))": true
+
+    - name: fill-the-pool
+      description: Four claims consume all four addresses in the /30
+      try:
+        - create:
+            file: test-data/claims-fill.yaml
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              for c in ex-claim-1 ex-claim-2 ex-claim-3 ex-claim-4; do
+                wait_claim_bound "$NAMESPACE" "$c" 90
+              done
+
+              cidrs=$(kubectl get ipclaim -n "$NAMESPACE" -l suite=class-exhaustion \
+                -o jsonpath='{.items[*].status.allocatedCIDR}')
+              assert_disjoint $cidrs
+              for c in $cidrs; do
+                assert_within "$c" 10.204.0.0/30 "claim"
+              done
+              echo "OK: pool is full"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: pool is full'))": true
+
+    - name: overflow-returns-507
+      description: The fifth claim must be refused with HTTP 507, not 500
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_507 "$NAMESPACE" "" "fifth claim into a four-address pool" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: ex-claim-5
+                namespace: $NAMESPACE
+              spec:
+                className: ex-endpoint
+              EOF
+
+              # The claim must not exist afterwards — a refused allocation
+              # leaves no half-created object behind.
+              if kubectl get ipclaim -n "$NAMESPACE" ex-claim-5 >/dev/null 2>&1; then
+                echo "FAIL: ex-claim-5 was persisted despite the 507"
+                exit 1
+              fi
+              echo "OK: exhaustion returned 507 and left nothing behind"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: exhaustion returned 507 and left nothing behind'))": true
+
+    - name: the-507-body-names-the-pool-and-its-headroom
+      description: |
+        The status code says something ran out; the body says what. A claim
+        names a class, never a pool, so without the name in the body the caller
+        cannot tell which of the class's pools to widen. The CLI spends an extra
+        request rebuilding that list; kubectl and any controller get only what
+        is in Status.
+
+        `largestFreePrefix` is the cause worth having: it distinguishes a pool
+        that is genuinely full from one that merely has no block large enough,
+        which are different operational problems with different fixes.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_507_details "$NAMESPACE" ex-pool "exhausted leaf claim" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: ex-detail-probe
+                namespace: $NAMESPACE
+              spec:
+                className: ex-endpoint
+              EOF
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: exhausted leaf claim returned 507 with details naming pool'))": true
+
+    - name: release-reopens-the-slot
+      description: Deleting a claim under reclaimPolicy Delete must free its address
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              freed=$(claim_cidr "$NAMESPACE" ex-claim-1)
+
+              kubectl delete ipclaim -n "$NAMESPACE" ex-claim-1 --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" ex-claim-1 60
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: ex-claim-5
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-exhaustion
+              spec:
+                className: ex-endpoint
+              EOF
+
+              wait_claim_bound "$NAMESPACE" ex-claim-5 60
+              got=$(claim_cidr "$NAMESPACE" ex-claim-5)
+              assert_equal_addr "$got" "$freed" "released address reissued:"
+              echo "OK: released address came back into circulation"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: released address came back into circulation'))": true
+
+    - name: cascade-exhaustion-names-the-level-that-ran-out
+      description: |
+        ex-v6-root holds exactly one /48. The first network takes it; the
+        second network's claim fails during the cascade, at the ex-network
+        level, even though the claim named ex-subnet.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: ex-v6-first
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-exhaustion
+              spec:
+                className: ex-subnet
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-one
+              EOF
+              wait_claim_bound "$NAMESPACE" ex-v6-first 60
+              echo "OK: first network consumed the only /48"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: first network consumed the only /48'))": true
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              # The message must point at the level that actually ran out —
+              # not at ex-subnet, the level the claim named. An operator
+              # reading this error would otherwise go looking in the wrong
+              # pool.
+              #
+              # Either identifier settles that unambiguously: the parent class
+              # (ex-network) or the parent pool it draws from (ex-v6-root).
+              # The pool name is arguably the more useful of the two, since
+              # that is the object an operator would go and enlarge.
+              expect_507 "$NAMESPACE" 'ex-network|ex-v6-root' "cascade exhaustion" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: ex-v6-second
+                namespace: $NAMESPACE
+              spec:
+                className: ex-subnet
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-two
+              EOF
+              echo "OK: 507 names the level that ran out"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: 507 names the level that ran out'))": true
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" -l suite=class-exhaustion --ignore-not-found >/dev/null 2>&1 || true
+              for p in $(kubectl get ippool -o json 2>/dev/null \
+                  | jq -r '.items[] | select(.spec.classRef.name == "ex-network") | .metadata.name'); do
+                kubectl delete ippool "$p" --ignore-not-found >/dev/null 2>&1 || true
+              done
+              kubectl delete ippool ex-pool ex-v6-root --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipclass ex-endpoint ex-subnet ex-network --ignore-not-found >/dev/null 2>&1 || true
+              echo "class-exhaustion cleanup done"
+            check:
+              ($error == null): true

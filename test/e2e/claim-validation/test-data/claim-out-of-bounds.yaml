@@ -1,9 +1,0 @@
-apiVersion: ipam.miloapis.com/v1alpha1
-kind: IPClaim
-metadata:
-  name: claim-out-of-bounds
-  namespace: ($namespace)
-spec:
-  className: validation-class
-  prefixLength: 16
-  reclaimPolicy: Delete

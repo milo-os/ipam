@@ -179,9 +179,18 @@ tasks:
   # Chainsaw resolves every `clusters:` kubeconfig path when it loads a suite,
   # before the first step runs, so a suite cannot generate its own.
   # E2E_KUBE_CONTEXT overrides the source context (default: current context).
+  e2e:verify-ranges:
+    desc: Refuse overlapping root-pool ranges between fixture suites
+    cmd: go test ./test/fixtures/ -run TestFixtureRootRangesAreDisjoint -count=1 -v
+
   e2e:tenant-setup:
     desc: Generate the shared impersonation kubeconfig and apply its RBAC
     cmds:
+      # The suites share one project and chainsaw runs them concurrently, so
+      # two suites holding overlapping roots fail intermittently, on whichever
+      # one creates its root second. Cheap to check, and the failure it
+      # prevents reads like an unrelated allocator bug.
+      - go test ./test/fixtures/ -run TestFixtureRootRangesAreDisjoint -count=1
       # A suite that starts while the apiservice is still settling fails on
       # ServiceUnavailable, which reads like a test bug and is not one.
       - kubectl wait --for=condition=Available
@@ -201,7 +210,7 @@ tasks:
     cmd: chainsaw test test/e2e/
 
   e2e:suite:
-    desc: 'Run a single suite. Var: SUITE=ippool|ip-claim|pool-nesting|multi-tenant|tenant-isolation|tracing|…'
+    desc: 'Run a single suite. Var: SUITE=ippool|ip-claim|pool-nesting|pool-validation|class-exhaustion|…'
     deps: [e2e:tenant-setup]
     cmd: chainsaw test test/e2e/{{.SUITE}}
 

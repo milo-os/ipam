@@ -1,0 +1,333 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: class-scope-validation
+spec:
+  description: |
+    A claim that omits a role its class requires must be rejected with a bad
+    request that names the missing role.
+
+    The failure mode this guards against is not a crash — it is a silent
+    fallback to a wider comparison. A wider comparison looks correct: claims
+    still bind, addresses still come back. It goes wrong later, refusing
+    addresses the narrow comparison was meant to allow, and surfaces as
+    unexplained exhaustion in a pool that is visibly half empty. By then
+    nothing points back to the missing field.
+
+    So each case here asserts three things together: the create was refused,
+    the status was a 4xx and not a 500, and the message named the role. Any
+    one of them alone would pass against a broken implementation.
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    - name: setup
+      try:
+        - create:
+            file: test-data/setup.yaml
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              wait_pool_ready sv-pool
+              wait_pool_ready sv-v6-root
+              echo "OK: pools Ready"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: pools Ready'))": true
+
+    - name: control-a-complete-claim-binds
+      description: |
+        Run the positive case first. If this fails, every rejection below is
+        meaningless — a service that refuses everything would pass them all.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: sv-ok
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-scope-validation
+              spec:
+                className: sv-endpoint
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-alpha
+              EOF
+              wait_claim_bound "$NAMESPACE" sv-ok 60
+              echo "OK: complete claim binds"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: complete claim binds'))": true
+
+    - name: missing-uniqueWithin-role
+      description: sv-endpoint is unique within `network`; a claim with no scope must say so
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_rejected "$NAMESPACE" 4xx network "claim with no scope at all" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: sv-no-scope
+                namespace: $NAMESPACE
+              spec:
+                className: sv-endpoint
+              EOF
+
+              # A rejected claim leaves nothing behind.
+              if kubectl get ipclaim -n "$NAMESPACE" sv-no-scope >/dev/null 2>&1; then
+                echo "FAIL: sv-no-scope was persisted despite being rejected"
+                exit 1
+              fi
+              echo "OK: missing uniqueWithin role reported"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: missing uniqueWithin role reported'))": true
+
+    - name: wrong-role-is-not-a-substitute
+      description: |
+        A claim carrying *a* scope, just not the one the class named. This is
+        the case a presence-check would wave through.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_rejected "$NAMESPACE" 4xx network "claim scoped by location instead of network" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: sv-wrong-role
+                namespace: $NAMESPACE
+              spec:
+                className: sv-endpoint
+                scope:
+                  location:
+                    apiGroup: networking.datumapis.com
+                    kind: Location
+                    name: us-central-1
+              EOF
+              echo "OK: a different role is not accepted in place of the required one"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a different role is not accepted in place of the required one'))": true
+
+    - name: missing-role-needed-by-the-parent-chain
+      description: |
+        sv-leaf itself only names `network`, but its parent chain provisions
+        one pool per network *and* location. A claim without `location` cannot
+        resolve a pool, and must be told which role is missing rather than
+        being given some other location's space.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_rejected "$NAMESPACE" 4xx location "claim missing the parent chain's location role" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: sv-no-location
+                namespace: $NAMESPACE
+              spec:
+                className: sv-leaf
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-alpha
+              EOF
+
+              # No pool may have been provisioned on the way to failing.
+              n=$(kubectl get ippool -o json | jq -r \
+                '[.items[] | select(.spec.classRef.name == "sv-subnet")] | length')
+              if [ "$n" != "0" ]; then
+                echo "FAIL: $n sv-subnet pool(s) were provisioned by a claim that was then rejected"
+                exit 1
+              fi
+              echo "OK: missing parent-chain role reported, nothing provisioned"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: missing parent-chain role reported, nothing provisioned'))": true
+
+    - name: control-b-the-same-claim-with-location-binds
+      description: |
+        The same claim, one field richer, must succeed — which is what makes
+        the rejection above about the missing role and not about the class
+        being unusable.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: sv-with-location
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-scope-validation
+              spec:
+                className: sv-leaf
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-alpha
+                  location:
+                    apiGroup: networking.datumapis.com
+                    kind: Location
+                    name: us-central-1
+              EOF
+              wait_claim_bound "$NAMESPACE" sv-with-location 60
+              got=$(claim_cidr "$NAMESPACE" sv-with-location)
+              assert_prefix_len "$got" 96 "leaf claim"
+              assert_within "$got" fd31::/24 "leaf claim"
+              echo "OK: the complete claim binds"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the complete claim binds'))": true
+
+    - name: prefix-length-outside-the-class-bounds
+      description: A size the class does not allow must be refused by size, naming the bound
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_rejected "$NAMESPACE" 4xx prefixLength "claim asking for a /24 from a /32-only class" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: sv-too-big
+                namespace: $NAMESPACE
+              spec:
+                className: sv-endpoint
+                prefixLength: 24
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-alpha
+              EOF
+              echo "OK: out-of-bounds prefix length refused"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: out-of-bounds prefix length refused'))": true
+
+    - name: prefix-length-zero
+      description: |
+        A prefixLength of 0 is not a very large request, it is an unset field
+        that survived into the spec. The bounds check alone would let it
+        through on a class whose minimum happens to be 0.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_rejected "$NAMESPACE" 4xx prefixLength "claim asking for a /0" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: sv-zero-length
+                namespace: $NAMESPACE
+              spec:
+                className: sv-endpoint
+                prefixLength: 0
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-alpha
+              EOF
+              echo "OK: zero prefix length refused"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: zero prefix length refused'))": true
+
+    - name: unknown-class
+      description: Naming a class that does not exist must name the class
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_rejected "$NAMESPACE" 4xx sv-does-not-exist "claim naming an unknown class" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: sv-unknown-class
+                namespace: $NAMESPACE
+              spec:
+                className: sv-does-not-exist
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: vpc-alpha
+              EOF
+              echo "OK: unknown class refused"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: unknown class refused'))": true
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              kubectl delete ipclaim -n "$NAMESPACE" -l suite=class-scope-validation --ignore-not-found >/dev/null 2>&1 || true
+              for cls in sv-subnet sv-network; do
+                for p in $(kubectl get ippool -o json 2>/dev/null \
+                    | jq -r ".items[] | select(.spec.classRef.name == \"$cls\") | .metadata.name"); do
+                  kubectl delete ippool "$p" --ignore-not-found >/dev/null 2>&1 || true
+                done
+              done
+              kubectl delete ippool sv-pool sv-v6-root --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipclass sv-endpoint sv-leaf sv-subnet sv-network --ignore-not-found >/dev/null 2>&1 || true
+              echo "class-scope-validation cleanup done"
+            check:
+              ($error == null): true

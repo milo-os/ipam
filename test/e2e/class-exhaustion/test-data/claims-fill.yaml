@@ -1,0 +1,39 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ex-claim-1
+  namespace: ($namespace)
+  labels:
+    suite: class-exhaustion
+spec:
+  className: ex-endpoint
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ex-claim-2
+  namespace: ($namespace)
+  labels:
+    suite: class-exhaustion
+spec:
+  className: ex-endpoint
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ex-claim-3
+  namespace: ($namespace)
+  labels:
+    suite: class-exhaustion
+spec:
+  className: ex-endpoint
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ex-claim-4
+  namespace: ($namespace)
+  labels:
+    suite: class-exhaustion
+spec:
+  className: ex-endpoint

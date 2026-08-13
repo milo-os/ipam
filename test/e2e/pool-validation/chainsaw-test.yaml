@@ -1,0 +1,141 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pool-validation
+spec:
+  description: |
+    IPPool spec validation: what a pool must carry to be accepted, and what it
+    may never change afterwards.
+
+    RENAMED FROM `claim-validation`. That suite tested both halves, and its
+    claim half was written against `spec.poolRef` — a field the class model
+    deleted. Those two steps could not be ported, because what they tested (a
+    claim naming a pool) is not a thing a claim can do any more; claim-side
+    validation now lives in `class-scope-validation`, which covers missing and
+    wrong scope roles, out-of-bounds prefixLength, and unknown classes. What
+    remained here is entirely about IPPool, so the suite is named for it.
+
+    Kept because none of it is covered elsewhere. `class-scope-validation` is
+    the claim-side suite and asserts nothing about pool specs; `field-selectors`
+    and `pool-status-ipv6` only ever create valid pools.
+
+    The two rejections read the HTTP status out of kubectl's transport log
+    (lib/ipam.sh) rather than matching the rendered error, which the previous
+    version did. A `contains($error, 'cidr')` match is satisfied by a 500 whose
+    body happens to mention cidr — and "a bad request must not read as a server
+    fault" is the property worth holding, not merely "it failed".
+
+    IMMUTABILITY IS TESTED BY UPDATE, NOT CREATE. Re-creating an existing pool
+    is refused as a duplicate before any immutability check runs, so a suite
+    built on create would pass against a server that had no immutability rule
+    at all (lib/ipam.sh expect_update_rejected).
+
+  timeouts:
+    apply: 30s
+    assert: 60s
+    cleanup: 60s
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    - name: create-valid-pool
+      description: |
+        The positive control. Every other step here asserts a refusal, and a
+        suite of nothing but refusals passes just as happily against a server
+        that rejects every pool.
+      try:
+        - create:
+            file: test-data/valid-pool.yaml
+        - assert:
+            file: assertions/assert-valid-pool.yaml
+
+    - name: missing-cidr-field
+      description: A root IPPool with no spec.cidr has no address space to manage.
+      try:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_rejected "$NAMESPACE" 4xx 'cidr' 'pool with no cidr' \
+                < test-data/missing-cidr-pool.yaml
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: pool with no cidr rejected'))": true
+
+    - name: invalid-cidr-format
+      description: A malformed CIDR is refused, naming the field rather than failing later.
+      try:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_rejected "$NAMESPACE" 4xx 'invalid CIDR' 'pool with a malformed cidr' \
+                < test-data/invalid-cidr-pool.yaml
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: pool with a malformed cidr rejected'))": true
+
+    - name: immutable-cidr
+      description: |
+        Moving a pool's CIDR would orphan every allocation already drawn from
+        it, so spec.cidr cannot be updated.
+      try:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_update_rejected "$NAMESPACE" 4xx 'spec.cidr is immutable' \
+                'update of spec.cidr' < test-data/patch-pool-cidr.yaml
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: update of spec.cidr rejected'))": true
+
+    - name: immutable-ip-family
+      description: |
+        A pool's family is fixed by its CIDR; changing the declared family
+        would make the two disagree.
+      try:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_update_rejected "$NAMESPACE" 4xx 'spec.ipFamily is immutable' \
+                'update of spec.ipFamily' < test-data/patch-pool-ip-family.yaml
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: update of spec.ipFamily rejected'))": true
+
+    - name: update-mutable-strategy
+      description: |
+        The counterpart to the two above: allocation strategy is deliberately
+        mutable, so the immutability rule is shown to be scoped rather than a
+        blanket refusal of every update.
+      try:
+        - patch:
+            file: test-data/patch-pool-strategy.yaml
+        - assert:
+            file: assertions/assert-updated-strategy.yaml
+      finally:
+        - script:
+            content: |
+              kubectl delete ippool \
+                test-valid-pool test-missing-cidr test-invalid-cidr \
+                --ignore-not-found >/dev/null 2>&1 || true
+              echo "pool-validation cleanup done"
+            check:
+              ($error == null): true

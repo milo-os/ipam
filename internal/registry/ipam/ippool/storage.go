@@ -373,9 +373,6 @@ func effectiveIPFamily(pool *ipam.IPPool) (string, error) {
 	return string(ipam.IPv6), nil
 }
 
-// mapAllocationError translates allocator sentinel errors into the matching
-// HTTP-shaped registry errors. Pool exhaustion is HTTP 507; unknown pool is
-// a client error (the named parent does not exist).
 // duplicatePoolConflict is the refusal a caller gets for a pool name already
 // in use. It carries no schema detail: a caller keys off the 409.
 func duplicatePoolConflict(poolName string) error {
@@ -386,6 +383,9 @@ func duplicatePoolConflict(poolName string) error {
 	)
 }
 
+// mapAllocationError translates allocator sentinel errors into the matching
+// HTTP-shaped registry errors. Pool exhaustion is HTTP 507; unknown pool is
+// a client error (the named parent does not exist).
 func mapAllocationError(err error) error {
 	switch {
 	case errors.Is(err, allocator.ErrPoolExhausted):

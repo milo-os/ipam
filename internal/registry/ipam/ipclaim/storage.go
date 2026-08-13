@@ -305,6 +305,20 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		if errors.Is(err, allocator.ErrNoOfferingPool) {
 			return nil, apierrors.NewBadRequest(err.Error())
 		}
+		// A scope short a role the class chain requires is a malformed request,
+		// not a server fault. The error already names the missing roles and the
+		// field that asked for them, which is the whole point of the type.
+		var missingRole *scope.MissingRoleError
+		if errors.As(err, &missingRole) {
+			return nil, apierrors.NewBadRequest(err.Error())
+		}
+		// Running out of space while provisioning an ancestor is the same
+		// outcome as running out in the pool the claim was headed for, and gets
+		// the same 507. The level that failed is a level the caller never named,
+		// so the message carries the class rather than a pool name.
+		if errors.Is(err, allocator.ErrPoolExhausted) {
+			return nil, registryerrors.NewInsufficientStorage(err.Error())
+		}
 		return nil, fmt.Errorf("resolve pool: %w", err)
 	}
 
@@ -356,7 +370,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		default:
 			failSpan(tracing.ReasonTxError)
 		}
-		return nil, mapAllocationError(err)
+		return nil, mapAllocationError(err, poolName)
 	}
 
 	// Populate the claim status with the computed allocation up-front so both
@@ -768,10 +782,13 @@ func retainedAllocationConflict(claimName, allocationName string) error {
 	)
 }
 
-func mapAllocationError(err error) error {
+// mapAllocationError turns an allocator failure into the status the caller
+// sees. poolName names the pool the allocation was attempted against, so an
+// exhaustion 507 can say which one ran out.
+func mapAllocationError(err error, poolName string) error {
 	switch {
 	case errors.Is(err, allocator.ErrPoolExhausted):
-		return registryerrors.NewInsufficientStorage("IPPool exhausted")
+		return registryerrors.NewPoolExhausted(poolName)
 	case errors.Is(err, allocator.ErrPoolNotFound):
 		return apierrors.NewBadRequest("IPPool not found")
 	default:

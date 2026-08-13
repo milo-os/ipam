@@ -1,0 +1,10 @@
+# The fifth claim into a four-address pool. Must be refused with 507, not 500.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: ex-claim-5
+  namespace: ($namespace)
+  labels:
+    suite: class-exhaustion
+spec:
+  className: ex-endpoint
