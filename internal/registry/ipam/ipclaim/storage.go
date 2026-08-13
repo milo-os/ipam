@@ -41,6 +41,7 @@ import (
 	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	"go.miloapis.com/ipam/pkg/ipamerrors"
 )
 
 type IPClaimStorage struct {
@@ -261,8 +262,16 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		_ = tx.Rollback(ctx)
 		metrics.RecordAllocationFailure("ipclaim", "class_not_found", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
-		if errors.Is(err, allocator.ErrClassNotFound) || errors.Is(err, allocator.ErrNoDefaultClass) {
-			return nil, apierrors.NewBadRequest(err.Error())
+		switch {
+		case errors.Is(err, allocator.ErrClassNotFound):
+			return nil, ipamerrors.New(ipamerrors.ReasonClassNotFound, err.Error())
+		case errors.Is(err, allocator.ErrNoDefaultClass):
+			return nil, ipamerrors.New(ipamerrors.ReasonNoDefaultClass, err.Error())
+		case errors.Is(err, tenant.ErrNoTenant):
+			// A request that arrived without a project has nowhere to allocate
+			// from. That is the caller's request, not a server fault, so it is
+			// refused rather than reported as one.
+			return nil, ipamerrors.New(ipamerrors.ReasonNoProjectScope, err.Error())
 		}
 		return nil, fmt.Errorf("resolve class: %w", err)
 	}
@@ -271,7 +280,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, apierrors.NewBadRequest(err.Error())
+		return nil, ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error())
 	}
 	reclaimPolicy := allocator.EffectiveReclaimPolicy(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy))
 
@@ -287,7 +296,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 		var missing *scope.MissingRoleError
 		if errors.As(err, &missing) {
-			return nil, apierrors.NewBadRequest(fmt.Sprintf("%s (class %q)", missing.Error(), class.Name))
+			return nil, ipamerrors.NewScopeRolesMissing(missing.Roles, fmt.Sprintf("%s (class %q)", missing.Error(), class.Name))
 		}
 		return nil, apierrors.NewBadRequest(err.Error())
 	}
@@ -303,14 +312,14 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
 		if errors.Is(err, allocator.ErrNoOfferingPool) {
-			return nil, apierrors.NewBadRequest(err.Error())
+			return nil, ipamerrors.New(ipamerrors.ReasonNoOfferingPool, err.Error())
 		}
 		// A scope short a role the class chain requires is a malformed request,
 		// not a server fault. The error already names the missing roles and the
 		// field that asked for them, which is the whole point of the type.
 		var missingRole *scope.MissingRoleError
 		if errors.As(err, &missingRole) {
-			return nil, apierrors.NewBadRequest(err.Error())
+			return nil, ipamerrors.NewScopeRolesMissing(missingRole.Roles, err.Error())
 		}
 		// Running out of space while provisioning an ancestor is the same
 		// outcome as running out in the pool the claim was headed for, and gets
@@ -767,18 +776,19 @@ func isClaimNameCollision(err error) bool {
 // owns. It carries no schema detail: a controller creating by a stable name
 // keys off the 409, not off a constraint.
 func duplicateClaimConflict(claimName string) error {
-	return apierrors.NewConflict(
+	return ipamerrors.NewClaimExists(
 		v1alpha1.Resource("ipclaims"),
 		claimName,
-		errors.New("an IPClaim of this name already holds an allocation; delete it to release the address, or claim under a different name"),
+		"an IPClaim of this name already holds an allocation; delete it to release the address, or claim under a different name",
 	)
 }
 
 func retainedAllocationConflict(claimName, allocationName string) error {
-	return apierrors.NewConflict(
+	return ipamerrors.NewRetainedAllocation(
 		v1alpha1.Resource("ipclaims"),
 		claimName,
-		fmt.Errorf("an allocation under this identity already exists: IPAllocation %q, retained by an earlier claim of the same name; delete it to reuse the name", allocationName),
+		allocationName,
+		fmt.Sprintf("an allocation under this identity already exists: IPAllocation %q, retained by an earlier claim of the same name; delete it to reuse the name", allocationName),
 	)
 }
 
