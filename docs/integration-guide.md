@@ -118,9 +118,33 @@ kubectl get ipprefixclaims -n my-tenant -w
 
 ## Error handling
 
-Map HTTP status codes from the API to recoverable / non-recoverable:
+Classify refusals with `go.miloapis.com/ipam/pkg/ipamerrors` rather than by
+status code. The reason travels in the status, so a Go client asks IPAM why it
+was refused instead of re-deriving it from the number:
 
-- **507 Insufficient Storage**: pool exhausted. Fall back to a different pool or back off.
-- **400 Bad Request**: validation error. Won't succeed on retry.
+```go
+switch ipamerrors.ReasonFor(err) {
+case ipamerrors.ReasonExhausted:
+    // No space. Back off and retry; ExhaustedPool names the pool to widen
+    // when one pool accounts for it.
+    pool, named := ipamerrors.ExhaustedPool(err)
+    ...
+case ipamerrors.ReasonClassNotFound, ipamerrors.ReasonNoDefaultClass, ipamerrors.ReasonNoOfferingPool:
+    // Nothing to allocate from until an operator configures it. Retrying
+    // unchanged will not help.
+case ipamerrors.ReasonScopeRolesMissing:
+    // The claim is short the scope roles its class requires; the caller must
+    // fill them in. MissingScopeRoles names them.
+case ipamerrors.ReasonAllocationRetained:
+    // An earlier claim of this name retained its address. RetainedAllocation
+    // names the IPAllocation that has to go for the name to be reusable.
+}
+```
+
+Reasons are added over time, so treat an unrecognised one the same as
+`ReasonUnknown` and fall back to the status code:
+
+- **507 Insufficient Storage**: no space. Fall back to a different pool or back off.
+- **400 Bad Request**: the request will not succeed unchanged on retry.
 - **403 Forbidden**: RBAC. Investigate role bindings.
-- **409 Conflict**: rare race; safe to retry.
+- **409 Conflict**: a name is taken.
