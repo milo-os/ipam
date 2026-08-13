@@ -1,0 +1,6 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: conflict-claim
+spec:
+  className: conflict-class

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -336,10 +335,13 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		ReclaimPolicy: reclaimPolicy,
 	})
 	if err != nil {
-		if isIdentityCollision(err) {
+		if isClaimNameCollision(err) || isIdentityCollision(err) {
 			_ = tx.Rollback(ctx)
 			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
 			failSpan(tracing.ReasonTxError)
+			if isClaimNameCollision(err) {
+				return nil, duplicateClaimConflict(claim.Name)
+			}
 			return nil, retainedAllocationConflict(claim.Name, allocationName)
 		}
 		_ = tx.Rollback(ctx)
@@ -429,6 +431,12 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		// The claim row is the last write, so a collision here means the name
+		// is taken by a claim holding no live allocation row of its own.
+		if isIdentityCollision(err) {
+			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
+			return nil, duplicateClaimConflict(claim.Name)
+		}
 		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
 		return nil, fmt.Errorf("persist claim: %w", err)
 	}
@@ -732,19 +740,25 @@ func allocationNameFor(namespace, name string) string {
 // recomputes that address's identity. Both the object row and the allocation
 // row refuse it, and neither refusal is an internal error.
 func isIdentityCollision(err error) bool {
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != pgUniqueViolation {
-		return false
-	}
-	switch pgErr.ConstraintName {
-	case "ipam_cidr_alloc_allocation_key_key", "ipam_objects_pkey":
-		return true
-	default:
-		return false
-	}
+	return registryerrors.IsUniqueViolation(err, "ipam_cidr_alloc_allocation_key_key", "ipam_objects_pkey")
 }
 
-const pgUniqueViolation = "23505"
+// isClaimNameCollision reports whether err is the refusal a second create
+// under a name that already holds an allocation hits.
+func isClaimNameCollision(err error) bool {
+	return registryerrors.IsUniqueViolation(err, registryerrors.HolderConstraint)
+}
+
+// duplicateClaimConflict is the refusal a caller gets for a name it already
+// owns. It carries no schema detail: a controller creating by a stable name
+// keys off the 409, not off a constraint.
+func duplicateClaimConflict(claimName string) error {
+	return apierrors.NewConflict(
+		v1alpha1.Resource("ipclaims"),
+		claimName,
+		errors.New("an IPClaim of this name already holds an allocation; delete it to release the address, or claim under a different name"),
+	)
+}
 
 func retainedAllocationConflict(claimName, allocationName string) error {
 	return apierrors.NewConflict(

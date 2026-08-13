@@ -1,0 +1,10 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: conflict-child
+spec:
+  parentPoolRef:
+    name: conflict-root
+  prefixLength: 24
+  classNames:
+    - conflict-class

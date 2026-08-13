@@ -1,0 +1,22 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: conflict-class
+spec:
+  ipFamily: IPv4
+  defaultPrefixLength: 28
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: conflict-root
+spec:
+  classNames:
+    - conflict-class
+  cidr: 10.240.0.0/20
+  ipFamily: IPv4
+  visibility: consumer
+  allocation:
+    minPrefixLength: 24
+    maxPrefixLength: 28
+    strategy: FirstFit
