@@ -42,7 +42,14 @@ type ResolvedClass struct {
 	*ipamv1alpha1.IPClass
 
 	// Project holds the definition, so two projects referencing one class
-	// resolve to one identity and share its address space.
+	// resolve to one CLASS. It is the pool identity's owner
+	// (scope.PoolTenancy.Owner) and the key prefix of the pool object.
+	//
+	// It is NOT the consuming project, and the two must not be conflated: what
+	// makes two consumers of one class reach one pool or two is the class's
+	// poolPer, which names the reserved project role or does not. Substituting
+	// the consumer here would merge two same-named classes in two defining
+	// projects onto one ipam_pool_identity row.
 	Project string
 }
 

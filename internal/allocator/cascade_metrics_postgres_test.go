@@ -59,7 +59,7 @@ func TestALostRaceIsRecordedAsAnOutcomeNotAnError(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, errs[i] = ResolvePool(ctx, db, leaf, claimScope)
+			_, errs[i] = ResolvePool(ctxIn("platform"), db, leaf, claimScope)
 		}()
 	}
 	close(start)

@@ -27,6 +27,12 @@ import (
 const (
 	labelProvisionedBy = "ipam.miloapis.com/provisioned-by"
 	labelScopeDigest   = "ipam.miloapis.com/scope-digest"
+
+	// labelProvisionedFor names the consuming project a pool was provisioned
+	// for, and is present ONLY on a pool whose class names the reserved project
+	// role in poolPer. Its absence is meaningful: this pool is shared by every
+	// consumer of its class, so a teardown selecting on it will not reach it.
+	labelProvisionedFor = "ipam.miloapis.com/provisioned-for"
 )
 
 // What a claim does at one level of a class chain. Reported on
@@ -51,11 +57,32 @@ type TxBeginner interface {
 // key for the same (class, scope), or the identity row would not identify
 // anything and the winner's key would be unpredictable to the loser.
 type CascadeLevel struct {
-	Class       *ResolvedClass
+	Class *ResolvedClass
+
+	// Tenancy is the owner/consumer pair the ScopeDigest was taken over.
+	// Consumer is set exactly when this level's class names the reserved
+	// project role in poolPer, and it is what makes the pool per-consumer:
+	// everything else about a per-consumer level and a shared one is the same.
+	Tenancy scope.PoolTenancy
+
 	Scope       map[string]ipam.ScopeRef
 	ScopeDigest string
 	PoolName    string
 	PoolKey     string
+}
+
+// OwnerProject is the project a level's carved space is attributed to: the
+// consumer when the class carves per consumer, the class's own project
+// otherwise.
+//
+// It is the column per-project consumption reporting reads, so a per-consumer
+// carve attributed to the platform project would report every tenant's space as
+// the platform's.
+func (l CascadeLevel) OwnerProject() string {
+	if l.Tenancy.Consumer != "" {
+		return l.Tenancy.Consumer
+	}
+	return l.Class.Project
 }
 
 // PlanCascade computes the pools a claim needs, root-most first, writing
@@ -65,10 +92,24 @@ type CascadeLevel struct {
 // missing a role is caught — before any pool exists, so a claim that cannot be
 // satisfied leaves no half-built chain behind.
 //
-// Pools live in the project holding the class DEFINITION, not the claimant's.
-// Two projects referencing one class must reach one pool; provisioning into the
-// caller's project would give them separate address space under a shared name.
+// The pool OBJECT lives in the project holding the class DEFINITION, not the
+// claimant's, and that is separate from what IDENTIFIES it. Two projects
+// referencing one class reach one class; whether they reach one pool is what
+// the class's poolPer declares. A class naming the reserved project role gets
+// one pool per consumer; one that does not gets one pool shared by every
+// consumer — which is the correct and safest shape for announceable public
+// space, where per-consumer blocks would exhaust the aggregate after one block
+// per project instead of one per location.
+//
+// The consumer comes from RequireTenant, not FromContext: an untenanted caller
+// would otherwise provision into the shared identity by accident, and the
+// consumer must be the same discriminator the storage key prefix uses.
 func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
+	consumer, err := tenant.RequireTenant(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	ancestry, err := LoadAncestry(ctx, tx, leaf)
 	if err != nil {
 		return nil, err
@@ -76,20 +117,28 @@ func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope
 
 	levels := make([]CascadeLevel, len(ancestry))
 	for i, class := range ancestry {
-		projected, err := scope.ProjectFor(claimScope, class.Spec.PoolPer, "poolPer")
+		// The reserved role is dropped before projecting: it is not a ScopeRef
+		// and never arrives on a request, so a claim cannot supply it and must
+		// not be asked to.
+		roles, perConsumer := scope.PoolPerRoles(class.Spec.PoolPer)
+		projected, err := scope.ProjectFor(claimScope, roles, "poolPer")
 		if err != nil {
 			return nil, err
 		}
-		project := class.Project
-		name := poolNameFor(project, class.Name, projected)
+		tenancy := scope.PoolTenancy{Owner: class.Project}
+		if perConsumer {
+			tenancy.Consumer = consumer.Name
+		}
+		name := poolNameFor(tenancy, class.Name, projected)
 		// Built nearest-first from the ancestry, stored root-first: a level
 		// cannot be carved before the level it carves from exists.
 		levels[len(ancestry)-1-i] = CascadeLevel{
 			Class:       class,
+			Tenancy:     tenancy,
 			Scope:       projected,
-			ScopeDigest: scope.PoolDigest(project, projected),
+			ScopeDigest: scope.PoolDigest(tenancy, projected),
 			PoolName:    name,
-			PoolKey:     tenant.Identity{Name: project}.ResourceKey("ippools", name),
+			PoolKey:     tenant.Identity{Name: tenancy.Owner}.ResourceKey("ippools", name),
 		}
 	}
 	return levels, nil
@@ -349,7 +398,7 @@ func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoo
 		ClassName:     level.Class.Name,
 		ScopeDigest:   level.ScopeDigest,
 		IPFamily:      string(level.Class.Spec.IPFamily),
-		OwnerProject:  level.Class.Project,
+		OwnerProject:  level.OwnerProject(),
 	})
 	if err != nil {
 		return err
@@ -370,14 +419,21 @@ func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoo
 }
 
 func newProvisionedPool(level CascadeLevel, sourcePoolName string, prefixLen int, cidr *net.IPNet) *ipamv1alpha1.IPPool {
+	labels := map[string]string{
+		labelProvisionedBy: level.Class.Name,
+		labelScopeDigest:   level.ScopeDigest,
+	}
+	// Only on a per-consumer pool. A shared pool carrying the label of whoever
+	// happened to claim first would name a project with no more relation to the
+	// pool than any other consumer of it.
+	if level.Tenancy.Consumer != "" {
+		labels[labelProvisionedFor] = level.Tenancy.Consumer
+	}
 	return &ipamv1alpha1.IPPool{
 		TypeMeta: metav1.TypeMeta{APIVersion: "ipam.miloapis.com/v1alpha1", Kind: "IPPool"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: level.PoolName,
-			Labels: map[string]string{
-				labelProvisionedBy: level.Class.Name,
-				labelScopeDigest:   level.ScopeDigest,
-			},
+			Name:   level.PoolName,
+			Labels: labels,
 		},
 		Spec: ipamv1alpha1.IPPoolSpec{
 			IPFamily:      level.Class.Spec.IPFamily,
@@ -406,20 +462,29 @@ func scopeToVersioned(s map[string]ipam.ScopeRef) map[string]ipamv1alpha1.ScopeR
 	return out
 }
 
-// poolNameFor derives a pool's name from its class and projected scope.
+// poolNameFor derives a pool's name from its class, its tenancy and its
+// projected scope.
 //
 // Readable prefix plus a digest suffix: the prefix is for whoever reads
 // `kubectl get ippools`, and the digest is what makes the name a function of
-// (class, scope) so two racing claims propose the same one.
-func poolNameFor(project, className string, projected map[string]ipam.ScopeRef) string {
-	parts := make([]string, 0, len(projected)+1)
+// (class, tenancy, scope) so two racing claims propose the same one.
+//
+// The consumer project appears in the readable part for a per-consumer pool,
+// right after the class name, so `kubectl get ippools` distinguishes one
+// tenant's pool from another's without decoding a digest. A shared pool's name
+// does not mention it, because no one consumer owns it.
+func poolNameFor(t scope.PoolTenancy, className string, projected map[string]ipam.ScopeRef) string {
+	parts := make([]string, 0, len(projected)+2)
 	parts = append(parts, className)
+	if t.Consumer != "" {
+		parts = append(parts, t.Consumer)
+	}
 	for _, role := range scope.Roles(projected) {
 		parts = append(parts, projected[role].Name)
 	}
 	readable := sanitizeName(strings.Join(parts, "-"))
 
-	suffix := "-" + scope.PoolDigest(project, projected)[:8]
+	suffix := "-" + scope.PoolDigest(t, projected)[:8]
 	const maxName = 253
 	if len(readable)+len(suffix) > maxName {
 		readable = strings.Trim(readable[:maxName-len(suffix)], "-")
@@ -450,7 +515,10 @@ type poolCarve struct {
 	ClassName     string
 	ScopeDigest   string
 	IPFamily      string
-	OwnerProject  string
+
+	// OwnerProject attributes the carved space. See CascadeLevel.OwnerProject:
+	// the consumer for a per-consumer level, the defining project otherwise.
+	OwnerProject string
 }
 
 // carveFromPool takes a block out of the source pool for a child pool to own.

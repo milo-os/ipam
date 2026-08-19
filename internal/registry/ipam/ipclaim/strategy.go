@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/fieldindex"
+	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 )
 
@@ -126,6 +127,20 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 		}
 	}
 	for role, ref := range c.Spec.Scope {
+		// The reserved role names the consuming project, and the server reads
+		// it off the request rather than the body. Accepting it here is the
+		// whole attack: a claimant could otherwise name another project's pool
+		// by writing a scope reference. Rejecting is not merely safer than
+		// ignoring — a claim that names it has misunderstood which pool it will
+		// reach, and silently dropping the field would confirm the
+		// misunderstanding.
+		if role == scope.ReservedRoleProject {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("scope", role), ref,
+				fmt.Sprintf("%q is a reserved scope role naming the consuming project; "+
+					"it is taken from the request and must not be supplied",
+					scope.ReservedRoleProject)))
+			continue
+		}
 		if ref.Kind == "" || ref.Name == "" {
 			allErrs = append(allErrs, field.Invalid(specPath.Child("scope", role), ref,
 				"each scope reference needs a kind and a name"))

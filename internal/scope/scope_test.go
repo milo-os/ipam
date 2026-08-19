@@ -14,18 +14,45 @@ func ref(name string) ipam.ScopeRef {
 	return ipam.ScopeRef{APIGroup: "networking.datumapis.com", Kind: "Network", Name: name}
 }
 
+// own is the tenancy of a class whose poolPer does not name the reserved
+// project role: one pool per owner, shared by every consumer. It is the shape
+// most of these tests care about, so the consumer-bearing cases stand out.
+func own(owner string) PoolTenancy { return PoolTenancy{Owner: owner} }
+
+// by is the tenancy of a per-consumer class: the owner holds the definition,
+// the consumer triggered the provisioning.
+func by(owner, consumer string) PoolTenancy {
+	return PoolTenancy{Owner: owner, Consumer: consumer}
+}
+
 func TestCanonicalGolden(t *testing.T) {
 	// A golden form pins the encoding: changing it changes every digest in
 	// every deployed database, which is a migration, not a refactor.
-	got := CanonicalPool("project-alpha", map[string]ipam.ScopeRef{
+	full := map[string]ipam.ScopeRef{
 		"network":  {APIGroup: "networking.datumapis.com", Kind: "Network", Name: "default"},
 		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "us-central-1"},
-	})
-	want := "13:ipam.scope.v2" + "13:project-alpha" + "1:2" +
+	}
+	roles := "1:2" +
 		"8:location" + "24:networking.datumapis.com" + "8:Location" + "12:us-central-1" +
 		"7:network" + "24:networking.datumapis.com" + "7:Network" + "7:default"
+
+	// A class that does not name the reserved project role: the consumer is a
+	// zero-length field, not an absence, so it cannot be shifted into by a
+	// neighbouring value.
+	got := CanonicalPool(own("project-alpha"), full)
+	want := "13:ipam.scope.v4" + "13:project-alpha" + "0:" + roles
 	if got != want {
 		t.Errorf("canonical form drifted\n got: %s\nwant: %s", got, want)
+	}
+
+	// A class that does. Owner and consumer are separate top-level fields
+	// rather than one tenant, which is the whole of the fix: the owner keeps
+	// two same-named classes apart on ipam_pool_identity's primary key, and the
+	// consumer keeps two tenants' identically-scoped claims in two pools.
+	got = CanonicalPool(by("project-alpha", "project-tenx"), full)
+	want = "13:ipam.scope.v4" + "13:project-alpha" + "12:project-tenx" + roles
+	if got != want {
+		t.Errorf("per-consumer canonical form drifted\n got: %s\nwant: %s", got, want)
 	}
 }
 
@@ -68,7 +95,7 @@ func TestDigestIsStableAcrossMapOrder(t *testing.T) {
 			r := roles[(i+round)%len(roles)]
 			s[r] = ref(r + "-value")
 		}
-		got := PoolDigest("", s)
+		got := PoolDigest(own(""), s)
 		if round == 0 {
 			want = got
 			continue
@@ -80,18 +107,18 @@ func TestDigestIsStableAcrossMapOrder(t *testing.T) {
 }
 
 func TestEmptyScope(t *testing.T) {
-	if PoolDigest("", nil) != PoolDigest("", map[string]ipam.ScopeRef{}) {
+	if PoolDigest(own(""), nil) != PoolDigest(own(""), map[string]ipam.ScopeRef{}) {
 		t.Error("nil and empty scope must digest identically")
 	}
-	if EmptyPoolDigest("") != PoolDigest("", nil) {
+	if EmptyPoolDigest(own("")) != PoolDigest(own(""), nil) {
 		t.Error("EmptyDigest must equal the digest of the empty scope")
 	}
-	if len(EmptyPoolDigest("")) != 64 {
-		t.Errorf("digest width = %d, want 64", len(EmptyPoolDigest("")))
+	if len(EmptyPoolDigest(own(""))) != 64 {
+		t.Errorf("digest width = %d, want 64", len(EmptyPoolDigest(own(""))))
 	}
 	// The empty scope is a real address space, not a missing value: it must
 	// have a digest that a unique index can constrain.
-	if strings.TrimLeft(EmptyPoolDigest(""), "0") == "" {
+	if strings.TrimLeft(EmptyPoolDigest(own("")), "0") == "" {
 		t.Error("EmptyDigest must not be a zero/sentinel value")
 	}
 }
@@ -107,7 +134,7 @@ func TestIdentityIsNameBased(t *testing.T) {
 	first := map[string]ipam.ScopeRef{"network": ref("default")}
 	recreated := map[string]ipam.ScopeRef{"network": ref("default")}
 
-	if PoolDigest("p", first) != PoolDigest("p", recreated) {
+	if PoolDigest(own("p"), first) != PoolDigest(own("p"), recreated) {
 		t.Error("the same name in the same tenant must be the same pool identity")
 	}
 	if AddressSpaceDigest("p", first) != AddressSpaceDigest("p", recreated) {
@@ -179,10 +206,10 @@ func TestDigestCollisionAttempts(t *testing.T) {
 	seen := map[string]string{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if CanonicalPool("", tc.a) == CanonicalPool("", tc.b) {
-				t.Fatalf("canonical forms collide: %s", CanonicalPool("", tc.a))
+			if CanonicalPool(own(""), tc.a) == CanonicalPool(own(""), tc.b) {
+				t.Fatalf("canonical forms collide: %s", CanonicalPool(own(""), tc.a))
 			}
-			if PoolDigest("", tc.a) == PoolDigest("", tc.b) {
+			if PoolDigest(own(""), tc.a) == PoolDigest(own(""), tc.b) {
 				t.Fatalf("digests collide")
 			}
 			if SameRefs(tc.a, tc.b) {
@@ -192,7 +219,7 @@ func TestDigestCollisionAttempts(t *testing.T) {
 		// Also check across cases: no two distinct scopes anywhere in the
 		// table share a digest.
 		for _, s := range []map[string]ipam.ScopeRef{tc.a, tc.b} {
-			c, d := CanonicalPool("", s), PoolDigest("", s)
+			c, d := CanonicalPool(own(""), s), PoolDigest(own(""), s)
 			if prev, ok := seen[d]; ok && prev != c {
 				t.Errorf("cross-case digest collision:\n  %s\n  %s", prev, c)
 			}
@@ -379,15 +406,15 @@ func TestProjectDigest(t *testing.T) {
 
 	// The same claim projected onto two different classes' uniqueWithin lands
 	// in two different spaces.
-	perNetwork, err := ProjectPoolDigest("", full, []string{"network"}, "uniqueWithin")
+	perNetwork, err := ProjectPoolDigest(own(""), full, []string{"network"}, "uniqueWithin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	perNetworkLocation, err := ProjectPoolDigest("", full, []string{"network", "location"}, "poolPer")
+	perNetworkLocation, err := ProjectPoolDigest(own(""), full, []string{"network", "location"}, "poolPer")
 	if err != nil {
 		t.Fatal(err)
 	}
-	platformWide, err := ProjectPoolDigest("", full, nil, "uniqueWithin")
+	platformWide, err := ProjectPoolDigest(own(""), full, nil, "uniqueWithin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +422,7 @@ func TestProjectDigest(t *testing.T) {
 	if perNetwork == perNetworkLocation || perNetwork == platformWide || perNetworkLocation == platformWide {
 		t.Error("projections onto different role sets must produce different digests")
 	}
-	if platformWide != EmptyPoolDigest("") {
+	if platformWide != EmptyPoolDigest(own("")) {
 		t.Error("an empty projection must be the platform-wide digest")
 	}
 
@@ -406,8 +433,8 @@ func TestProjectDigest(t *testing.T) {
 		"network":  ref("default"),
 		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "eu-west-1"},
 	}
-	otherPerNetwork, _ := ProjectPoolDigest("", other, []string{"network"}, "poolPer")
-	otherPerBoth, _ := ProjectPoolDigest("", other, []string{"network", "location"}, "poolPer")
+	otherPerNetwork, _ := ProjectPoolDigest(own(""), other, []string{"network"}, "poolPer")
+	otherPerBoth, _ := ProjectPoolDigest(own(""), other, []string{"network", "location"}, "poolPer")
 	if otherPerNetwork != perNetwork {
 		t.Error("two locations on one network must share the per-network pool")
 	}
@@ -415,7 +442,7 @@ func TestProjectDigest(t *testing.T) {
 		t.Error("two locations must not share a per-network-per-location pool")
 	}
 
-	if _, err := ProjectPoolDigest("", full, []string{"site"}, "poolPer"); err == nil {
+	if _, err := ProjectPoolDigest(own(""), full, []string{"site"}, "poolPer"); err == nil {
 		t.Error("ProjectDigest must propagate a missing role")
 	}
 }
@@ -474,11 +501,11 @@ func TestDigestSpread(t *testing.T) {
 			"network":  ref(fmt.Sprintf("net-%d", i%50)),
 			"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: fmt.Sprintf("loc-%d", i/50)},
 		}
-		d := PoolDigest("", s)
+		d := PoolDigest(own(""), s)
 		if prev, ok := seen[d]; ok {
-			t.Fatalf("collision between %s and %s", prev, CanonicalPool("", s))
+			t.Fatalf("collision between %s and %s", prev, CanonicalPool(own(""), s))
 		}
-		seen[d] = CanonicalPool("", s)
+		seen[d] = CanonicalPool(own(""), s)
 	}
 }
 
@@ -489,7 +516,7 @@ func BenchmarkDigest(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_ = PoolDigest("", s)
+		_ = PoolDigest(own(""), s)
 	}
 }
 
@@ -507,9 +534,9 @@ func BenchmarkDigest(b *testing.B) {
 func TestPoolDigestSeparatesTenants(t *testing.T) {
 	s := map[string]ipam.ScopeRef{"network": ref("default")}
 
-	alpha := PoolDigest("project-alpha", s)
-	beta := PoolDigest("project-beta", s)
-	platform := PoolDigest("", s)
+	alpha := PoolDigest(own("project-alpha"), s)
+	beta := PoolDigest(own("project-beta"), s)
+	platform := PoolDigest(own(""), s)
 
 	if alpha == beta {
 		t.Error("two projects' networks named `default` must get different pools")
@@ -521,7 +548,7 @@ func TestPoolDigestSeparatesTenants(t *testing.T) {
 	// The other half, and the one a fix could easily break: platform callers
 	// carry no tenant, and two of them with the same scope must still land on
 	// ONE pool. Without this, every platform claim would provision its own.
-	if PoolDigest("", s) != PoolDigest("", map[string]ipam.ScopeRef{"network": ref("default")}) {
+	if PoolDigest(own(""), s) != PoolDigest(own(""), map[string]ipam.ScopeRef{"network": ref("default")}) {
 		t.Error("two platform callers with the same scope must share a digest")
 	}
 }
@@ -539,10 +566,10 @@ func TestPoolDigestSeparatesTenants(t *testing.T) {
 // applies. That is the defect #55 fixed, and applying the address-space rule to
 // pools would reintroduce it.
 func TestPoolDigestSeparatesTenantsWithNoScope(t *testing.T) {
-	if EmptyPoolDigest("project-alpha") == EmptyPoolDigest("project-beta") {
+	if EmptyPoolDigest(own("project-alpha")) == EmptyPoolDigest(own("project-beta")) {
 		t.Error("a class with no poolPer must still provision one pool per tenant")
 	}
-	if EmptyPoolDigest("") == EmptyPoolDigest("project-alpha") {
+	if EmptyPoolDigest(own("")) == EmptyPoolDigest(own("project-alpha")) {
 		t.Error("the platform's pool must differ from a project's")
 	}
 }
@@ -618,13 +645,24 @@ func TestPoolAndAddressSpaceDigestsNeverCollide(t *testing.T) {
 		{"network": ref("default"), "location": ref("us-central-1")},
 	}
 	tenants := []string{"", "project-alpha", "project-beta"}
+	// Both pool shapes: shared, and per-consumer. A v4 digest with a consumer
+	// must be no more reachable from a v3 address-space form than one without,
+	// and the consumer is where the two encodings come closest — v3 also emits
+	// a project name after a role.
+	tenancies := []PoolTenancy{}
+	for _, owner := range tenants {
+		tenancies = append(tenancies, own(owner))
+		for _, consumer := range tenants {
+			tenancies = append(tenancies, by(owner, consumer))
+		}
+	}
 
 	// Only ACROSS the two kinds. Within the address-space kind, different
 	// tenants sharing a digest is the fix working, not a collision.
 	pools := map[string]string{}
-	for _, tenant := range tenants {
+	for _, t := range tenancies {
 		for i, s := range scopes {
-			pools[PoolDigest(tenant, s)] = fmt.Sprintf("pool(%q,%d)", tenant, i)
+			pools[PoolDigest(t, s)] = fmt.Sprintf("pool(%q/%q,%d)", t.Owner, t.Consumer, i)
 		}
 	}
 	for _, tenant := range tenants {
@@ -714,10 +752,10 @@ func TestTenantCannotBeForged(t *testing.T) {
 	}
 	for _, tc := range pairs {
 		t.Run(tc.name, func(t *testing.T) {
-			if CanonicalPool(tc.tenantA, tc.a) == CanonicalPool(tc.tenantB, tc.b) {
-				t.Fatalf("canonical forms collide: %s", CanonicalPool(tc.tenantA, tc.a))
+			if CanonicalPool(own(tc.tenantA), tc.a) == CanonicalPool(own(tc.tenantB), tc.b) {
+				t.Fatalf("canonical forms collide: %s", CanonicalPool(own(tc.tenantA), tc.a))
 			}
-			if PoolDigest(tc.tenantA, tc.a) == PoolDigest(tc.tenantB, tc.b) {
+			if PoolDigest(own(tc.tenantA), tc.a) == PoolDigest(own(tc.tenantB), tc.b) {
 				t.Fatal("digests collide")
 			}
 		})
@@ -751,21 +789,38 @@ func TestEmptyDigestMatchesMigrationDefault(t *testing.T) {
 	}
 }
 
-// TestPoolDigestEncodingIsUnchanged pins the v2 canonical form against the
-// value 005 shipped, from the other direction.
+// TestPoolDigestEncodingIsPinned pins the v4 canonical form.
 //
-// The v3 split must not have perturbed pool digests at all. A cascade pool's
-// NAME embeds the first eight characters of its digest, and its identity row is
-// keyed on the whole thing — so a change here renames every provisioned pool,
-// misses every identity lookup, and renumbers every scope, against a model that
-// promises subnets appear on first use and are never renumbered. The constant
-// is 005's default, which was this exact value.
-func TestPoolDigestEncodingIsUnchanged(t *testing.T) {
-	const v2EmptyPlatform = "6139457f3fc41de42d41d373bf75cc032c63fbedb7def334f08f8b40803793d9"
-	if got := EmptyPoolDigest(""); got != v2EmptyPlatform {
+// A cascade pool's NAME embeds the first eight characters of its digest, and
+// its identity row is keyed on the whole thing — so a change here renames every
+// provisioned pool, misses every identity lookup, and renumbers every scope,
+// against a model that promises subnets appear on first use and are never
+// renumbered. That is why the value is asserted rather than trusted.
+//
+// It has moved exactly once, and deliberately: v2 emitted one tenant field and
+// could not express whether the CONSUMING project was part of a pool's
+// identity, so two projects that each named a network `default` reached one
+// prefix. v4 emits owner and consumer separately. The v2 value is kept below so
+// the two are visibly different rather than differing somewhere nobody looks —
+// changing this constant again means writing another reset migration, not
+// editing a test.
+func TestPoolDigestEncodingIsPinned(t *testing.T) {
+	const (
+		v4EmptyPlatform = "3a50033f384ac3b2790e85913e17cf59feb841c01a18375ab97106b94a0a6910"
+		// What 002-era pools were named and keyed by. migrations/003 deletes
+		// every row that carries a value from this encoding, because a digest
+		// is a SHA-256 over a string no schema stores and there is nothing to
+		// backfill from.
+		v2EmptyPlatform = "6139457f3fc41de42d41d373bf75cc032c63fbedb7def334f08f8b40803793d9"
+	)
+	got := EmptyPoolDigest(own(""))
+	if got != v4EmptyPlatform {
 		t.Errorf("the pool canonical form changed: %s != %s\n"+
 			"Every cascade-provisioned pool would be renamed and every scope renumbered. "+
-			"If this is deliberate it is a data migration, not a refactor.", got, v2EmptyPlatform)
+			"If this is deliberate it is a data migration, not a refactor.", got, v4EmptyPlatform)
+	}
+	if got == v2EmptyPlatform {
+		t.Error("v4 reproduced a v2 digest; the version tag is not doing its job")
 	}
 }
 
@@ -798,5 +853,217 @@ func TestRoleSetKey(t *testing.T) {
 			t.Errorf("role sets %v and %v share a key", distinct[prev], roles)
 		}
 		seen[k] = i
+	}
+}
+
+// TestPoolDigestSeparatesConsumers is #114 at the unit level: the mechanism
+// half of the fix.
+//
+// Two projects each reference one platform class and each name a network
+// `default`. Their scopes are ref-identical and the class's owner is the same
+// platform project for both, so under v2 the two derived one digest, lost the
+// ipam_pool_identity race in turn, and allocated out of one prefix — no error,
+// nothing to see, and one /64 backing two tenants' networks.
+func TestPoolDigestSeparatesConsumers(t *testing.T) {
+	s := map[string]ipam.ScopeRef{"network": ref("default")}
+
+	x := PoolDigest(by("platform", "project-x"), s)
+	y := PoolDigest(by("platform", "project-y"), s)
+	if x == y {
+		t.Error("two consumers of one class, each with a network named `default`, must reach two pools")
+	}
+	// The consumer must matter with no refs at all, which is the shape a
+	// provisioning class with poolPer: [project] takes.
+	if EmptyPoolDigest(by("platform", "project-x")) == EmptyPoolDigest(by("platform", "project-y")) {
+		t.Error("poolPer: [project] must provision one pool per consumer")
+	}
+	// One consumer's claims into one scope must still share a pool. Otherwise
+	// every claim would provision its own, which passes the check above while
+	// making the class provision nothing shareable at all.
+	if x != PoolDigest(by("platform", "project-x"), map[string]ipam.ScopeRef{"network": ref("default")}) {
+		t.Error("one consumer's claims into one scope must share a pool")
+	}
+	// A per-consumer pool is not the shared pool. The two are different
+	// identities for the same (class, scope), so a class that changed its mind
+	// would provision beside the old pool rather than adopt it — which is why
+	// poolPer is immutable.
+	if x == PoolDigest(own("platform"), s) {
+		t.Error("a per-consumer pool must not be the shared pool")
+	}
+}
+
+// TestPoolDigestSharesAcrossConsumersWhenTheClassDidNotAsk is the guard against
+// over-correcting, and it is the case the fix must not break.
+//
+// A location's announceable public IPv4 block is one /24 that every project
+// with an instance there draws from. uniqueWithin: [] makes the pool one
+// address space, so the exclusion constraint keeps every consumer apart and no
+// two instances anywhere hold one address. Per-consumer /24s would exhaust the
+// aggregate after 256 projects rather than 256 locations, and a project with
+// one instance would burn 256 announceable addresses.
+//
+// So a class that does not name the reserved role must reach one pool for every
+// consumer — deliberately, not because there was no way to ask for anything
+// else.
+func TestPoolDigestSharesAcrossConsumersWhenTheClassDidNotAsk(t *testing.T) {
+	iad := map[string]ipam.ScopeRef{
+		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "iad"},
+	}
+
+	// The consumer is projected out entirely for a class whose poolPer is
+	// [location], so two callers building the same scope independently — which
+	// is what two claims in one location are — reach one digest.
+	shared := PoolDigest(own("platform"), iad)
+	if shared != PoolDigest(own("platform"), map[string]ipam.ScopeRef{
+		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "iad"},
+	}) {
+		t.Error("two projects claiming in one location must reach one announceable block")
+	}
+	// Two locations are still two pools. The shared case is shared across
+	// CONSUMERS, not across the axis the class actually named.
+	if shared == PoolDigest(own("platform"), map[string]ipam.ScopeRef{
+		"location": {APIGroup: "networking.datumapis.com", Kind: "Location", Name: "fra"},
+	}) {
+		t.Error("two locations must not share one announceable block")
+	}
+}
+
+// TestPoolDigestSeparatesOwnersWithTheSameConsumer is the primary-key case the
+// Owner field exists for, and the reason the fix ADDS a field rather than
+// swapping one.
+//
+// ipam_pool_identity is keyed on (class_name, scope_digest), and class names
+// are project-scoped: two projects may each define a class called
+// `tenant-ipv6`. Replacing the owner with the consumer — the issue's literal
+// suggestion — would make one consumer's claims against both classes collide on
+// that primary key and merge into one pool: a strictly worse version of the bug
+// being fixed.
+func TestPoolDigestSeparatesOwnersWithTheSameConsumer(t *testing.T) {
+	s := map[string]ipam.ScopeRef{"network": ref("default")}
+
+	if PoolDigest(by("platform-a", "project-x"), s) == PoolDigest(by("platform-b", "project-x"), s) {
+		t.Error("one consumer's claims against two same-named classes must not merge into one pool")
+	}
+	if EmptyPoolDigest(by("platform-a", "project-x")) == EmptyPoolDigest(by("platform-b", "project-x")) {
+		t.Error("the owner must separate two same-named classes even with no scope at all")
+	}
+	// Owner and consumer must not be interchangeable: a digest that treated the
+	// pair as a set would let (a, b) and (b, a) collide.
+	if PoolDigest(by("alpha", "beta"), s) == PoolDigest(by("beta", "alpha"), s) {
+		t.Error("owner and consumer are not interchangeable")
+	}
+}
+
+// TestPoolTenancyCannotBeForged extends the forging check to the second tenancy
+// field. Owner and consumer are adjacent, so a boundary moved between them must
+// not produce one encoding — otherwise a project could be named such that its
+// pool identity reproduced another (owner, consumer) pair's.
+func TestPoolTenancyCannotBeForged(t *testing.T) {
+	pairs := []struct {
+		name string
+		a, b PoolTenancy
+	}{
+		{
+			name: "consumer absorbs the tail of the owner",
+			a:    by("platform", "x"), b: by("platfor", "mx"),
+		},
+		{
+			name: "consumer absorbs the whole owner",
+			a:    by("platform", ""), b: by("", "platform"),
+		},
+		{
+			name: "consumer absorbs the role count",
+			a:    by("acme", "x"), b: by("acme", "x1:0"),
+		},
+		{
+			name: "a colon in either name shifts no boundary",
+			a:    by("p:1", "q"), b: by("p", "1:q"),
+		},
+	}
+	scopes := []map[string]ipam.ScopeRef{
+		nil,
+		{"network": ref("default")},
+	}
+	for _, tc := range pairs {
+		t.Run(tc.name, func(t *testing.T) {
+			for i, s := range scopes {
+				if CanonicalPool(tc.a, s) == CanonicalPool(tc.b, s) {
+					t.Fatalf("canonical forms collide at scope %d: %s", i, CanonicalPool(tc.a, s))
+				}
+				if PoolDigest(tc.a, s) == PoolDigest(tc.b, s) {
+					t.Fatalf("digests collide at scope %d", i)
+				}
+			}
+		})
+	}
+}
+
+// TestPoolPerRolesSplitsOutTheReservedRole covers the projection half of the
+// fix: the reserved role is a DECLARATION on the class, not a reference a claim
+// supplies, so it must never reach Project.
+func TestPoolPerRolesSplitsOutTheReservedRole(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		poolPer     []string
+		wantRoles   []string
+		wantPerCons bool
+	}{
+		{"nothing declared", nil, []string{}, false},
+		{"one pool per location, shared", []string{"location"}, []string{"location"}, false},
+		{"one pool per location per consumer", []string{"location", "project"}, []string{"location"}, true},
+		{"one pool per consumer and nothing else", []string{"project"}, []string{}, true},
+		{"order does not matter", []string{"project", "network", "location"}, []string{"network", "location"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			roles, perConsumer := PoolPerRoles(tc.poolPer)
+			if !reflect.DeepEqual(roles, tc.wantRoles) {
+				t.Errorf("roles = %v, want %v", roles, tc.wantRoles)
+			}
+			if perConsumer != tc.wantPerCons {
+				t.Errorf("perConsumer = %v, want %v", perConsumer, tc.wantPerCons)
+			}
+		})
+	}
+}
+
+// TestProjectForIgnoresTheReservedRole is the failure the special case exists to
+// prevent: without it, every claim of a per-consumer class is refused for a role
+// no client can ever supply, because the value is read off the request rather
+// than the body.
+func TestProjectForIgnoresTheReservedRole(t *testing.T) {
+	claimScope := map[string]ipam.ScopeRef{"network": ref("default")}
+
+	got, err := ProjectFor(claimScope, []string{"network", "project"}, "poolPer")
+	if err != nil {
+		t.Fatalf("ProjectFor() error = %v, want nil — the reserved role must not be reported missing", err)
+	}
+	if _, ok := got["project"]; ok {
+		t.Error("the reserved role must not appear in the projection")
+	}
+	if !SameRefs(got, map[string]ipam.ScopeRef{"network": ref("default")}) {
+		t.Errorf("projection = %v, want the network alone", got)
+	}
+	// Every other missing role is still reported, and the reserved one is not
+	// added to the list.
+	_, err = ProjectFor(claimScope, []string{"location", "project"}, "poolPer")
+	var missing *MissingRoleError
+	if !errors.As(err, &missing) {
+		t.Fatalf("ProjectFor() error = %v, want a MissingRoleError", err)
+	}
+	if !reflect.DeepEqual(missing.Roles, []string{"location"}) {
+		t.Errorf("missing roles = %v, want [location] alone", missing.Roles)
+	}
+}
+
+// TestWithoutReservedRoles covers what status.requiredScopeRoles is filtered
+// through. Listing the reserved role there would tell a client to set a field
+// the claim registry rejects.
+func TestWithoutReservedRoles(t *testing.T) {
+	got := WithoutReservedRoles([]string{"network", "project", "location"})
+	if !reflect.DeepEqual(got, []string{"network", "location"}) {
+		t.Errorf("WithoutReservedRoles() = %v, want [network location]", got)
+	}
+	if got := WithoutReservedRoles(nil); len(got) != 0 {
+		t.Errorf("WithoutReservedRoles(nil) = %v, want empty", got)
 	}
 }
