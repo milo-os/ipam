@@ -1,0 +1,33 @@
+# What a consumer project receives. Both consumer projects in this suite get
+# exactly this file, under their own context.
+#
+# A reference states only which class it points at — nothing about family, size,
+# scope or reclaim — so the platform can change what backs a class without
+# touching any project, and two projects cannot drift apart.
+#
+# datum-endpoint-ipv6 carries the default-class marker, which is what lets a
+# network interface ask for an IPv6 address by family and name no class at all.
+# That is how network-services-operator's interface path claims.
+#
+# datum-vpc-ipv6 is referenced here as well, which datum-cloud/infra#4111 does
+# NOT yet do — see the README. The operator's network path names that class
+# explicitly, so without a reference to it a network can hold no range.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-endpoint-ipv6
+  annotations:
+    ipam.miloapis.com/is-default-class: "true"
+spec:
+  source:
+    project: datum-cloud
+    name: datum-endpoint-ipv6
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-vpc-ipv6
+spec:
+  source:
+    project: datum-cloud
+    name: datum-vpc-ipv6

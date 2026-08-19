@@ -1,0 +1,83 @@
+# The platform's tenant IPv6 plan, as datum-cloud/infra#4111 defines it and as
+# datum-cloud/enhancements architecture/design/network/addressing/tenant.md
+# describes it: fd20::/20 -> /48 per VPC -> /64 per region -> /96 per endpoint.
+#
+# These are the DEFINITIONS and they live in the platform project. Consumer
+# projects hold references (test-data/consumer-references.yaml), never copies.
+# Class names and prefix lengths are the real ones on purpose: a fixture that
+# renamed them would stop being a reading of the plan.
+#
+# The POOL_PER_TENANCY markers are filled in by the suite's setup step. A class
+# that carves per network has to say whether each consuming project gets its own
+# range or they all share one, and whether that declaration exists is the one
+# difference between the two IPAM revisions this suite can run against. See the
+# README: the suite asks the server which it is rather than guessing.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-vpc-ipv6
+spec:
+  ipFamily: IPv6
+  poolPer:
+    - network
+    # POOL_PER_TENANCY
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 48
+    max: 48
+  defaultPrefixLength: 48
+  reclaimPolicy: Retain
+  routing:
+    external: Aggregate
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-subnet-ipv6
+spec:
+  ipFamily: IPv6
+  parentClassName: datum-vpc-ipv6
+  poolPer:
+    - network
+    - location
+    # POOL_PER_TENANCY
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 64
+    max: 64
+  defaultPrefixLength: 64
+  reservations:
+    leading: 1
+    unitPrefixLength: 96
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: datum-endpoint-ipv6
+spec:
+  ipFamily: IPv6
+  parentClassName: datum-subnet-ipv6
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 96
+    max: 96
+  defaultPrefixLength: 96
+  reclaimPolicy: Delete
+  routing:
+    internal: Host
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: datum-vpc-ipv6-root
+spec:
+  cidr: fd20::/20
+  ipFamily: IPv6
+  visibility: shared
+  classNames:
+    - datum-vpc-ipv6
+  allocation:
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit

@@ -25,6 +25,11 @@
 #   * tenant-project-beta  — as e2e-tenant-tester, parent-name=project-beta,
 #                            plus group system:project:project-beta so the
 #                            cross-project `use` ClusterRoleBinding matches.
+#   * tenant-project-datum-cloud — as e2e-tenant-tester, parent-name=datum-cloud.
+#                            The PLATFORM project: the one holding class
+#                            DEFINITIONS that the other two reference. Named
+#                            after the real platform project so a suite built on
+#                            the production layout reads as that layout.
 #
 # The impersonated user (e2e-tenant-tester) is deliberately NOT cluster-admin;
 # the suites' RBAC (resources/impersonation-rbac.yaml) grants it exactly the
@@ -145,9 +150,13 @@ emit_context() {
   # authorizes shared-pool claims. Private-pool claims still fail because the
   # grant is scoped by resourceNames, keeping deny assertions strict.
   emit_user project-beta "system:project:project-beta"
+  # The platform project. Class definitions live here; consumer projects hold
+  # references to them (spec.source), which is the shape production uses.
+  emit_user datum-cloud ""
   printf '%s\n' "contexts:"
   emit_context tenant-project-alpha tenant-project-alpha-as
   emit_context tenant-project-beta tenant-project-beta-as
+  emit_context tenant-project-datum-cloud tenant-datum-cloud-as
   # Stable-named platform (unimpersonated) context reusing the base user.
   emit_context tenant-platform "$BASE_USER"
 } >"$OUT"
@@ -155,4 +164,4 @@ emit_context() {
 rm -f "$base"
 
 echo "wrote impersonation kubeconfig: $OUT (source context: $SRC_CTX)"
-echo "  contexts: tenant-platform (platform), tenant-project-alpha, tenant-project-beta"
+echo "  contexts: tenant-platform (platform), tenant-project-alpha, tenant-project-beta, tenant-project-datum-cloud"

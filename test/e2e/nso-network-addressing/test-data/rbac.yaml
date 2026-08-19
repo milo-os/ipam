@@ -1,0 +1,35 @@
+# The grant that lets a consumer project reference a platform class.
+#
+# A reference resolves into the source project and allocates from its pools, so
+# the source project has to admit the caller: IPAM runs a `use` authorization
+# check against ipclasses/<name> in the platform project when the reference is
+# created. Without this every consumer project's reference is refused and the
+# whole layout is untestable.
+#
+# Scoped by resourceNames to the two classes a consumer is meant to reach. The
+# subnet class is deliberately absent: nothing references it, because a class's
+# ancestry resolves in the project holding the definition.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nso-addr-platform-class-user
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipclasses"]
+    resourceNames:
+      - datum-endpoint-ipv6
+      - datum-vpc-ipv6
+    verbs: ["use"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nso-addr-platform-class-user-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nso-addr-platform-class-user
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-tester

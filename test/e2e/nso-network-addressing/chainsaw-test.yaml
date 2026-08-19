@@ -1,0 +1,707 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nso-network-addressing
+spec:
+  description: |
+    The way network-services-operator consumes IPAM to address a tenant network,
+    in the layout production uses.
+
+    Every other class suite invents its own root pool, prefixes its class names
+    so two suites cannot collide, and defines every class in the project that
+    claims from it. None of that is what runs. Production keeps one set of
+    definitions in a platform project and hands every consumer project a
+    REFERENCE to them, so the questions that decide whether a tenant gets an
+    address of their own — which project a pool belongs to, whose scope decides
+    its identity — are questions those suites cannot ask.
+
+    What is asserted here is the consumption contract, not the mechanism:
+
+      1. A network holds its range from the moment it is created, reported
+         before any endpoint inside it exists.
+      2. An endpoint address is served from inside that range. Containment, not
+         a successful create.
+      3. A network in two locations gets two region subnets inside its one
+         range. This is the property that makes it one network.
+      4. Two networks get different ranges.
+      5. Two projects that each call a network `default` do not share a range.
+         Read the step: what it can prove depends on the server.
+      6. The address the subnet's router answers on is never handed to an
+         endpoint.
+      7. Deleting the network gives the range back, and a range still holding a
+         live address refuses to be given back.
+      8. A repeated reconcile is not an error, because names are derived and
+         the claim is read before it is created.
+
+    Addresses are checked with ipaddress arithmetic, never string matching. A
+    /96 that merely starts with the right characters is not inside anything.
+
+  # Objects live in IPAM's postgres under three different project scopes.
+  # Chainsaw's automatic teardown runs one context and cannot see the other two,
+  # so cleanup is explicit and per-step.
+  skipDelete: true
+
+  cluster: consumer-a
+  clusters:
+    # The platform project: class definitions and the one operator-authored
+    # pool. Nothing claims here.
+    platform:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-datum-cloud
+    # Two consumer projects. Each holds references and claims; neither holds
+    # any addressing policy of its own.
+    consumer-a:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+    consumer-b:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-beta
+    # Unimpersonated, for the cluster-wide RBAC the impersonated user cannot
+    # write for itself.
+    admin:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-platform
+
+  steps:
+    - name: grant-consumers-use-of-the-platform-classes
+      description: |
+        A reference resolves into the platform project and allocates from its
+        pools, so the platform project has to admit the caller. Without this
+        every reference below is refused and nothing that follows means
+        anything.
+      try:
+        - apply:
+            cluster: admin
+            file: test-data/rbac.yaml
+
+    - name: define-the-platform-address-plan
+      description: |
+        fd20::/20, a /48 per VPC, a /64 per region, a /96 per endpoint, with the
+        first /96 of every region subnet withheld for the router.
+
+        The setup asks the server whether a carving class must declare who its
+        pools serve before it fills that in, rather than assuming. Which answer
+        it got decides what the isolation step further down is able to prove,
+        and the step says so out loud either way.
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              PLATFORM="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+              POOL_KUBECTL="$PLATFORM"
+              MODE_FILE="${TMPDIR:-/tmp}/nso-addr-$NAMESPACE.tenancy"
+
+              # Ask the server. A class that carves per network either must
+              # declare who its pools serve or must not; a probe is the only
+              # honest way to find out, and the answer changes what the
+              # isolation step can assert.
+              probe=$($PLATFORM create -f - 2>&1 <<'EOF' || true
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClass
+              metadata:
+                name: nso-addr-tenancy-probe
+              spec:
+                ipFamily: IPv6
+                poolPer:
+                  - network
+                uniqueWithin: []
+                allowedPrefixLengths:
+                  min: 48
+                  max: 48
+                defaultPrefixLength: 48
+              EOF
+              )
+              $PLATFORM delete ipclass nso-addr-tenancy-probe --ignore-not-found >/dev/null 2>&1 || true
+
+              if printf '%s\n' "$probe" | grep -Eq 'allProjects'; then
+                echo "TENANCY: this server requires a carving class to declare who its pools serve"
+                printf 'declared\n' > "$MODE_FILE"
+                sed 's|^\( *\)# POOL_PER_TENANCY$|\1- project|' \
+                  test-data/platform-classes.yaml > "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE-classes.yaml"
+              else
+                echo "TENANCY: this server has no per-consumer pool identity"
+                printf 'undeclared\n' > "$MODE_FILE"
+                sed '/# POOL_PER_TENANCY$/d' \
+                  test-data/platform-classes.yaml > "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE-classes.yaml"
+              fi
+
+              $PLATFORM create -f "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE-classes.yaml"
+              wait_pool_ready datum-vpc-ipv6-root
+
+              # Nothing may exist for the networks this suite is about to
+              # create, or every count below proves nothing.
+              expect_pool_count 0 datum-vpc-ipv6 network=prod
+              expect_pool_count 0 datum-subnet-ipv6 network=prod location=us-central-1
+              echo "OK: the platform address plan is in place"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the platform address plan is in place'))": true
+
+    - name: hand-each-consumer-project-a-reference
+      description: |
+        One object per project, naming a class in the platform project and
+        stating no addressing of its own.
+      try:
+        - create:
+            cluster: consumer-a
+            file: test-data/consumer-references.yaml
+        - create:
+            cluster: consumer-b
+            file: test-data/consumer-references.yaml
+
+    - name: a-network-holds-its-range-before-any-endpoint-exists
+      description: |
+        The operator claims the range when the network is created, with a name
+        derived from the network so a reconcile that lost its answer finds the
+        same range again. Nothing is allocated inside it yet, and the range is
+        reported anyway — which is the whole point of asking for it directly
+        rather than inferring it from the first address handed out.
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+
+              reconcile_claim "$NAMESPACE" net-prod-3f9c2a1b "prod network range" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: net-prod-3f9c2a1b
+                namespace: $NAMESPACE
+                labels:
+                  suite: nso-network-addressing
+              spec:
+                className: datum-vpc-ipv6
+                target: ScopeRange
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: prod
+              EOF
+              wait_claim_bound "$NAMESPACE" net-prod-3f9c2a1b 120
+
+              range=$(claim_cidr "$NAMESPACE" net-prod-3f9c2a1b)
+              assert_prefix_len "$range" 48 "prod range"
+              assert_within "$range" "fd20::/20" "prod range"
+
+              pool=$(claim_pool "$NAMESPACE" net-prod-3f9c2a1b)
+              if [ -z "$pool" ]; then
+                echo "FAIL: the range was allocated but no pool was reported."
+                echo "      A caller with a CIDR and no pool cannot find what backs it."
+                exit 1
+              fi
+
+              # The range exists and nothing is under it. A /64 here would mean
+              # the range had been inferred from an allocation rather than held.
+              expect_pool_count 1 datum-vpc-ipv6 network=prod
+              expect_pool_count 0 datum-subnet-ipv6 network=prod location=us-central-1
+              echo "OK: prod holds $range with nothing inside it"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: prod holds'))": true
+
+    - name: a-repeated-reconcile-takes-no-second-range
+      description: |
+        The controller runs again. It reads before it writes, so the second pass
+        finds the range it already holds — and a create that does slip through
+        is refused rather than handed a second /48, which is the failure that
+        would leak a range per reconcile.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+
+              before=$(claim_cidr "$NAMESPACE" net-prod-3f9c2a1b)
+
+              reconcile_claim "$NAMESPACE" net-prod-3f9c2a1b "prod network range" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: net-prod-3f9c2a1b
+                namespace: $NAMESPACE
+              spec:
+                className: datum-vpc-ipv6
+                target: ScopeRange
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: prod
+              EOF
+
+              expect_rejected "$NAMESPACE" 409 'already (exists|held)' "a blind re-create of the range" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: net-prod-3f9c2a1b
+                namespace: $NAMESPACE
+              spec:
+                className: datum-vpc-ipv6
+                target: ScopeRange
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: prod
+              EOF
+
+              after=$(claim_cidr "$NAMESPACE" net-prod-3f9c2a1b)
+              assert_equal_addr "$before" "$after" "the range across two reconciles"
+              expect_pool_count 1 datum-vpc-ipv6 network=prod
+              echo "OK: the second pass took nothing"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the second pass took nothing'))": true
+
+    - name: an-endpoint-is-served-from-inside-the-network-range
+      description: |
+        An interface asks for an IPv6 address, names no class, and names the
+        network and the location it lives in. It reaches the platform's endpoint
+        class through the reference marked default for the family, and the block
+        it gets is inside the range the network already holds.
+
+        Success alone would not show that. A /96 out of unrelated space binds
+        just as happily and reports Bound.
+      try:
+        - script:
+            timeout: 150s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+
+              reconcile_claim "$NAMESPACE" iface-web-ipv6 "us-central-1 endpoint" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: iface-web-ipv6
+                namespace: $NAMESPACE
+                labels:
+                  suite: nso-network-addressing
+              spec:
+                ipFamily: IPv6
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: prod
+                  location:
+                    apiGroup: networking.datumapis.com
+                    kind: Location
+                    name: us-central-1
+              EOF
+              wait_claim_bound "$NAMESPACE" iface-web-ipv6 120
+
+              range=$(claim_cidr "$NAMESPACE" net-prod-3f9c2a1b)
+              addr=$(claim_cidr "$NAMESPACE" iface-web-ipv6)
+              subnet=$(pool_cidr "$(pools_for_scope datum-subnet-ipv6 network=prod location=us-central-1)")
+
+              assert_prefix_len "$addr" 96 "endpoint"
+              assert_prefix_len "$subnet" 64 "us-central-1 subnet"
+              assert_within "$subnet" "$range" "us-central-1 subnet"
+              assert_within "$addr" "$subnet" "endpoint"
+              assert_within "$addr" "$range" "endpoint"
+              echo "OK: $addr came out of prod's own range"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: '))": true
+              "(contains($stdout, 'came out of prod'))": true
+
+    - name: one-network-in-two-locations-is-still-one-network
+      description: |
+        A second location gets its own region subnet, carved from the same /48.
+        Two subnets that were not both inside the one range would be two
+        networks wearing one name — reachable from each other only by accident,
+        and not summarisable as a single aggregate.
+      try:
+        - script:
+            timeout: 150s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+
+              reconcile_claim "$NAMESPACE" iface-edge-ipv6 "us-east-1 endpoint" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: iface-edge-ipv6
+                namespace: $NAMESPACE
+                labels:
+                  suite: nso-network-addressing
+              spec:
+                ipFamily: IPv6
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: prod
+                  location:
+                    apiGroup: networking.datumapis.com
+                    kind: Location
+                    name: us-east-1
+              EOF
+              wait_claim_bound "$NAMESPACE" iface-edge-ipv6 120
+
+              range=$(claim_cidr "$NAMESPACE" net-prod-3f9c2a1b)
+              central=$(pool_cidr "$(pools_for_scope datum-subnet-ipv6 network=prod location=us-central-1)")
+              east=$(pool_cidr "$(pools_for_scope datum-subnet-ipv6 network=prod location=us-east-1)")
+
+              # One subnet per location, and still exactly one range above them.
+              expect_pool_count 1 datum-subnet-ipv6 network=prod location=us-central-1
+              expect_pool_count 1 datum-subnet-ipv6 network=prod location=us-east-1
+              expect_pool_count 1 datum-vpc-ipv6 network=prod
+
+              assert_prefix_len "$east" 64 "us-east-1 subnet"
+              assert_within "$central" "$range" "us-central-1 subnet"
+              assert_within "$east" "$range" "us-east-1 subnet"
+              assert_disjoint "$central" "$east"
+              assert_within "$(claim_cidr "$NAMESPACE" iface-edge-ipv6)" "$east" "us-east-1 endpoint"
+              echo "OK: two regions, one range"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: two regions, one range'))": true
+
+    - name: two-networks-get-different-ranges
+      description: |
+        A second network in the same project. If ranges were shared, two tenants
+        of one project would land in one routing domain and each would be able
+        to reach the other's addresses without anything having peered them.
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+
+              reconcile_claim "$NAMESPACE" net-staging-77c41d90 "staging network range" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: net-staging-77c41d90
+                namespace: $NAMESPACE
+                labels:
+                  suite: nso-network-addressing
+              spec:
+                className: datum-vpc-ipv6
+                target: ScopeRange
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: staging
+              EOF
+              wait_claim_bound "$NAMESPACE" net-staging-77c41d90 120
+
+              prod=$(claim_cidr "$NAMESPACE" net-prod-3f9c2a1b)
+              staging=$(claim_cidr "$NAMESPACE" net-staging-77c41d90)
+              assert_prefix_len "$staging" 48 "staging range"
+              assert_within "$staging" "fd20::/20" "staging range"
+              assert_disjoint "$prod" "$staging"
+              echo "OK: prod and staging hold different ranges"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: prod and staging hold different ranges'))": true
+
+    - name: the-address-the-router-answers-on-is-never-handed-out
+      description: |
+        The plan gives ::1 of every region subnet to that subnet's virtual
+        router, so the class withholds the /96 that address falls in. Nothing
+        about the failure is visible from the API: the endpoint claim binds, the
+        pool is Ready, and both the router and the endpoint believe the address
+        is theirs. The assertion has to be on the address.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              PLATFORM="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+              POOL_KUBECTL="$PLATFORM"
+
+              for loc in us-central-1 us-east-1; do
+                pool=$(pools_for_scope datum-subnet-ipv6 network=prod location=$loc)
+                leading=$($PLATFORM get ippool "$pool" -o jsonpath='{.spec.reservations.leading}')
+                unit=$($PLATFORM get ippool "$pool" -o jsonpath='{.spec.reservations.unitPrefixLength}')
+                if [ "$leading" != "1" ] || [ "$unit" != "96" ]; then
+                  echo "FAIL: $loc subnet withholds leading=$leading unit=/$unit, expected 1 and /96"
+                  echo "      A pool the cascade provisioned must carry its class's reservations;"
+                  echo "      there is no author to state them on it."
+                  exit 1
+                fi
+              done
+
+              central=$(pool_cidr "$(pools_for_scope datum-subnet-ipv6 network=prod location=us-central-1)")
+              east=$(pool_cidr "$(pools_for_scope datum-subnet-ipv6 network=prod location=us-east-1)")
+
+              # Every address this suite handed out, checked against the gateway
+              # of the subnet it came from.
+              for pair in "$central:iface-web-ipv6" "$east:iface-edge-ipv6"; do
+                subnet=${pair%:*}
+                claim=${pair##*:}
+                gw=$(subnet_gateway "$subnet")
+                addr=$(claim_cidr "$NAMESPACE" "$claim")
+                assert_excludes_address "$addr" "$gw" "$claim"
+                # Pinned to a block index rather than a literal: the withheld
+                # position is block 0, so the first endpoint into a fresh subnet
+                # takes block 1.
+                assert_nth_subnet "$subnet" 1 96 "$addr" "$claim"
+              done
+              echo "OK: no endpoint holds a subnet's gateway"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: no endpoint holds a subnet'))": true
+
+    - name: two-projects-naming-one-network-do-not-share-a-range
+      description: |
+        Both consumer projects reference the same platform class and both create
+        a network called `default`. Pool identity keys on the class and the
+        scope, and a scope carries only names — so unless the consuming project
+        is part of that identity, two tenants are handed one /48 with no error
+        and nothing to see.
+
+        What this step can prove depends on the server it runs against, and it
+        says which it did. Where the reserved tenancy declaration exists it
+        asserts the two ranges are disjoint. Where it does not, per-project
+        isolation is not a property the service has yet, and the step reports
+        that rather than dressing the current behaviour up as isolation.
+      try:
+        - script:
+            timeout: 150s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              A="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              B="kubectl --kubeconfig $KCFG --context tenant-project-beta"
+              POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+              MODE=$(cat "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE.tenancy")
+
+              claim_default() {
+                _name="$1"
+                cat <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: $_name
+                namespace: $NAMESPACE
+                labels:
+                  suite: nso-network-addressing
+              spec:
+                className: datum-vpc-ipv6
+                target: ScopeRange
+                scope:
+                  network:
+                    apiGroup: networking.datumapis.com
+                    kind: Network
+                    name: default
+              EOF
+              }
+
+              KUBECTL="$A"
+              claim_default net-default-a0000001 | reconcile_claim "$NAMESPACE" net-default-a0000001 "project A's default network"
+              wait_claim_bound "$NAMESPACE" net-default-a0000001 120
+              a_range=$(claim_cidr "$NAMESPACE" net-default-a0000001)
+
+              # Raw create rather than the reconcile helper: on a server without
+              # per-consumer identity this is expected to be refused, and the
+              # refusal is the finding.
+              b_out=$(claim_default net-default-b0000001 | $B create -n "$NAMESPACE" -f - 2>&1) && b_rc=0 || b_rc=$?
+              b_range=$($B get ipclaim -n "$NAMESPACE" net-default-b0000001 \
+                -o jsonpath='{.status.allocatedCIDR}' 2>/dev/null || echo "")
+
+              if [ "$MODE" = "declared" ]; then
+                if [ "$b_rc" != "0" ]; then
+                  echo "FAIL: project B could not hold a range for its own network."
+                  echo "      Each consuming project is supposed to get its own."
+                  printf '%s\n' "$b_out" | tail -3
+                  exit 1
+                fi
+                KUBECTL="$B"
+                wait_claim_bound "$NAMESPACE" net-default-b0000001 120
+                b_range=$(claim_cidr "$NAMESPACE" net-default-b0000001)
+                assert_disjoint "$a_range" "$b_range"
+                # Two ranges means two pools, not one adopted twice.
+                expect_pool_count 2 datum-vpc-ipv6 network=default
+                echo "OK: the two projects hold separate ranges"
+              else
+                echo "NOT PROVEN: per-project isolation."
+                echo "  This server keys a range on the class and the network NAME alone, so"
+                echo "  both projects reach one range. Project A holds $a_range."
+                if [ "$b_rc" = "0" ]; then
+                  echo "  Project B's claim for a network of the same name was accepted and"
+                  echo "  reports ${b_range:-<no cidr>}."
+                else
+                  echo "  Project B's claim for a network of the same name was refused:"
+                  printf '%s\n' "$b_out" | tail -2 | sed 's/^/    /'
+                  echo "  A project cannot be refused a range on account of a network it"
+                  echo "  cannot see, in a project it is not a member of. Isolation would"
+                  echo "  have given it one of its own."
+                fi
+                echo "  This is milo-os/ipam#114. The assertion this step exists to make"
+                echo "  becomes possible when a carving class can declare that each consuming"
+                echo "  project gets its own range; until then the suite refuses to report a"
+                echo "  property the service does not have."
+                if [ "$b_rc" = "0" ] && [ -n "$b_range" ] && [ "$b_range" != "$a_range" ]; then
+                  echo "FAIL: the two projects were handed different ranges, which this"
+                  echo "      server has no mechanism to do. Something else changed; the"
+                  echo "      probe in the setup step is reading the wrong answer."
+                  exit 1
+                fi
+                echo "OK: the isolation gap is reported, not asserted away"
+              fi
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: '))": true
+
+    - name: a-range-still-holding-a-live-address-is-not-given-back
+      description: |
+        Releasing it would return the range to the platform with somebody's
+        addresses inside, and the next tenant handed that range would be handed
+        those addresses with it. The refusal has to leave the range exactly as
+        it was, not park it in a phase describing something that is not
+        happening.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+
+              before=$(claim_cidr "$NAMESPACE" net-prod-3f9c2a1b)
+              expect_delete_rejected ipclaim "$NAMESPACE" net-prod-3f9c2a1b 409 \
+                'release everything allocated inside this range first' \
+                "releasing prod's range while endpoints hold addresses in it"
+
+              phase=$($KUBECTL get ipclaim -n "$NAMESPACE" net-prod-3f9c2a1b -o jsonpath='{.status.phase}')
+              after=$(claim_cidr "$NAMESPACE" net-prod-3f9c2a1b)
+              if [ "$phase" != "Bound" ]; then
+                echo "FAIL: prod's range is $phase after a refused release, expected Bound."
+                echo "      A refusal must leave the holder holding it."
+                exit 1
+              fi
+              assert_equal_addr "$before" "$after" "prod's range across a refused release"
+              echo "OK: the range was kept"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the range was kept'))": true
+
+    - name: deleting-the-network-gives-the-range-back
+      description: |
+        With the addresses released, the range goes back — and so do the region
+        subnets under it, which exist only as somewhere blocks of this range
+        could come from. A subnet left behind would hold space out of a range
+        the platform has already re-offered.
+      try:
+        - script:
+            timeout: 150s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+
+              $KUBECTL delete ipclaim -n "$NAMESPACE" iface-web-ipv6 iface-edge-ipv6
+              wait_gone ipclaim "$NAMESPACE" iface-web-ipv6 60
+              wait_gone ipclaim "$NAMESPACE" iface-edge-ipv6 60
+
+              $KUBECTL delete ipclaim -n "$NAMESPACE" net-prod-3f9c2a1b
+
+              expect_pool_count 0 datum-vpc-ipv6 network=prod
+              expect_pool_count 0 datum-subnet-ipv6 network=prod location=us-central-1
+              expect_pool_count 0 datum-subnet-ipv6 network=prod location=us-east-1
+
+              # staging is untouched: releasing one network must not disturb
+              # another's space.
+              staging=$(claim_cidr "$NAMESPACE" net-staging-77c41d90)
+              assert_prefix_len "$staging" 48 "staging range after prod's release"
+              echo "OK: prod's range and everything derived from it are gone"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: prod'))": true
+
+      finally:
+        - script:
+            timeout: 180s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              KCFG=../.tenant-impersonation.kubeconfig
+              A="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              B="kubectl --kubeconfig $KCFG --context tenant-project-beta"
+              PLATFORM="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+
+              # Claims first: a range holding a live address refuses to be
+              # released, so endpoints go before the ranges above them.
+              for ctx in "$A" "$B"; do
+                $ctx delete ipclaim -n "$NAMESPACE" -l suite=nso-network-addressing \
+                  --ignore-not-found >/dev/null 2>&1 || true
+                $ctx delete ipclass datum-endpoint-ipv6 datum-vpc-ipv6 \
+                  --ignore-not-found >/dev/null 2>&1 || true
+              done
+
+              # IPPools and IPClasses are cluster-scoped, so chainsaw's
+              # namespace teardown never reaches them and a suite that failed
+              # part-way would make the NEXT run fail on "already exists".
+              for cls in datum-subnet-ipv6 datum-vpc-ipv6; do
+                for p in $($PLATFORM get ippool -o json 2>/dev/null \
+                    | jq -r ".items[] | select(.spec.classRef.name == \"$cls\") | .metadata.name"); do
+                  $PLATFORM delete ippool "$p" --ignore-not-found >/dev/null 2>&1 || true
+                done
+              done
+              $PLATFORM delete ippool datum-vpc-ipv6-root --ignore-not-found >/dev/null 2>&1 || true
+              $PLATFORM delete ipclass datum-endpoint-ipv6 datum-subnet-ipv6 datum-vpc-ipv6 \
+                nso-addr-tenancy-probe --ignore-not-found >/dev/null 2>&1 || true
+
+              rm -f "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE.tenancy" \
+                    "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE-classes.yaml"
+              echo "nso-network-addressing cleanup done"
+            check:
+              ($error == null): true
