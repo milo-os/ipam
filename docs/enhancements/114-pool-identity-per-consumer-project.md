@@ -18,7 +18,7 @@ tracking-issue: milo-os/ipam#114
 - [Worked Example: A Public IPv4 Chain](#worked-example-a-public-ipv4-chain)
 - [Proposal](#proposal)
   - [1. Pool identity carries owner and consumer](#1-pool-identity-carries-owner-and-consumer)
-  - [2. Who the pools are for is a required answer in PoolPer](#2-who-the-pools-are-for-is-a-required-answer-in-poolper)
+  - [2. The consumer is a reserved PoolPer role](#2-the-consumer-is-a-reserved-poolper-role)
   - [3. The pool object stays in the defining project](#3-the-pool-object-stays-in-the-defining-project)
   - [4. The consumer is recorded on what the cascade writes](#4-the-consumer-is-recorded-on-what-the-cascade-writes)
 - [API Changes](#api-changes)
@@ -31,7 +31,7 @@ tracking-issue: milo-os/ipam#114
 
 A cascade-provisioned pool is identified by `(class name, scope digest)`, and the scope digest folds in the project that **defined** the class. For a platform class offered to every project, that project is the same for every caller, so two consumers whose claims carry the same scope reach one pool. Two projects that each call their network `default` therefore share one `/64`.
 
-The fix has two halves. The mechanism: `scope.PoolDigest` must be able to carry the **consuming** project as well as the defining one — today it folds in only `class.Project`, and no per-class configuration can express a distinction the digest cannot represent. The declaration: a class already has a field that says how many pools it provisions and per what — `IPClassSpec.PoolPer` — and who the pools are for becomes a required answer in it. `poolPer: [location, allProjects]` means one pool per location that every project draws from; `poolPer: [location, project]` means one per location per project. A class that provisions pools and gives neither answer is refused, so "undeclared" is not a state a class can be in.
+The fix has two halves. The mechanism: `scope.PoolDigest` must be able to carry the **consuming** project as well as the defining one — today it folds in only `class.Project`, and no per-class configuration can express a distinction the digest cannot represent. The declaration: a class already has a field that says how many pools it provisions and per what — `IPClassSpec.PoolPer` — and the consuming project becomes an addressable role in it. `poolPer: [location]` means one pool per location across all consumers; `poolPer: [location, project]` means one per location per consumer.
 
 ## Problem Statement
 
@@ -139,7 +139,6 @@ spec:
   ipFamily: IPv4
   poolPer:
     - location
-    - allProjects
   uniqueWithin: []
   allowedPrefixLengths:
     min: 24
@@ -190,7 +189,7 @@ The two `routing` blocks are the split `RoutingSpec`'s own documentation describ
 
 That `/24` is shared by every project with instances in `iad`, and that is the intended, safe arrangement: `uniqueWithin: []` puts all of them in one address space, so the exclusion constraint guarantees no two instances anywhere ever hold the same public address. Per-consumer `/24`s would be actively wrong here — a project with one instance would burn 256 announceable addresses, and the aggregate would exhaust after 256 projects rather than 256 locations.
 
-**Why this constrains the fix.** `poolPer: [location, allProjects]` here means the **unqualified** location. Two projects claiming in `iad` must reach one pool. That works today only because the digest folds in the defining project, which is the same platform project for both callers — it works *by accident*, for the same reason the `/64` bug happens. The fix must keep it working on purpose: the digest has to distinguish owner from consumer so that a class can say the consumer is not part of its identity and still get one pool, rather than getting one pool because there was no way to ask for anything else.
+**Why this constrains the fix.** `poolPer: [location]` here means the **unqualified** location. Two projects claiming in `iad` must reach one pool. That works today only because the digest folds in the defining project, which is the same platform project for both callers — it works *by accident*, for the same reason the `/64` bug happens. The fix must keep it working on purpose: the digest has to distinguish owner from consumer so that a class can decline to name the consumer and still get one pool, rather than getting one pool because there was no way to ask for anything else.
 
 ## Proposal
 
@@ -216,7 +215,7 @@ func PoolDigest(t PoolTenancy, s map[string]ipam.ScopeRef) string
 
 `canonicalPoolVersion` becomes `ipam.scope.v4` and emits `version, owner, consumer, roleCount, [role, apiGroup, kind, name]…`. Role groups keep their fixed arity of four, so v4 remains unparseable as v3's arity of five and every length-prefix unforgeability property carries over unchanged.
 
-The consumer is a **top-level digest field, not a role group**. A role group carries a client-supplied `apiGroup` and `kind`; the consumer is a server-supplied fact from the request tenant, and it should not be encoded in a shape that has fields a client could vary. This is also what makes the reserved roles of the next section safe: the roles are the declaration, the tenancy field is the mechanism.
+The consumer is a **top-level digest field, not a role group**. A role group carries a client-supplied `apiGroup` and `kind`; the consumer is a server-supplied fact from the request tenant, and it should not be encoded in a shape that has fields a client could vary. This is also what makes the reserved role of the next section safe: the role is the declaration, the tenancy field is the mechanism.
 
 A struct rather than two strings is deliberate: the package already warns that "a call that passes an empty tenant to mean 'not applicable' is one refactor away from a call that passes an empty tenant to mean 'platform'" (`internal/scope/scope.go:258-266`), and two adjacent project-name arguments are the same hazard with a swap added.
 
@@ -224,32 +223,30 @@ A struct rather than two strings is deliberate: the package already warns that "
 
 Keeping `Owner` is not optional. `ipam_pool_identity`'s primary key is `(class_name, scope_digest)`, and class names are project-scoped objects: two projects may each define a class called `tenant-ipv6`. Today the defining project inside the digest is what keeps them apart. Replacing it with the consuming project — the literal reading of the issue — makes one consumer's claims against two different classes of the same name collide on the primary key and merge into one pool. That would be a strictly worse version of this bug, so the fix adds a field rather than swapping one.
 
-### 2. Who the pools are for is a required answer in PoolPer
+### 2. The consumer is a reserved PoolPer role
 
-No new field. `PoolPer` already means "one pool per distinct combination of these references" (`pkg/apis/ipam/v1alpha1/types.go:329-338`), which is precisely the axis in question. Two reserved role names are added to it, and a class that provisions pools must name exactly one:
+No new field. `PoolPer` already means "one pool per distinct combination of these references" (`pkg/apis/ipam/v1alpha1/types.go:329-338`), which is precisely the axis in question. The consuming project becomes an addressable role in that list:
 
-- `project` — one pool per consuming project. Per-tenant `/48`s and `/64`s.
-- `allProjects` — one pool that every consuming project draws from. The public IPv4 chain above.
+- `poolPer: [location]` — one pool per location, across all consumers. The public IPv4 chain above.
+- `poolPer: [location, project]` — one pool per location per consumer. Per-tenant `/48`s and `/64`s.
+- `poolPer: [project]` — one pool per consumer, no other axis.
+- `poolPer: []` — one pool for the class, as today.
 
-So `poolPer: [location, allProjects]` is one pool per location for everyone, `poolPer: [location, project]` is one per location per project, `poolPer: [allProjects]` is one pool for the class, and `poolPer: [location]` is refused. Empty `poolPer` is unchanged and means the class provisions nothing at all — a leaf.
+**Sharing is the default and separation is opt-in, and this is the fact the field's documentation has to carry.** A class that does not list `project` gives every consuming project one pool for a given combination of the other roles: two tenants claiming with the same scope draw from the same prefix. A class that must keep tenants in separate address space names `project`, and nothing else in the class implies it. The setting cannot be changed afterwards, because `poolPer` is immutable and the pools it has already identified are never renumbered, so a class that shared when it should not have is replaced rather than corrected.
 
-`allProjects` contributes nothing to the digest. It is a declaration, not an axis, and that is deliberate: writing it down must not renumber the pools it describes, so a class that says `allProjects` derives exactly the digest a class saying nothing would have. Its whole job is that saying nothing is no longer allowed.
+The server does not refuse a class that omits `project`. Shared is correct, and required, for announceable public space, and telling a project-scoped role apart from a platform one would need a table of kinds constraint #4 forbids. Creating a provisioning class without `project` returns a warning stating the consequence, which informs the author at the moment the decision becomes irreversible without refusing a class that meant it.
 
-**Why require rather than warn.** Requiring does not need the server to know which answer is right, and it cannot know: scope references are opaque `{apiGroup, kind, name}` strings, and telling a project-scoped kind from a platform one would need a table of kinds constraint #4 forbids. It only needs to refuse a class that gives no answer. The three facts that make a warning insufficient are all about the moment: `poolPer` is immutable and a pool is never renumbered, so a class that gets this wrong is replaced rather than corrected — which for a class already serving addresses is a renumbering; a warning does not stop the class being created; and the platform's own classes are being written now, in datum-cloud/infra#4111, so a warning would ship the bug into the platform with the fix in the engine.
+`project` is reserved: an `IPClass` may not name a scope role `project` in `poolPer` or `uniqueWithin`, and an `IPClaim` may not supply a `project` key in `spec.scope`. Both are rejected at write time in the respective strategies, with an error that says the name is reserved.
 
-Both answers stay available and sharing stays expressible, which is the constraint the public IPv4 chain sets. Nothing about the shared case gets harder — it gets one more line.
+**The wrinkle, stated plainly.** Every other `PoolPer` role is projected from the claim's `spec.scope` by `scope.ProjectFor`, which fails a claim that does not supply it. The consuming project is not a `ScopeRef` and never will be: it comes from the request tenant, not the request body. So `project` needs server-side projection — `PlanCascade` sets `PoolTenancy.Consumer` when the class's `PoolPer` contains it, and drops it before calling `scope.ProjectFor` on the remainder. That is special-casing, and it costs:
 
-**The wrinkle, stated plainly.** Every other `PoolPer` role is projected from the claim's `spec.scope` by `scope.ProjectFor`, which fails a claim that does not supply it. Neither reserved role is a `ScopeRef` and neither ever will be: `project`'s value comes from the request tenant, and `allProjects` has no value at all. So both need server-side handling — `PlanCascade` sets `PoolTenancy.Consumer` when the class names `project`, and drops both before calling `scope.ProjectFor` on the remainder. That is special-casing, and it costs:
+- `ProjectFor` must not look for `project` in the claim's scope, or every claim fails a missing-role check it cannot satisfy;
+- `status.requiredScopeRoles` (`pkg/apis/ipam/v1alpha1/types.go:448-457`) must exclude it, since a client reading that field is being told what to put in `spec.scope`;
+- validation must reserve the name in both `poolPer` and `uniqueWithin`, or a class can collide with it.
 
-- `ProjectFor` must not look for either in the claim's scope, or every claim fails a missing-role check it cannot satisfy;
-- `status.requiredScopeRoles` (`pkg/apis/ipam/v1alpha1/types.go:448-457`) must exclude both, since a client reading that field is being told what to put in `spec.scope`;
-- validation must reserve both names in `uniqueWithin` and in a claim's `spec.scope`, or a class or a claim can collide with them.
+It is defensible anyway. The value is server-supplied and unspoofable — a claimant cannot name another project's pool by writing a scope ref, because the field is not read from the request body at all. It is one reserved name in one namespace of names the operator controls. And the alternative — a second spec field answering "how many pools?" in a second vocabulary — is a duplicate mechanism with a worse property: two fields that can disagree, where an operator reading `poolPer: [location]` cannot tell from that line how many pools the class actually has.
 
-It is defensible anyway. The consuming project is server-supplied and unspoofable — a claimant cannot name another project's pool by writing a scope ref, because the field is not read from the request body at all. It is two reserved names in one namespace of names the operator controls. And the alternative — a second spec field answering "how many pools?" in a second vocabulary — is a duplicate mechanism with a worse property: two fields that can disagree, where an operator reading `poolPer: [location]` cannot tell from that line how many pools the class actually has.
-
-**Where the rule is enforced.** Twice, and the second is what makes it a guarantee rather than a convention. `validateDefinition` refuses the class at write time, which is where an author is told. `PlanCascade` refuses to plan a level whose class gives no answer, because validation runs on writes and a class stored before the rule was never subject to one — and `poolPer` being immutable means it cannot be brought into line by an update. Refusing its claims is unpleasant but bounded: migration 003 deletes every pool such a class provisioned, and aborts if any of them holds a live address, so the refusal can only ever meet a class nobody has allocated from.
-
-Consistency with `uniqueWithin` is deliberately *not* offered. Both names are meaningful only for `poolPer`; `uniqueWithin` is already implicitly per-project, because `AddressSpaceDigest` qualifies each ref by the claiming tenant.
+Consistency with `uniqueWithin` is deliberately *not* offered. `project` is meaningful only for `poolPer`; `uniqueWithin` is already implicitly per-project, because `AddressSpaceDigest` qualifies each ref by the claiming tenant.
 
 ### 3. The pool object stays in the defining project
 
@@ -267,9 +264,9 @@ Once identity can depend on the consumer, the consumer has to be legible on the 
 
 ## API Changes
 
-**No new field.** `IPClassSpec.PoolPer` gains two reserved values, one of which a provisioning class must state, and a documentation paragraph; `IPClassStatus.RequiredScopeRoles` gains a sentence saying neither reserved role appears there. No change to `IPClaim`, `IPAllocation`, or `IPPool.spec`. No change to any consumer-facing request: the claiming project already arrives on the request and stays out of the API surface, so consumer refs remain opaque (constraint #4).
+**No new field.** `IPClassSpec.PoolPer` gains a reserved value and a documentation paragraph; `IPClassStatus.RequiredScopeRoles` gains a sentence saying the reserved role never appears there. No change to `IPClaim`, `IPAllocation`, or `IPPool.spec`. No change to any consumer-facing request: the claiming project already arrives on the request and stays out of the API surface, so consumer refs remain opaque (constraint #4).
 
-Validation, in `internal/registry/ipam/ipclass/strategy.go`: a non-empty `poolPer` must name exactly one of `project` and `allProjects`; both are rejected in `uniqueWithin`; `poolPer` remains immutable on update (`ValidateUpdate`), which is what keeps identity stable. In `internal/registry/ipam/ipclaim/strategy.go`: both names rejected in `spec.scope`. In `internal/allocator/cascade.go`: a class in a claim's ancestry that gives neither answer is refused rather than planned.
+Validation, in `internal/registry/ipam/ipclass/strategy.go`: `project` rejected in `uniqueWithin` always, and in `poolPer` for a class with no children only insofar as `poolPer` is already meaningless there; `poolPer` remains immutable on update (`ValidateUpdate`, lines 89-115), which is what keeps identity stable. In `internal/registry/ipam/ipclaim/strategy.go`: `spec.scope["project"]` rejected.
 
 `internal/allocation/` is untouched and stays standard-library-only (constraint #5). `internal/scope` keeps importing nothing but the API types.
 
@@ -285,8 +282,6 @@ Validation, in `internal/registry/ipam/ipclass/strategy.go`: a non-empty `poolPe
 
 **Provision per-consumer pools into the consumer's project key space.** Attractive for visibility: today a tenant cannot see the pool that holds its own `/48`. Rejected as part of this fix because a pool the consumer can see is a pool the consumer can delete, and `ipam_pool_identity`'s foreign key is `ON DELETE CASCADE` (`migrations/002_class_model.sql:318-323`) — deleting the pool retires the identity and the next claim provisions a fresh range, which is renumbering, the one thing the model forbids. Worth doing deliberately, separately, with a delete guard.
 
-**Warn at class-write time instead of refusing.** The shape an earlier draft of this document resolved on. Rejected. `poolPer` is immutable, so a class created despite the warning can never be corrected — it is replaced, which for a class already serving addresses is a renumbering. A warning does not stop the creation, and the classes this has to protect are being written right now in datum-cloud/infra#4111, which would ship the bug into the platform with the fix in the engine. The objection to refusing was that the server cannot tell which answer is right; it does not have to, because it refuses only the class that gives none.
-
 **Detect and refuse instead of fixing identity** — reject a claim whose resolved pool was provisioned for a different project. Rejected: it converts a design gap into an outage for whichever tenant claims second, and leaves the first holding space the model says is not theirs alone.
 
 ## Migration and Compatibility
@@ -301,11 +296,11 @@ Proposed `migrations/003_pool_identity_consumer.sql`:
 2. Otherwise delete the `PoolCarve` rows for those pools, the pool objects, and (by cascade) the identity rows, the consumption rows, and the search floors.
 3. Leave operator-authored pools untouched: they are identified by their own names and are never provisioned by a class.
 
-**Existing `IPClass` objects must be replaced, not edited.** A provisioning class that names neither reserved role is refused from here on: at write time, and — because `poolPer` is immutable and a stored class was never validated against a rule that did not exist — when planning a cascade for a claim that reaches it. So a class written before this change keeps serving nothing rather than keeping the bug.
+**Existing `IPClass` objects need editing, and this is the one behavioural risk.** Absent `project` in `poolPer`, a class keeps sharing one pool across consumers — which is correct for the public IPv4 chain and wrong for per-tenant `/48`s. Unlike the enum design, there is no default that silently corrects the bug; the classes that want per-consumer pools must say so. That is the deliberate trade: the axis lives in one place, in the field that already governs it, and sharing stays the default so that a class written for public space keeps working untouched. The cost is that per-tenant classes are the ones that have to be edited, and nothing refuses them if they are not.
 
-That is affordable at exactly this moment and no other. The migration above deletes every pool a class provisioned and aborts if any of them holds a live address, so a class that has to be replaced has nothing allocated out of it to lose. The classes in the platform's definitions are the ones this applies to, and they are not serving tenants yet.
+The mitigation is documentation plus a warning, not enforcement. Refusing is not available: the server cannot tell a project-scoped kind from a platform one without a table it should not have (constraint #4), and shared is the right answer for the public IPv4 chain. So the field's own documentation states the consequence of omitting `project`, and creating a provisioning class that omits it returns a warning saying the same thing at the moment the decision is made.
 
-`allProjects` is the answer for anything whose behaviour should not change: it derives the same digest a silent class did, so declaring sharing is a one-line edit that renumbers nothing — the edit just has to be made as a replacement, since `poolPer` cannot be updated in place.
+`poolPer` is already immutable, so a class that gets this wrong is replaced rather than edited. Before the reset, every class in the platform's definitions needs an explicit decision recorded.
 
 ## Test Plan
 
@@ -321,17 +316,19 @@ That is affordable at exactly this moment and no other. The migration above dele
 **`internal/allocator` (postgres).**
 
 - Two projects referencing one class with `poolPer: [network, project]`, both claiming with `network: default`, get two pools with disjoint CIDRs — the issue, as a regression test.
-- The same two projects against `poolPer: [location, allProjects]` get one pool — the public IPv4 case, as a regression test against over-correcting.
-- A class in the ancestry naming neither reserved role provisions nothing and leaves no identity row behind — the stored-class case validation cannot reach.
+- The same two projects against `poolPer: [location]` get one pool — the public IPv4 case, as a regression test against over-correcting.
 - A herd of first claims from *two* projects against a per-consumer class produces exactly two pools with no lost-race errors (extends `TestAHerdOfFirstClaimsProducesOnePool`, `cascade_postgres_test.go:75`).
 - Two classes with the same name in two defining projects, claimed by one consumer, get two pools — the primary-key collision the `Owner` field prevents.
 - `ResolveExistingPool` (dry-run) reports the same pool and the same pending levels as `ResolvePool` for both shapes.
 - The `PoolCarve` row for a per-consumer level carries the consumer in `owner_project`; a shared level carries the owner.
+- A `ScopeRange` claim and a `Block` claim derive the *same* pool for one class and scope, under both tenancy shapes — the two planning paths meet at one identity, or a tenant's published range names space its endpoints do not live in.
+- Two consumers of a per-consumer class hold separate ranges for one network name; two consumers of a shared class reach one range, and its name mentions neither.
+- A pool provisioned through the range path carries its class's reservations, since it is the only path that provisions the leaf's own pool.
 
 **`internal/registry/ipam` (validation).**
 
-- `ipclass`: a non-empty `poolPer` naming neither reserved role rejected, and naming both rejected; either one alone accepted; both rejected in `uniqueWithin`; `poolPer` still immutable; `requiredScopeRoles` omits both.
-- `ipclaim`: both reserved names rejected in `spec.scope`.
+- `ipclass`: `project` rejected in `uniqueWithin`; `poolPer` still immutable; `requiredScopeRoles` omits `project`.
+- `ipclaim`: `spec.scope["project"]` rejected with a reserved-name error.
 
 **Chainsaw e2e (`test/e2e/`).**
 
@@ -343,9 +340,9 @@ That is affordable at exactly this moment and no other. The migration above dele
 
 ## Open Questions
 
-1. **Are `project` and `allProjects` the right reserved names?** `project` is the tenant kind `tenant.Identity` carries today and is what an operator would write; `consumer` and `tenant` are the alternatives. `allProjects` is chosen to pair with it so the either/or is obvious on the line; `sharedAcrossProjects` says the same thing at more length. Pick before any class ships — both names are immutable in practice, since the field is.
-2. **Should `project` be a qualified tenant instead?** `tenant.Identity` carries a kind as well as a name, and `KeyPrefix()` currently writes `project/` for both. A class that wants one pool per *organization* has no way to say so. If organizations become a real tenancy level, this becomes two reserved roles rather than one.
-3. ~~**How loud should the omission be?**~~ **Resolved: there is no omission.** A class that provisions pools names `project` or `allProjects`, and one that names neither is refused — at write time, and again when planning a cascade, so a class stored before the rule cannot fall through to the shared identity either. The objection that the server cannot tell which answer is right stands and does not apply: it refuses only the class that gives no answer, and both answers remain available.
+1. **Is `project` the right reserved name?** It is the tenant kind `tenant.Identity` carries today, and it reads correctly in `poolPer: [location, project]`. `consumer` and `tenant` are the alternatives; `consumer` is less likely to collide with a real scope role, `tenant` is what the code calls it internally, and `project` is what an operator would write. Pick one before any class ships.
+2. **Should the reserved role be `project` or a qualified tenant?** `tenant.Identity` carries a kind as well as a name, and `KeyPrefix()` currently writes `project/` for both. A class that wants one pool per *organization* has no way to say so. If organizations become a real tenancy level, this becomes two reserved roles rather than one.
+3. ~~**How loud should the omission be?**~~ **Resolved: an API warning on `IPClass` create, whenever a definition's `poolPer` is non-empty and does not name `project`.** Rejecting is not available — shared is correct, and required, for announceable public space, and the server cannot tell a project-scoped role from a platform one without a table of kinds constraint #4 forbids. A warning does not have to tell the two apart, because it states the consequence rather than guessing the intent: "this class provisions one pool per {roles} SHARED by every consuming project ... `spec.poolPer` is immutable, so add `project` now if each project should get its own pool." It fires exactly where the decision is made and is irreversible, it cannot refuse a valid class, and it costs one line of `kubectl` output — against a silence that is how one `/64` came to back two tenants' networks. Create only: `poolPer` is immutable, so repeating it on update would be noise about a decision nobody is making.
 4. **Where does the consumer belong on the pool object** — the label proposed here, a `status.consumerProject`, or a first-class `spec` field?
 5. **Should per-consumer pools eventually live in the consumer's project?** It is the only way a tenant sees the range holding its own addresses. It needs a delete guard first.
 6. **Does `IPClass.status` need to report the effective `poolPer`** for a project that holds only a reference and cannot read the definition? `requiredScopeRoles` already leaks part of it.

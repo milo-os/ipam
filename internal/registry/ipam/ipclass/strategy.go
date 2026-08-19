@@ -9,6 +9,7 @@ package ipclass
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
@@ -78,7 +79,45 @@ func (ipClassStrategy) Validate(_ context.Context, obj runtime.Object) field.Err
 	return validateIPClass(obj.(*ipam.IPClass))
 }
 
-func (ipClassStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string { return nil }
+func (ipClassStrategy) WarningsOnCreate(_ context.Context, obj runtime.Object) []string {
+	return sharedPoolWarning(obj.(*ipam.IPClass))
+}
+
+// sharedPoolWarning states, once, what a provisioning class's poolPer means for
+// consumers, when it does not name the reserved project role.
+//
+// It is a warning and not a rejection, and the reason is that the server cannot
+// tell which answer is right. Shared is correct — required, even — for
+// announceable public space: one /24 per location that every project draws
+// from, where per-consumer blocks would exhaust an aggregate after 256 projects
+// rather than 256 locations. Shared is wrong for a per-tenant prefix. The
+// distinguishing fact is whether the roles named are project-scoped kinds, and
+// answering that would need a table of kinds this service deliberately does not
+// have: scope references are opaque {apiGroup, kind, name} strings.
+//
+// So the warning states the consequence rather than guessing at intent, and it
+// fires exactly where the decision is made and is irreversible — poolPer is
+// immutable, and the pools it identifies are never renumbered, so an author who
+// meant the other thing has to replace the class rather than edit it. A
+// warning costs a line of kubectl output and cannot refuse a valid class; the
+// silence it replaces was how one /64 came to back two tenants' networks.
+//
+// Create only. An update cannot change poolPer, so repeating it on every status
+// write would be noise about a decision nobody is making.
+func sharedPoolWarning(c *ipam.IPClass) []string {
+	if c.Spec.Source != nil || len(c.Spec.PoolPer) == 0 {
+		return nil
+	}
+	roles, perConsumer := scope.PoolPerRoles(c.Spec.PoolPer)
+	if perConsumer {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"spec.poolPer does not name %q, so this class provisions one pool per {%s} SHARED by every consuming project. "+
+			"That is correct for space every project draws from, such as an announceable public block, and wrong for a "+
+			"per-tenant prefix. spec.poolPer is immutable, so add %q now if each project should get its own pool.",
+		scope.ReservedRoleProject, strings.Join(roles, ", "), scope.ReservedRoleProject)}
+}
 
 func (ipClassStrategy) AllowCreateOnUpdate() bool      { return false }
 func (ipClassStrategy) AllowUnconditionalUpdate() bool { return true }
@@ -216,42 +255,18 @@ func validateDefinition(c *ipam.IPClass) field.ErrorList {
 				"or state them on the pool itself"))
 	}
 
-	// The reserved roles say who a class's pools belong to, which is meaningful
-	// only as an axis of pool identity. uniqueWithin is already implicitly
+	// The reserved role names the consuming project, which is meaningful only
+	// as an axis of pool identity. uniqueWithin is already implicitly
 	// per-project — an address space qualifies each ref by the claiming project
-	// — so accepting them here would offer a second, redundant spelling of a
+	// — so accepting it here would offer a second, redundant spelling of a
 	// distinction the digest already makes, and an operator reading the two
 	// fields could not tell which one was doing the work.
 	for i, role := range c.Spec.UniqueWithin {
-		if scope.IsReservedRole(role) {
+		if role == scope.ReservedRoleProject {
 			allErrs = append(allErrs, field.Invalid(specPath.Child("uniqueWithin").Index(i), role,
-				fmt.Sprintf("%q is a reserved poolPer role and not a scope reference; "+
-					"uniqueWithin is already per-project, and the role is only meaningful in poolPer", role)))
-		}
-	}
-
-	// A class that provisions pools states who they are for, and neither answer
-	// is the silent one. Omitting the declaration used to mean sharing, which
-	// is how two projects that each named a network `default` came to hold one
-	// range with nothing to see (milo-os/ipam#114).
-	//
-	// Refusing rather than warning is available because the class states the
-	// answer instead of the server inferring it. The server cannot tell a
-	// project-scoped role from a platform one — scope references are opaque
-	// {apiGroup, kind, name} strings and a table of kinds is exactly what this
-	// service does not have — but it does not have to: it is not guessing which
-	// answer is right, only refusing a class that gives none. Both answers stay
-	// available, and sharing stays available, which announceable public space
-	// requires.
-	//
-	// The moment matters. spec.poolPer is immutable and a provisioned pool is
-	// never renumbered, so a class that gets this wrong is replaced rather than
-	// edited. Create is the only point at which the decision is still open, and
-	// a warning there does not stop the class being created.
-	if len(c.Spec.PoolPer) > 0 {
-		if err := scope.RequirePoolPerDeclaration(c.Spec.PoolPer); err != nil {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("poolPer"), c.Spec.PoolPer,
-				fmt.Sprintf("a class that provisions pools must declare who they are for, and this one %s", err)))
+				fmt.Sprintf("%q is a reserved scope role naming the consuming project; "+
+					"uniqueWithin is already per-project, and the role is only meaningful in poolPer",
+					scope.ReservedRoleProject)))
 		}
 	}
 

@@ -334,36 +334,39 @@ type IPClassSpec struct {
 	// This is a constraint, not a lookup. It backs a unique index, so two
 	// simultaneous claims observing no pool cannot both create one.
 	//
-	// Two role names are RESERVED, and a class that provisions pools must name
-	// exactly one of them. They answer whether a consuming project gets a range
-	// of its own or draws from one every project shares. Neither answer is the
-	// default: a class that gives neither is rejected, because sharing that
-	// nobody wrote down is how two projects that each named a network "default"
-	// came to hold one range.
+	// The role name "project" is RESERVED and names the CONSUMING project — the
+	// project whose claim triggered provisioning. It is the one role a claim
+	// does not supply: its value is read off the request, so it cannot be
+	// spoofed by a scope reference, and it never appears in
+	// status.requiredScopeRoles.
 	//
-	//	project      one pool per consuming project. The project comes from the
-	//	             request, never from a claim's spec.scope, so it cannot be
-	//	             spoofed by a scope reference and never appears in
-	//	             status.requiredScopeRoles.
-	//	allProjects  one pool every consuming project draws from. Announceable
-	//	             public IPv4 requires this: per-project blocks would exhaust
-	//	             an aggregate after one block per project instead of one per
-	//	             location.
+	//	poolPer: [location]           one pool per location, shared by every
+	//	                              consumer — what announceable public IPv4
+	//	                              requires, since per-consumer blocks would
+	//	                              exhaust the aggregate after one block per
+	//	                              project instead of one per location
+	//	poolPer: [location, project]  one pool per location per consumer — what
+	//	                              a per-tenant prefix requires
+	//	poolPer: [project]            one pool per consumer, on no other axis
+	//	poolPer: []                   one pool for the class
 	//
-	//	poolPer: [location, allProjects]  one pool per location, for all projects
-	//	poolPer: [location, project]      one pool per location per project
-	//	poolPer: [allProjects]            one pool for the class
-	//	poolPer: [project]                one pool per project, on no other axis
-	//	poolPer: []                       provisions nothing; a leaf class
+	// SHARING IS THE DEFAULT, AND SEPARATION IS OPT-IN. If "project" is not
+	// listed, every consuming project shares ONE pool for a given combination
+	// of the other roles: two projects that each claim with the same scope draw
+	// from the same prefix. A class that must keep each tenant's address space
+	// separate has to name "project"; nothing else in the class does it, and no
+	// other field implies it.
 	//
-	// The declaration is made once and cannot be revised: the field is
-	// immutable and a provisioned pool is never renumbered, so a class that
-	// gets this wrong is replaced rather than edited.
+	// Get it right the first time. PoolPer is immutable, and the pools it has
+	// already identified are never renumbered, so a class that shares when it
+	// should not have cannot be corrected — it has to be replaced, and every
+	// pool it provisioned rebuilt. Creating a provisioning class without
+	// "project" returns a warning saying so.
 	//
-	// Both reserved names are rejected in UniqueWithin, which is already
-	// implicitly per-project: an address space qualifies each reference by the
-	// claiming project, so a network named "default" in two projects is already
-	// two spaces.
+	// "project" is rejected in UniqueWithin, which is already implicitly
+	// per-project: an address space qualifies each reference by the claiming
+	// project, so a network named "default" in two projects is already two
+	// spaces.
 	// +optional
 	// +listType=atomic
 	PoolPer []string `json:"poolPer,omitempty"`
@@ -484,9 +487,9 @@ type IPClassStatus struct {
 	// rejected rather than widened, so knowing the set in advance is the
 	// difference between a clear client-side error and a round trip.
 	//
-	// Neither reserved poolPer role appears here. They are not scope
-	// references, so listing one would tell a client to set a field the server
-	// rejects.
+	// The reserved "project" role never appears here. It is supplied by the
+	// request rather than by spec.scope, so listing it would tell a client to
+	// set a field the server rejects.
 	// +optional
 	// +listType=atomic
 	RequiredScopeRoles []string `json:"requiredScopeRoles,omitempty"`

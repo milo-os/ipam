@@ -95,12 +95,17 @@ func (l CascadeLevel) OwnerProject() string {
 // The pool OBJECT lives in the project holding the class DEFINITION, not the
 // claimant's, and that is separate from what IDENTIFIES it. Two projects
 // referencing one class reach one class; whether they reach one pool is what
-// the class's poolPer declares, and it has to declare one or the other. A class
-// naming `project` gets one pool per consumer; a class naming `allProjects`
-// gets one pool every consumer draws from — the correct and safest shape for
-// announceable public space, where per-consumer blocks would exhaust the
-// aggregate after one block per project instead of one per location. A class
-// naming neither does not provision at all; its claims are refused.
+// the class's poolPer declares. A class naming the reserved project role gets
+// one pool per consumer; one that does not gets one pool shared by every
+// consumer — which is the correct and safest shape for announceable public
+// space, where per-consumer blocks would exhaust the aggregate after one block
+// per project instead of one per location.
+//
+// Sharing is the default because it is the safe one to get wrong: consumers of
+// a shared pool are kept apart by the exclusion constraint, whereas splitting
+// space nobody meant to split exhausts an aggregate. A class that must keep
+// tenants in separate address space opts in by naming the role, and cannot
+// change its mind later, because poolPer is immutable.
 func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
 	ancestry, err := LoadAncestry(ctx, tx, leaf)
 	if err != nil {
@@ -118,11 +123,6 @@ func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope
 // leaf's own pool, so the leaf is a level like any other and every level below
 // the root is provisioned the same way — including the identity row that makes
 // a later Block claim adopt this pool instead of provisioning a second one.
-//
-// Including the leaf also puts it under the same poolPer declaration rule as
-// every other level. A leaf a Block claim only ever carves OUT of provisions
-// nothing and is never asked who its pools serve; the same class asked to hold
-// its own range is, because now it has one.
 func PlanScopeRangeCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
 	ancestry, err := LoadAncestry(ctx, tx, leaf)
 	if err != nil {
@@ -134,10 +134,9 @@ func PlanScopeRangeCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, 
 
 // planLevels turns a nearest-first chain of classes into root-first levels.
 //
-// Every planning path goes through here, and that is what keeps the poolPer
-// declaration rule from having a second door: a level reached by a scope-range
-// request is checked by the same code that checks one reached by a block
-// request.
+// Both planning paths go through here, which is what makes a level's identity
+// the same whichever asked for it: the pool a ScopeRange claim provisions for a
+// class and scope is the pool a Block claim of a child class carves from.
 //
 // The consumer comes from RequireTenant, not FromContext: an untenanted caller
 // would otherwise provision into the shared identity by accident, and the
@@ -150,21 +149,9 @@ func planLevels(ctx context.Context, chain []*ResolvedClass, claimScope map[stri
 
 	levels := make([]CascadeLevel, len(chain))
 	for i, class := range chain {
-		// Every class in a planned chain provisions a pool, so every one of
-		// them has to have said who that pool is for. Validation refuses a
-		// class that does not, but validation runs on write and these classes
-		// were read: one stored before the rule, or with no poolPer at all,
-		// would otherwise fall through to the shared identity — which is the
-		// whole bug. poolPer is immutable, so the fix is a replacement, and the
-		// error says so.
-		if err := scope.RequirePoolPerDeclaration(class.Spec.PoolPer); err != nil {
-			return nil, fmt.Errorf("%w: class %q in project %q %s; replace it with one whose spec.poolPer names %q or %q",
-				scope.ErrPoolPerUndeclared, class.Name, class.Project, err,
-				scope.ReservedRoleProject, scope.ReservedRoleAllProjects)
-		}
-		// The reserved roles are dropped before projecting: neither is a
-		// ScopeRef and neither arrives on a request, so a claim cannot supply
-		// them and must not be asked to.
+		// The reserved role is dropped before projecting: it is not a ScopeRef
+		// and never arrives on a request, so a claim cannot supply it and must
+		// not be asked to.
 		roles, perConsumer := scope.PoolPerRoles(class.Spec.PoolPer)
 		projected, err := scope.ProjectFor(claimScope, roles, "poolPer")
 		if err != nil {

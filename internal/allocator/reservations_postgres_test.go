@@ -29,7 +29,7 @@ func subnetChain(t *testing.T, db *pgxpool.Pool, reservations *ipamv1alpha1.Rese
 	definition(t, tx, "platform", "subnets", ipamv1alpha1.IPClassSpec{
 		IPFamily:            ipamv1alpha1.IPv6,
 		DefaultPrefixLength: 64,
-		PoolPer:             []string{"network", scope.ReservedRoleProject},
+		PoolPer:             []string{"network"},
 		Reservations:        reservations,
 	})
 	definition(t, tx, "platform", "endpoints", ipamv1alpha1.IPClassSpec{
@@ -277,8 +277,7 @@ func TestACarveAvoidsTheParentsReservedSpace(t *testing.T) {
 
 	tx := begin(t, db)
 	definition(t, tx, "platform", "backbone", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv6, DefaultPrefixLength: 56,
-		PoolPer: []string{"location", scope.ReservedRoleAllProjects},
+		IPFamily: ipamv1alpha1.IPv6, DefaultPrefixLength: 56, PoolPer: []string{"location"},
 	})
 	definition(t, tx, "platform", "leaves", ipamv1alpha1.IPClassSpec{
 		IPFamily: ipamv1alpha1.IPv6, ParentClassName: "backbone", DefaultPrefixLength: 64,

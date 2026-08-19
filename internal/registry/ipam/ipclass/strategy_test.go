@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 )
@@ -131,7 +130,7 @@ func TestReservationsNeedAClassThatProvisionsPools(t *testing.T) {
 	}
 
 	provisioning := definition("subnets", withReservations, func(c *ipam.IPClass) {
-		c.Spec.PoolPer = []string{"location", "allProjects"}
+		c.Spec.PoolPer = []string{"location"}
 	})
 	if errs := validateIPClass(provisioning); len(errs) != 0 {
 		t.Fatalf("reservations rejected on a class that provisions pools: %v", errs)
@@ -202,7 +201,7 @@ func TestIdentityFieldsAreImmutable(t *testing.T) {
 		{
 			name:   "poolPer",
 			old:    definition("standard"),
-			mutate: func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"location", "allProjects"} },
+			mutate: func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"location"} },
 			want:   "spec.poolPer",
 		},
 		{
@@ -263,52 +262,42 @@ func TestTheReferenceErrorSaysWhereThePolicyBelongs(t *testing.T) {
 	}
 }
 
-// The reserved roles say who a class's pools belong to, and they are meaningful
-// only as an axis of POOL identity. uniqueWithin is already implicitly
-// per-project — an address space qualifies each reference by the claiming
-// project — so accepting them there would be a second spelling of a distinction
-// the digest already makes, and an operator reading the two fields could not
-// tell which one was doing the work.
-func TestTheReservedRolesAreRefusedInUniqueWithin(t *testing.T) {
-	for _, role := range []string{"project", "allProjects"} {
-		t.Run(role, func(t *testing.T) {
-			errs := validateIPClass(definition("tenant-ipv6", func(c *ipam.IPClass) {
-				c.Spec.UniqueWithin = []string{"network", role}
-			}))
-			if len(errs) == 0 {
-				t.Fatal("spec.uniqueWithin accepted a reserved role")
-			}
-			if got := errs[0].Field; got != "spec.uniqueWithin[1]" {
-				t.Errorf("error names %q, want the offending entry", got)
-			}
-			if !strings.Contains(errs[0].Detail, "reserved") {
-				t.Errorf("message %q does not say the name is reserved", errs[0].Detail)
-			}
-		})
+// The reserved role names the consuming project, and it is meaningful only as
+// an axis of POOL identity. uniqueWithin is already implicitly per-project —
+// an address space qualifies each reference by the claiming project — so
+// accepting it there would be a second spelling of a distinction the digest
+// already makes, and an operator reading the two fields could not tell which
+// one was doing the work.
+func TestTheReservedRoleIsRefusedInUniqueWithin(t *testing.T) {
+	errs := validateIPClass(definition("tenant-ipv6", func(c *ipam.IPClass) {
+		c.Spec.UniqueWithin = []string{"network", "project"}
+	}))
+	if len(errs) == 0 {
+		t.Fatal("spec.uniqueWithin accepted the reserved role")
+	}
+	if got := errs[0].Field; got != "spec.uniqueWithin[1]" {
+		t.Errorf("error names %q, want the offending entry", got)
+	}
+	if !strings.Contains(errs[0].Detail, "reserved") {
+		t.Errorf("message %q does not say the name is reserved", errs[0].Detail)
 	}
 }
 
-// The same names are how a class declares who its pools are for, so poolPer
-// must keep accepting either one.
-func TestBothDeclarationsAreAcceptedInPoolPer(t *testing.T) {
-	for _, role := range []string{"project", "allProjects"} {
-		t.Run(role, func(t *testing.T) {
-			errs := validateIPClass(definition("tenant-ipv6", func(c *ipam.IPClass) {
-				c.Spec.PoolPer = []string{"network", role}
-			}))
-			if len(errs) != 0 {
-				t.Fatalf("poolPer: [network, %s] rejected: %v", role, errs)
-			}
-		})
+// The same role IS how a class asks for a pool per consumer, so poolPer must
+// keep accepting it.
+func TestTheReservedRoleIsAcceptedInPoolPer(t *testing.T) {
+	errs := validateIPClass(definition("tenant-ipv6", func(c *ipam.IPClass) {
+		c.Spec.PoolPer = []string{"network", "project"}
+	}))
+	if len(errs) != 0 {
+		t.Fatalf("poolPer: [network, project] rejected: %v", errs)
 	}
 }
 
 // poolPer is what a pool's identity is derived from, and a provisioned pool is
 // never renumbered. Editing it would strand every existing pool.
 func TestPoolPerStaysImmutable(t *testing.T) {
-	old := definition("tenant-ipv6", func(c *ipam.IPClass) {
-		c.Spec.PoolPer = []string{"network", "allProjects"}
-	})
+	old := definition("tenant-ipv6", func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"network"} })
 	updated := definition("tenant-ipv6", func(c *ipam.IPClass) {
 		c.Spec.PoolPer = []string{"network", "project"}
 	})
@@ -321,93 +310,65 @@ func TestPoolPerStaysImmutable(t *testing.T) {
 	}
 }
 
-// The omission that produced #114 was silent by construction: a class that said
-// nothing about consumers got one pool for all of them, because that is what
-// the digest computed. Making the class say which it wants makes "undeclared"
-// unrepresentable, and it is a refusal rather than a warning because a warning
-// does not stop the class being created — and spec.poolPer is immutable, so the
-// class cannot be corrected afterwards.
-//
-// The server is not guessing which answer is right. It cannot: scope references
-// are opaque {apiGroup, kind, name} strings and there is no table of
-// project-scoped kinds to consult. It only refuses a class that gives none.
-func TestAProvisioningClassMustDeclareWhoItsPoolsAreFor(t *testing.T) {
+// The omission that produced #114 is silent by construction: a class that says
+// nothing about consumers gets one pool for all of them because that is what
+// the digest computes. It cannot be REJECTED — shared is correct, and required,
+// for announceable public space — and the server cannot tell the two apart
+// without a table of project-scoped kinds it deliberately does not have. So it
+// is stated once, where the decision is made and is irreversible.
+func TestASharedProvisioningClassWarnsOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		class *ipam.IPClass
 		want  bool
 	}{
 		{
-			name:  "per location, saying nothing about consumers",
+			name:  "provisions per location, shared across consumers",
 			class: definition("public-ipv4-location", func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"location"} }),
 			want:  true,
 		},
 		{
-			name: "per location, declared shared",
-			class: definition("public-ipv4-location", func(c *ipam.IPClass) {
-				c.Spec.PoolPer = []string{"location", "allProjects"}
-			}),
-		},
-		{
-			name: "per location, declared per consumer",
+			name: "provisions per location per consumer",
 			class: definition("tenant-ipv6", func(c *ipam.IPClass) {
 				c.Spec.PoolPer = []string{"location", "project"}
 			}),
+			want: false,
 		},
 		{
-			name: "both declarations at once",
-			class: definition("confused", func(c *ipam.IPClass) {
-				c.Spec.PoolPer = []string{"location", "project", "allProjects"}
-			}),
-			want: true,
-		},
-		{
-			// A leaf provisions nothing, so there is nobody for its pools to
-			// belong to.
+			// A leaf provisions nothing, so there is no sharing to state.
 			name:  "provisions nothing",
 			class: definition("public-ipv4-unicast"),
+			want:  false,
 		},
 		{
-			// A reference states no policy at all; the declaration belongs on
-			// the definition, once, not on every project that points at it.
+			// A reference states no policy at all; the warning belongs on the
+			// definition, once, not on every project that points at it.
 			name:  "a reference",
 			class: reference("ours", "platform", "public-ipv4-location"),
+			want:  false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			errs := validateIPClass(tc.class)
-			var got *field.Error
-			for _, e := range errs {
-				if e.Field == "spec.poolPer" {
-					got = e
-				}
-			}
-			if (got != nil) != tc.want {
-				t.Fatalf("errors = %v, want a spec.poolPer error: %v", errs, tc.want)
+			warnings := ipClassStrategy{}.WarningsOnCreate(context.Background(), tc.class)
+			if got := len(warnings) > 0; got != tc.want {
+				t.Fatalf("warnings = %v, want a warning: %v", warnings, tc.want)
 			}
 			if !tc.want {
 				return
 			}
-			// The message has to tell whoever is running kubectl what to write,
-			// not merely that something is wrong.
-			for _, want := range []string{"project", "allProjects"} {
-				if !strings.Contains(got.Detail, want) {
-					t.Errorf("detail %q does not name %q", got.Detail, want)
-				}
+			// The warning has to name the field to add and be readable by
+			// whoever is running kubectl, not just greppable.
+			if !strings.Contains(warnings[0], "project") || !strings.Contains(warnings[0], "poolPer") {
+				t.Errorf("warning %q does not name the field and the role to add", warnings[0])
 			}
 		})
 	}
 }
 
-// Nothing warns any more: the case a warning covered is now refused, and there
-// is no second, quieter class of the same mistake left to mention.
-func TestAProvisioningClassDoesNotWarn(t *testing.T) {
-	c := definition("public-ipv4-location", func(c *ipam.IPClass) {
-		c.Spec.PoolPer = []string{"location", "allProjects"}
-	})
-	if w := (ipClassStrategy{}).WarningsOnCreate(context.Background(), c); len(w) != 0 {
-		t.Errorf("create warned: %v", w)
-	}
+// An update cannot change poolPer, so repeating the warning on every status
+// write would be noise about a decision nobody is making.
+func TestTheSharedPoolWarningIsNotRepeatedOnUpdate(t *testing.T) {
+	c := definition("public-ipv4-location", func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"location"} })
 	if w := (ipClassStrategy{}).WarningsOnUpdate(context.Background(), c, c); len(w) != 0 {
 		t.Errorf("update warned: %v", w)
 	}

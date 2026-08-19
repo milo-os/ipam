@@ -5,7 +5,6 @@ import (
 	"sync"
 	"testing"
 
-	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/internal/testdb"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -19,7 +18,7 @@ func TestFirstClaimProvisionsTheChain(t *testing.T) {
 
 	tx := begin(t, db)
 	definition(t, tx, "platform", "backbone", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location", scope.ReservedRoleAllProjects},
+		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location"},
 	})
 	definition(t, tx, "platform", "subnets", ipamv1alpha1.IPClassSpec{
 		IPFamily: ipamv1alpha1.IPv4, ParentClassName: "backbone", DefaultPrefixLength: 24,
@@ -79,7 +78,7 @@ func TestAHerdOfFirstClaimsProducesOnePool(t *testing.T) {
 
 	tx := begin(t, db)
 	definition(t, tx, "platform", "backbone", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location", scope.ReservedRoleAllProjects},
+		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location"},
 	})
 	definition(t, tx, "platform", "subnets", ipamv1alpha1.IPClassSpec{
 		IPFamily: ipamv1alpha1.IPv4, ParentClassName: "backbone", DefaultPrefixLength: 24,
@@ -145,7 +144,7 @@ func TestEachScopeGetsItsOwnPool(t *testing.T) {
 
 	tx := begin(t, db)
 	definition(t, tx, "platform", "backbone", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location", scope.ReservedRoleAllProjects},
+		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location"},
 	})
 	definition(t, tx, "platform", "subnets", ipamv1alpha1.IPClassSpec{
 		IPFamily: ipamv1alpha1.IPv4, ParentClassName: "backbone", DefaultPrefixLength: 24,
@@ -183,7 +182,7 @@ func TestAClaimMissingAScopeRoleProvisionsNothing(t *testing.T) {
 
 	tx := begin(t, db)
 	definition(t, tx, "platform", "backbone", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location", scope.ReservedRoleAllProjects},
+		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location"},
 	})
 	definition(t, tx, "platform", "subnets", ipamv1alpha1.IPClassSpec{
 		IPFamily: ipamv1alpha1.IPv4, ParentClassName: "backbone", DefaultPrefixLength: 24,

@@ -157,17 +157,18 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 	}
 
 	for role, ref := range c.Spec.Scope {
-		// The reserved roles say who a class's pools belong to, and the server
-		// reads the consuming project off the request rather than the body.
-		// Accepting them here is the whole attack: a claimant could otherwise
-		// name another project's pool by writing a scope reference. Rejecting
-		// is not merely safer than ignoring — a claim that names one has
-		// misunderstood which pool it will reach, and silently dropping the
-		// field would confirm the misunderstanding.
-		if scope.IsReservedRole(role) {
+		// The reserved role names the consuming project, and the server reads
+		// it off the request rather than the body. Accepting it here is the
+		// whole attack: a claimant could otherwise name another project's pool
+		// by writing a scope reference. Rejecting is not merely safer than
+		// ignoring — a claim that names it has misunderstood which pool it will
+		// reach, and silently dropping the field would confirm the
+		// misunderstanding.
+		if role == scope.ReservedRoleProject {
 			allErrs = append(allErrs, field.Invalid(specPath.Child("scope", role), ref,
-				fmt.Sprintf("%q is a reserved poolPer role and not a scope reference; "+
-					"which pool a claim reaches is declared by its class and taken from the request", role)))
+				fmt.Sprintf("%q is a reserved scope role naming the consuming project; "+
+					"it is taken from the request and must not be supplied",
+					scope.ReservedRoleProject)))
 			continue
 		}
 		if ref.Kind == "" || ref.Name == "" {

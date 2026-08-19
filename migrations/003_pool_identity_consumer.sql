@@ -10,11 +10,9 @@
 -- and nothing to see. See docs/enhancements/114-pool-identity-per-consumer-project.md.
 --
 -- internal/scope now takes a PoolTenancy of (owner, consumer) rather than one
--- tenant string, and IPClass.spec.poolPer gained two reserved roles: `project`,
--- which makes the consumer part of the identity, and `allProjects`, which says
--- it deliberately is not. A class that provisions pools must name one of them,
--- so no class can go on sharing without having said so. The canonical form went
--- from ipam.scope.v2 to ipam.scope.v4.
+-- tenant string, and IPClass.spec.poolPer gained the reserved role `project`
+-- that decides whether the consumer is part of the identity. The canonical form
+-- went from ipam.scope.v2 to ipam.scope.v4.
 --
 -- WHY THIS IS A RESET AND NOT A BACKFILL
 --
@@ -36,14 +34,11 @@
 --   * Operator-authored pools. They are identified by their own names and are
 --     never provisioned by a class, so they never appear in ipam_pool_identity.
 --     Their space is returned to them by the carve rows this deletes.
---   * IPClass objects. Every class that provisions pools must now name
---     `project` or `allProjects` in spec.poolPer, and no default here can make
---     that decision: shared is correct for announceable public space and wrong
---     for a per-tenant prefix. spec.poolPer is immutable, so a class written
---     before the rule is replaced rather than edited, and until it is, its
---     claims are refused rather than quietly sharing. This migration deletes
---     the pools such a class provisioned, so replacing it costs nothing here —
---     which is the whole reason the rule can be this strict.
+--   * IPClass objects. Every class that wants a pool per consumer must add
+--     `project` to spec.poolPer, and no default here can make that decision:
+--     shared is correct for announceable public space and wrong for a
+--     per-tenant prefix. spec.poolPer is immutable, so those classes are
+--     replaced before the first claim lands.
 --   * IPClaim and IPAllocation objects. If any existed, this migration would
 --     have aborted.
 

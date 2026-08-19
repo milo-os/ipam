@@ -8,7 +8,6 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"k8s.io/component-base/metrics/legacyregistry"
 
-	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/internal/testdb"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -33,7 +32,7 @@ func TestALostRaceIsRecordedAsAnOutcomeNotAnError(t *testing.T) {
 
 	tx := begin(t, db)
 	definition(t, tx, "platform", parent, ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location", scope.ReservedRoleAllProjects},
+		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 20, PoolPer: []string{"location"},
 	})
 	definition(t, tx, "platform", leafCl, ipamv1alpha1.IPClassSpec{
 		IPFamily: ipamv1alpha1.IPv4, ParentClassName: parent, DefaultPrefixLength: 24,

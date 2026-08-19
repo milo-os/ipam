@@ -2,7 +2,6 @@ package allocator
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -17,15 +16,15 @@ import (
 
 // perTenantChain seeds the shape #114 was reported against: one platform class
 // carving per network, referenced by two projects, each of which names a
-// network `default`. perConsumer decides which declaration the provisioning
-// class makes; there is no third option, which is the point.
+// network `default`. perConsumer decides whether the provisioning class names
+// the reserved project role.
 func perTenantChain(t *testing.T, db *pgxpool.Pool, perConsumer bool) {
 	t.Helper()
 	ctx := context.Background()
 
-	poolPer := []string{"network", scope.ReservedRoleAllProjects}
+	poolPer := []string{"network"}
 	if perConsumer {
-		poolPer = []string{"network", scope.ReservedRoleProject}
+		poolPer = append(poolPer, scope.ReservedRoleProject)
 	}
 
 	tx := begin(t, db)
@@ -139,7 +138,8 @@ func TestTwoConsumersOfOnePerConsumerClassGetTwoPools(t *testing.T) {
 // TestTwoConsumersOfASharedClassGetOnePool is the guard against over-correcting
 // #114, and it is the case the fix must not break.
 //
-// A class that names `allProjects` provisions one pool for every consumer. That is what an announceable public block requires: per-consumer
+// A class that does NOT name the reserved role provisions one pool for every
+// consumer. That is what an announceable public block requires: per-consumer
 // blocks would exhaust the aggregate after one block per project rather than
 // one per location, and a project with one instance would burn a whole /24.
 //
@@ -156,8 +156,8 @@ func TestTwoConsumersOfASharedClassGetOnePool(t *testing.T) {
 	y := resolveFor(t, db, "projy", claimScope)
 
 	if x != y {
-		t.Fatalf("a class naming %q provisioned two pools, %q and %q",
-			scope.ReservedRoleAllProjects, x, y)
+		t.Fatalf("a class that did not name %q provisioned two pools, %q and %q",
+			scope.ReservedRoleProject, x, y)
 	}
 
 	// A shared pool carries no consumer label. Its absence is the fact an
@@ -424,162 +424,6 @@ func TestPlanCascadeRefusesAnUntenantedCaller(t *testing.T) {
 	}
 }
 
-// TestAnUndeclaredClassProvisionsNothing is the other half of the fix: the half
-// that makes undeclared sharing impossible rather than merely discouraged.
-//
-// Validation refuses a provisioning class that says neither `project` nor
-// `allProjects`, but validation runs on write and a class is read. One written
-// before the rule existed looks exactly like the fixture here, and spec.poolPer
-// is immutable, so it cannot be corrected — it has to be replaced. Until it is,
-// its claims are refused rather than being quietly handed the shared identity,
-// which is the behaviour #114 reported.
-func TestAnUndeclaredClassProvisionsNothing(t *testing.T) {
-	db := testdb.Pool(t)
-	ctx := context.Background()
-
-	tx := begin(t, db)
-	definition(t, tx, "platform", "tenant-ipv6", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv6, DefaultPrefixLength: 48, PoolPer: []string{"network"},
-	})
-	definition(t, tx, "platform", "tenant-subnet", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv6, ParentClassName: "tenant-ipv6", DefaultPrefixLength: 64,
-	})
-	reference(t, tx, "projx", "tenant-subnet", "platform", "tenant-subnet", nil)
-	reference(t, tx, "projy", "tenant-subnet", "platform", "tenant-subnet", nil)
-	offerPool(t, tx, "platform", "root", "fd00::/32", "tenant-ipv6", nil)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit fixtures: %v", err)
-	}
-
-	claimScope := map[string]ipam.ScopeRef{"network": claimScopeRef("Network", "default")}
-	for _, project := range []string{"projx", "projy"} {
-		read := begin(t, db)
-		leaf, err := LoadClass(ctxIn(project), read, "tenant-subnet")
-		if err != nil {
-			t.Fatalf("LoadClass in %q: %v", project, err)
-		}
-		_ = read.Rollback(ctx)
-
-		_, err = ResolvePool(ctxIn(project), db, leaf, claimScope)
-		if !errors.Is(err, scope.ErrPoolPerUndeclared) {
-			t.Fatalf("ResolvePool for %q returned %v, want ErrPoolPerUndeclared", project, err)
-		}
-		// The error has to say what to write, since the class cannot be edited.
-		for _, want := range []string{"tenant-ipv6", scope.ReservedRoleProject, scope.ReservedRoleAllProjects} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q does not name %q", err, want)
-			}
-		}
-	}
-
-	var identities int
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM ipam_pool_identity`).Scan(&identities); err != nil {
-		t.Fatalf("count identities: %v", err)
-	}
-	if identities != 0 {
-		t.Errorf("an undeclared class provisioned %d pools", identities)
-	}
-}
-
-// TestAnUndeclaredClassHoldsNoRangeEither is TestAnUndeclaredClassProvisionsNothing
-// through the other door.
-//
-// A scope-range request plans the SAME chain with the leaf included instead of
-// excluded, so a class that never had to declare anything as a block claim's
-// leaf — it provisions nothing there, it is only carved out of — is asked to
-// declare the moment it is asked to hold its own range. If the range path did
-// not refuse, an undeclared class would be reachable through the newer
-// endpoint and #114's two tenants would land in one range after all, which is
-// the whole thing the declaration rule exists to make unrepresentable.
-//
-// A non-empty poolPer is the case that matters: the range path already refuses
-// an EMPTY one with ErrClassHoldsNoRange, and `poolPer: [network]` sails past
-// that guard while declaring nothing.
-func TestAnUndeclaredClassHoldsNoRangeEither(t *testing.T) {
-	db := testdb.Pool(t)
-	ctx := context.Background()
-
-	tx := begin(t, db)
-	definition(t, tx, "platform", "tenant-ipv6", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv6, DefaultPrefixLength: 48, PoolPer: []string{"network"},
-	})
-	reference(t, tx, "projx", "tenant-ipv6", "platform", "tenant-ipv6", nil)
-	reference(t, tx, "projy", "tenant-ipv6", "platform", "tenant-ipv6", nil)
-	offerPool(t, tx, "platform", "root", "fd00::/32", "tenant-ipv6", nil)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit fixtures: %v", err)
-	}
-
-	claimScope := map[string]ipam.ScopeRef{"network": claimScopeRef("Network", "default")}
-	for _, project := range []string{"projx", "projy"} {
-		read := begin(t, db)
-		leaf, err := LoadClass(ctxIn(project), read, "tenant-ipv6")
-		if err != nil {
-			t.Fatalf("LoadClass in %q: %v", project, err)
-		}
-		_ = read.Rollback(ctx)
-
-		_, err = ResolveScopeRange(ctxIn(project), db, leaf, claimScope)
-		if !errors.Is(err, scope.ErrPoolPerUndeclared) {
-			t.Fatalf("ResolveScopeRange for %q returned %v, want ErrPoolPerUndeclared", project, err)
-		}
-		for _, want := range []string{"tenant-ipv6", scope.ReservedRoleProject, scope.ReservedRoleAllProjects} {
-			if !strings.Contains(err.Error(), want) {
-				t.Errorf("error %q does not name %q", err, want)
-			}
-		}
-	}
-
-	var identities int
-	if err := db.QueryRow(ctx, `SELECT count(*) FROM ipam_pool_identity`).Scan(&identities); err != nil {
-		t.Fatalf("count identities: %v", err)
-	}
-	if identities != 0 {
-		t.Errorf("an undeclared class provisioned %d pools through the range path", identities)
-	}
-}
-
-// An ANCESTOR that declares nothing is refused too, not just the leaf. The
-// range path plans the whole chain, and a level nobody checked would provision
-// a shared pool above a properly declared one.
-func TestAnUndeclaredANCESTORHoldsNoRange(t *testing.T) {
-	db := testdb.Pool(t)
-	ctx := context.Background()
-
-	tx := begin(t, db)
-	definition(t, tx, "platform", "tenant-ipv6", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv6, DefaultPrefixLength: 48, PoolPer: []string{"network"},
-	})
-	definition(t, tx, "platform", "tenant-subnet", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv6, ParentClassName: "tenant-ipv6", DefaultPrefixLength: 64,
-		PoolPer: []string{"network", "location", scope.ReservedRoleProject},
-	})
-	reference(t, tx, "projx", "tenant-subnet", "platform", "tenant-subnet", nil)
-	offerPool(t, tx, "platform", "root", "fd00::/32", "tenant-ipv6", nil)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit fixtures: %v", err)
-	}
-
-	read := begin(t, db)
-	leaf, err := LoadClass(ctxIn("projx"), read, "tenant-subnet")
-	if err != nil {
-		t.Fatalf("LoadClass: %v", err)
-	}
-	_ = read.Rollback(ctx)
-
-	claimScope := map[string]ipam.ScopeRef{
-		"network":  claimScopeRef("Network", "default"),
-		"location": claimScopeRef("Location", "lon1"),
-	}
-	_, err = ResolveScopeRange(ctxIn("projx"), db, leaf, claimScope)
-	if !errors.Is(err, scope.ErrPoolPerUndeclared) {
-		t.Fatalf("ResolveScopeRange returned %v, want ErrPoolPerUndeclared for the undeclared ancestor", err)
-	}
-	if !strings.Contains(err.Error(), "tenant-ipv6") {
-		t.Errorf("error %q does not name the undeclared ancestor", err)
-	}
-}
-
 // #114's own scenario, taken through the range door: two tenants each ask their
 // platform class to hold the range for a network they both called `default`.
 //
@@ -641,5 +485,121 @@ func TestTwoConsumersHoldSeparateRangesForOneNetworkName(t *testing.T) {
 		if owner != project {
 			t.Errorf("range carve for %q attributed to %q", project, owner)
 		}
+	}
+}
+
+// A range claim and a block claim must derive the SAME pool for one class and
+// scope, under both tenancy shapes.
+//
+// Two changes meet here. The digest now folds in the consumer, and there are
+// now two code paths that take it: PlanScopeRangeCascade plans the leaf's own
+// pool, PlanCascade plans that same pool as the block claim's parent. They
+// agree only because they run the same loop — if they ever diverged, a tenant
+// that pre-created its network's range would find its endpoints addressed out
+// of a second prefix provisioned beside it, and the range it published would
+// name space nothing lives in.
+func TestARangeAndABlockDeriveOnePool(t *testing.T) {
+	for _, perConsumer := range []bool{true, false} {
+		name := "shared"
+		if perConsumer {
+			name = "per-consumer"
+		}
+		t.Run(name, func(t *testing.T) {
+			db := testdb.Pool(t)
+			ctx := context.Background()
+			perTenantChain(t, db, perConsumer)
+
+			tx := begin(t, db)
+			reference(t, tx, "projx", "tenant-ipv6", "platform", "tenant-ipv6", nil)
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit reference: %v", err)
+			}
+
+			claimScope := map[string]ipam.ScopeRef{"network": claimScopeRef("Network", "default")}
+
+			read := begin(t, db)
+			rangeLeaf, err := LoadClass(ctxIn("projx"), read, "tenant-ipv6")
+			if err != nil {
+				t.Fatalf("LoadClass tenant-ipv6: %v", err)
+			}
+			blockLeaf, err := LoadClass(ctxIn("projx"), read, "tenant-subnet")
+			if err != nil {
+				t.Fatalf("LoadClass tenant-subnet: %v", err)
+			}
+			_ = read.Rollback(ctx)
+
+			rangeKey, err := ResolveScopeRange(ctxIn("projx"), db, rangeLeaf, claimScope)
+			if err != nil {
+				t.Fatalf("ResolveScopeRange: %v", err)
+			}
+			// tenant-subnet provisions nothing, so a block claim of it draws
+			// straight out of tenant-ipv6's pool: the very pool the range
+			// claim holds.
+			blockKey, err := ResolvePool(ctxIn("projx"), db, blockLeaf, claimScope)
+			if err != nil {
+				t.Fatalf("ResolvePool: %v", err)
+			}
+			if blockKey != rangeKey {
+				t.Fatalf("block claim draws from %q, range claim holds %q", blockKey, rangeKey)
+			}
+
+			// And exactly one tenant-ipv6 pool exists, so the block claim
+			// adopted the range rather than provisioning beside it.
+			var pools int
+			if err := db.QueryRow(ctx,
+				`SELECT count(*) FROM ipam_objects
+				  WHERE kind = 'IPPool'
+				    AND ipam_data_to_jsonb(data) -> 'metadata' -> 'labels' ->> 'ipam.miloapis.com/provisioned-by' = 'tenant-ipv6'`,
+			).Scan(&pools); err != nil {
+				t.Fatalf("count pools: %v", err)
+			}
+			if pools != 1 {
+				t.Errorf("a range and a block produced %d tenant-ipv6 pools, want 1", pools)
+			}
+		})
+	}
+}
+
+// The shared half of the pair above. A class that does not name the reserved
+// role holds ONE range that both consumers reach, which is the documented
+// default and is what announceable public space needs — so the second consumer
+// to ask finds the range already held rather than getting one of its own.
+func TestTwoConsumersOfASharedClassReachOneRange(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+
+	tx := begin(t, db)
+	definition(t, tx, "platform", "public-v4", ipamv1alpha1.IPClassSpec{
+		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 24, PoolPer: []string{"location"},
+	})
+	reference(t, tx, "projx", "public-v4", "platform", "public-v4", nil)
+	reference(t, tx, "projy", "public-v4", "platform", "public-v4", nil)
+	offerPool(t, tx, "platform", "root", "198.51.100.0/22", "public-v4", nil)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit fixtures: %v", err)
+	}
+
+	claimScope := map[string]ipam.ScopeRef{"location": claimScopeRef("Location", "lon1")}
+	keys := map[string]string{}
+	for _, project := range []string{"projx", "projy"} {
+		read := begin(t, db)
+		leaf, err := LoadClass(ctxIn(project), read, "public-v4")
+		if err != nil {
+			t.Fatalf("LoadClass in %q: %v", project, err)
+		}
+		_ = read.Rollback(ctx)
+
+		key, err := ResolveScopeRange(ctxIn(project), db, leaf, claimScope)
+		if err != nil {
+			t.Fatalf("ResolveScopeRange for %q: %v", project, err)
+		}
+		keys[project] = key
+	}
+
+	if keys["projx"] != keys["projy"] {
+		t.Fatalf("a shared class handed out two ranges, %q and %q", keys["projx"], keys["projy"])
+	}
+	if strings.Contains(keys["projx"], "projx") || strings.Contains(keys["projx"], "projy") {
+		t.Errorf("shared range pool %q names a consumer; no one consumer owns it", keys["projx"])
 	}
 }
