@@ -483,6 +483,18 @@ type IPAllocationList struct {
 // IPClaim — a long-lived request for an address of a named class.
 // ----------------------------------------------------------------------------
 
+// ClaimTarget selects what a claim binds: a block carved out of the range its
+// class holds for its scope, or that whole range.
+type ClaimTarget string
+
+const (
+	// TargetBlock binds a block from inside the range. The default.
+	TargetBlock ClaimTarget = "Block"
+	// TargetScopeRange binds the whole range the claim's class holds for the
+	// claim's scope. Only a class naming poolPer holds one.
+	TargetScopeRange ClaimTarget = "ScopeRange"
+)
+
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +genclient
 
@@ -521,6 +533,9 @@ type IPClaimSpec struct {
 	// parent chain needs to resolve a pool, is rejected rather than falling
 	// back to a wider comparison. Immutable.
 	Scope map[string]ScopeRef
+
+	// Target selects what this claim binds. Empty means Block. Immutable.
+	Target ClaimTarget
 
 	// ReclaimPolicy overrides the class default for this claim.
 	ReclaimPolicy ReclaimPolicy

@@ -275,3 +275,69 @@ func TestTheSameBadReservationIsRefusedOnAPoolAndOnAClass(t *testing.T) {
 		})
 	}
 }
+
+// A pool's own withheld positions are held by the pool, not allocated from it.
+// Counting them as allocations makes every pool that withholds anything
+// permanently undeletable, with an error naming claims that do not exist.
+func TestAPoolThatWithholdsSpaceIsStillDeletable(t *testing.T) {
+	db := testdb.Pool(t)
+	s := newPostgresPoolStorage(t, db)
+	ctx := poolCtx("tenant-a")
+
+	pool := rootPoolObj("reserving", "10.180.0.0/16", ipam.IPv4)
+	pool.Spec.Reservations = &ipam.ReservationSpec{Leading: 1, UnitPrefixLength: 24}
+	if err := createPool(t, s, ctx, pool); err != nil {
+		t.Fatalf("create pool: %v", err)
+	}
+
+	poolKey := poolStorageKey("tenant-a", "reserving")
+	alloc := allocator.NewPostgresPrefixAllocator()
+	claimKey := "tenant-a/ipclaims/c1"
+
+	// The positions are written the first time the pool is asked for space.
+	tx, err := db.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	cidr, err := alloc.AllocatePrefix(context.Background(), tx, allocator.PrefixRequest{
+		PoolKey: poolKey, PrefixLen: 24, IPFamily: "IPv4",
+		ClaimKey: claimKey, OwnerProject: "tenant-a",
+	})
+	if err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("AllocatePrefix: %v", err)
+	}
+	if _, err := alloc.Release(context.Background(), tx, claimKey); err != nil {
+		_ = tx.Rollback(context.Background())
+		t.Fatalf("Release: %v", err)
+	}
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if cidr == "10.180.0.0/24" {
+		t.Fatalf("claim received %s, the withheld block", cidr)
+	}
+
+	var reserved int
+	if err := db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM ipam_cidr_allocations
+		  WHERE pool_key = $1 AND purpose = 'Reservation'`, poolKey).Scan(&reserved); err != nil {
+		t.Fatalf("count reservations: %v", err)
+	}
+	if reserved != 1 {
+		t.Fatalf("pool holds %d withheld positions, want 1", reserved)
+	}
+
+	if _, _, err := s.Delete(ctx, "reserving", nil, &metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("Delete returned %v; a pool holding only its own withheld space must be deletable", err)
+	}
+
+	var left int
+	if err := db.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM ipam_cidr_allocations WHERE pool_key = $1`, poolKey).Scan(&left); err != nil {
+		t.Fatalf("count remaining allocations: %v", err)
+	}
+	if left != 0 {
+		t.Errorf("%d allocation row(s) outlived the pool", left)
+	}
+}

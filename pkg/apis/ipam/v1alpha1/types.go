@@ -805,6 +805,37 @@ type IPAllocationList struct {
 // IPClaim — a long-lived request for an address of a named class.
 // ----------------------------------------------------------------------------
 
+// ClaimTarget selects WHAT a claim binds: a block carved out of the range its
+// class holds for the scope it was made for, or that whole range.
+//
+// The two are the same address space seen from either side. A Block claim of a
+// child class carves from the range its parent class holds; a ScopeRange claim
+// binds that range itself. Which is why this is a field on the claim rather
+// than a resource of its own: entitlement, quota, retention and release all
+// mean the same thing for both, and a second kind would restate every one of
+// them.
+// +kubebuilder:validation:Enum=Block;ScopeRange
+type ClaimTarget string
+
+const (
+	// TargetBlock binds a block from inside the range the claim's class draws
+	// from. The default, and what every claim written before this field
+	// existed asks for.
+	TargetBlock ClaimTarget = "Block"
+	// TargetScopeRange binds the whole range the claim's class holds for the
+	// claim's scope: the pool a Block claim of a child class would carve from.
+	//
+	// This is how a range comes into existence before anything is allocated
+	// inside it. Without it the only way to make a range exist is to allocate
+	// something underneath it, which forces the caller to invent a scope it
+	// does not have yet and leaves a block nothing will ever use.
+	//
+	// Only a class that names poolPer holds a range — poolPer is what makes a
+	// class provision pools at all. A claim naming any other class is refused
+	// rather than handed a pool no allocation would ever be served from.
+	TargetScopeRange ClaimTarget = "ScopeRange"
+)
+
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:shortName=ipclaim
 // +kubebuilder:subresource:status
@@ -869,6 +900,14 @@ type IPClaimSpec struct {
 	// incoherent.
 	// +optional
 	Scope map[string]ScopeRef `json:"scope,omitempty"`
+
+	// Target selects what this claim binds. Empty means Block.
+	//
+	// Immutable, for the same reason className is: the two targets bind
+	// different objects, so changing it would mean releasing one and taking
+	// the other under a name whose holder never changed.
+	// +optional
+	Target ClaimTarget `json:"target,omitempty"`
 
 	// ReclaimPolicy overrides the class default for this claim.
 	// +optional

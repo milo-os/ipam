@@ -449,6 +449,7 @@ func convert_v1alpha1_IPClaim_To_ipam(in *IPClaim, out *ipam.IPClaim) error {
 		Address:       in.Spec.Address,
 		PrefixLength:  copyInt32Ptr(in.Spec.PrefixLength),
 		Scope:         toIpamScope(in.Spec.Scope),
+		Target:        ipam.ClaimTarget(in.Spec.Target),
 		ReclaimPolicy: ipam.ReclaimPolicy(in.Spec.ReclaimPolicy),
 		OwnerRef:      toIpamObjectRef(in.Spec.OwnerRef),
 	}
@@ -471,6 +472,7 @@ func convert_ipam_IPClaim_To_v1alpha1(in *ipam.IPClaim, out *IPClaim) error {
 		Address:       in.Spec.Address,
 		PrefixLength:  copyInt32Ptr(in.Spec.PrefixLength),
 		Scope:         toV1Scope(in.Spec.Scope),
+		Target:        ClaimTarget(in.Spec.Target),
 		ReclaimPolicy: ReclaimPolicy(in.Spec.ReclaimPolicy),
 		OwnerRef:      toV1ObjectRef(in.Spec.OwnerRef),
 	}

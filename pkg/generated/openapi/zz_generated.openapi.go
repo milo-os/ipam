@@ -534,6 +534,13 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) com
 							},
 						},
 					},
+					"target": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Target selects what this claim binds. Empty means Block.\n\nImmutable, for the same reason className is: the two targets bind different objects, so changing it would mean releasing one and taking the other under a name whose holder never changed.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"reclaimPolicy": {
 						SchemaProps: spec.SchemaProps{
 							Description: "ReclaimPolicy overrides the class default for this claim.",

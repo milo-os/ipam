@@ -101,30 +101,62 @@ func (l CascadeLevel) OwnerProject() string {
 // announceable public space, where per-consumer blocks would exhaust the
 // aggregate after one block per project instead of one per location. A class
 // naming neither does not provision at all; its claims are refused.
+func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
+	ancestry, err := LoadAncestry(ctx, tx, leaf)
+	if err != nil {
+		return nil, err
+	}
+	return planLevels(ctx, ancestry, claimScope)
+}
+
+// PlanScopeRangeCascade computes the pools that must exist for a class to hold
+// the range its scope names, ending with the class's own pool.
+//
+// It is PlanCascade with the leaf included rather than excluded, and that one
+// difference is the whole feature. A Block claim stops at the leaf's PARENT,
+// because the leaf binds an allocation out of it. A ScopeRange claim binds the
+// leaf's own pool, so the leaf is a level like any other and every level below
+// the root is provisioned the same way — including the identity row that makes
+// a later Block claim adopt this pool instead of provisioning a second one.
+//
+// Including the leaf also puts it under the same poolPer declaration rule as
+// every other level. A leaf a Block claim only ever carves OUT of provisions
+// nothing and is never asked who its pools serve; the same class asked to hold
+// its own range is, because now it has one.
+func PlanScopeRangeCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
+	ancestry, err := LoadAncestry(ctx, tx, leaf)
+	if err != nil {
+		return nil, err
+	}
+	// LoadAncestry is nearest-first, so the leaf goes on the front.
+	return planLevels(ctx, append([]*ResolvedClass{leaf}, ancestry...), claimScope)
+}
+
+// planLevels turns a nearest-first chain of classes into root-first levels.
+//
+// Every planning path goes through here, and that is what keeps the poolPer
+// declaration rule from having a second door: a level reached by a scope-range
+// request is checked by the same code that checks one reached by a block
+// request.
 //
 // The consumer comes from RequireTenant, not FromContext: an untenanted caller
 // would otherwise provision into the shared identity by accident, and the
 // consumer must be the same discriminator the storage key prefix uses.
-func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
+func planLevels(ctx context.Context, chain []*ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
 	consumer, err := tenant.RequireTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	ancestry, err := LoadAncestry(ctx, tx, leaf)
-	if err != nil {
-		return nil, err
-	}
-
-	levels := make([]CascadeLevel, len(ancestry))
-	for i, class := range ancestry {
-		// Every class in an ancestry provisions a pool, so every one of them
-		// has to have said who that pool is for. Validation refuses a class
-		// that does not, but validation runs on write and these classes were
-		// read: one stored before the rule, or with no poolPer at all, would
-		// otherwise fall through to the shared identity — which is the whole
-		// bug. poolPer is immutable, so the fix is a replacement, and the error
-		// says so.
+	levels := make([]CascadeLevel, len(chain))
+	for i, class := range chain {
+		// Every class in a planned chain provisions a pool, so every one of
+		// them has to have said who that pool is for. Validation refuses a
+		// class that does not, but validation runs on write and these classes
+		// were read: one stored before the rule, or with no poolPer at all,
+		// would otherwise fall through to the shared identity — which is the
+		// whole bug. poolPer is immutable, so the fix is a replacement, and the
+		// error says so.
 		if err := scope.RequirePoolPerDeclaration(class.Spec.PoolPer); err != nil {
 			return nil, fmt.Errorf("%w: class %q in project %q %s; replace it with one whose spec.poolPer names %q or %q",
 				scope.ErrPoolPerUndeclared, class.Name, class.Project, err,
@@ -145,7 +177,7 @@ func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope
 		name := poolNameFor(tenancy, class.Name, projected)
 		// Built nearest-first from the ancestry, stored root-first: a level
 		// cannot be carved before the level it carves from exists.
-		levels[len(ancestry)-1-i] = CascadeLevel{
+		levels[len(chain)-1-i] = CascadeLevel{
 			Class:       class,
 			Tenancy:     tenancy,
 			Scope:       projected,
@@ -428,6 +460,11 @@ func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoo
 	if _, err := insertObject(ctx, tx, level.PoolKey, "IPPool", "", level.PoolName, data); err != nil {
 		return fmt.Errorf("persist provisioned pool: %w", err)
 	}
+	// After the object row exists, because reserving updates the pool's
+	// capacity and that is a write to the row.
+	if err := materialiseReservations(ctx, tx, level.PoolKey, pool, []net.IPNet{*cidr}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -454,6 +491,7 @@ func newProvisionedPool(level CascadeLevel, sourcePoolName string, prefixLen int
 			ClassRef:      &ipamv1alpha1.LocalRef{Name: level.Class.Name},
 			ParentPoolRef: &ipamv1alpha1.LocalRef{Name: sourcePoolName},
 			Scope:         scopeToVersioned(level.Scope),
+			Reservations:  level.Class.Spec.Reservations.DeepCopy(),
 		},
 		Status: ipamv1alpha1.IPPoolStatus{
 			Phase:         ipamv1alpha1.PoolReady,
@@ -548,6 +586,10 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 	}
 	parents, err := parsePoolCIDR(pool)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := materialiseReservations(ctx, tx, sourcePoolKey, pool, parents); err != nil {
 		return nil, err
 	}
 

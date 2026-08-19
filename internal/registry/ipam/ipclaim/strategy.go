@@ -89,6 +89,11 @@ func (ipClaimStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	if n.Spec.ClassName != o.Spec.ClassName {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "className"), "className is immutable"))
 	}
+	// The two targets bind different objects. Changing it would mean releasing
+	// one and taking the other under a name whose holder never changed.
+	if n.Spec.Target != o.Spec.Target {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "target"), "target is immutable"))
+	}
 	// The scope decides which pool serves the claim and which allocations it
 	// must not collide with. Editing it would move a bound address into a
 	// different address space without moving the address.
@@ -126,6 +131,31 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 				fmt.Sprintf("must be between 1 and %d", maxLen)))
 		}
 	}
+	switch c.Spec.Target {
+	case "", ipam.TargetBlock:
+	case ipam.TargetScopeRange:
+		// A range is the pool a class holds for a scope. Its size, its position
+		// and its disposition are all properties of the pool, decided by the
+		// class that provisions it — so a claim that could restate any of them
+		// would be stating something the server is going to ignore. Refused by
+		// name rather than dropped silently.
+		if c.Spec.Address != "" {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("address"),
+				"a scope-range claim binds the range its class holds, so it cannot name an address"))
+		}
+		if c.Spec.PrefixLength != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("prefixLength"),
+				"a range is sized by the class that provisions it, not by the claim"))
+		}
+		if c.Spec.ReclaimPolicy != "" {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("reclaimPolicy"),
+				"a range is released with its claim; retention applies to allocations, not to pools"))
+		}
+	default:
+		allErrs = append(allErrs, field.NotSupported(specPath.Child("target"), c.Spec.Target,
+			[]string{string(ipam.TargetBlock), string(ipam.TargetScopeRange)}))
+	}
+
 	for role, ref := range c.Spec.Scope {
 		// The reserved roles say who a class's pools belong to, and the server
 		// reads the consuming project off the request rather than the body.
