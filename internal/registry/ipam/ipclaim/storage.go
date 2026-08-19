@@ -276,6 +276,20 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, fmt.Errorf("resolve class: %w", err)
 	}
 
+	if claim.Spec.Target == ipam.TargetScopeRange {
+		// The chain is provisioned outside this transaction, level by level,
+		// exactly as it is for a block claim — so this one is released first.
+		_ = tx.Rollback(ctx)
+		obj, outcome, err := r.createScopeRange(ctx, span, claim, class, id, dryRun)
+		result = outcome
+		if err != nil {
+			metrics.RecordAllocationFailure("ipclaim", outcome, ipFamily, project, org)
+			return nil, err
+		}
+		result = "success"
+		return obj, nil
+	}
+
 	prefixLen, err := allocator.EffectivePrefixLength(class.IPClass, claim.Spec.PrefixLength)
 	if err != nil {
 		_ = tx.Rollback(ctx)
@@ -546,6 +560,10 @@ func (r *AllocatingREST) Delete(ctx context.Context, name string, deleteValidati
 	// allocation or removing any rows.
 	if options != nil && isDryRun(options.DryRun) {
 		return claim, true, nil
+	}
+
+	if claim.Spec.Target == ipam.TargetScopeRange {
+		return r.deleteScopeRange(ctx, claim)
 	}
 
 	// Release span — mirrors the allocation span for the teardown path so a
