@@ -227,10 +227,11 @@ type IPClassSpec struct {
 	// provisions pools. It is a constraint backing a unique index, not a
 	// lookup.
 	//
-	// The role name "project" is reserved and names the CONSUMING project,
-	// supplied by the request rather than by a claim's scope. Naming it gives
-	// one pool per consumer; omitting it gives one pool shared by every
-	// consumer. See the v1alpha1 type for the full table.
+	// The role names "project" and "allProjects" are reserved, and a class that
+	// provisions pools must name exactly one of them: one pool per consuming
+	// project, or one pool every consuming project draws from. Neither is a
+	// scope reference; the consuming project is supplied by the request. See
+	// the v1alpha1 type for the full table.
 	PoolPer []string
 
 	// UniqueWithin states what defines one independent address space: two

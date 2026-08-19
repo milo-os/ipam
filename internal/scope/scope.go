@@ -63,15 +63,78 @@ const (
 	canonicalAddressSpaceVersion = "ipam.scope.v3"
 )
 
-// ReservedRoleProject is the scope role name that names the CONSUMING project.
+// The two reserved PoolPer roles. They are the answer to one question — does a
+// class's pool belong to the consumer or to everyone — and a class that
+// provisions pools must give one of them.
 //
-// It is reserved rather than ordinary because its value is server-supplied: it
-// comes from the request tenant, never from the request body. A class names it
-// in PoolPer to say "one pool per consumer"; nothing may name it anywhere else.
-// An IPClass may not use it in UniqueWithin and an IPClaim may not supply it in
-// spec.scope, both refused at write time — otherwise a claimant could name
-// another project's pool by writing a scope ref.
-const ReservedRoleProject = "project"
+// Reserved rather than ordinary because neither is a reference: no claim
+// supplies them, and the value behind ReservedRoleProject is read off the
+// request tenant. An IPClass may not use either in UniqueWithin and an IPClaim
+// may not supply either in spec.scope, both refused at write time — otherwise a
+// claimant could name another project's pool by writing a scope ref.
+//
+// Requiring exactly one is what makes undeclared sharing unrepresentable. There
+// is no shape of PoolPer that provisions pools without saying who they are for,
+// so the two projects of milo-os/ipam#114 cannot end up in one range because
+// nobody thought about it.
+const (
+	// ReservedRoleProject folds the consuming project into pool identity: one
+	// pool per consumer, per whatever else PoolPer names.
+	ReservedRoleProject = "project"
+
+	// ReservedRoleAllProjects declares the opposite, and is a declaration
+	// rather than an axis: one pool that every consuming project draws from.
+	//
+	// It contributes nothing to the digest, and that is the point — it exists
+	// so that sharing has to be written down. Announceable public space needs
+	// it: per-consumer /24s exhaust an aggregate after 256 projects rather than
+	// 256 locations.
+	ReservedRoleAllProjects = "allProjects"
+)
+
+// IsReservedRole reports whether a role name is one a claim may never supply
+// and UniqueWithin may never name.
+func IsReservedRole(role string) bool {
+	return role == ReservedRoleProject || role == ReservedRoleAllProjects
+}
+
+// ErrPoolPerUndeclared reports a class that provisions pools without saying
+// whether its consumers share them.
+//
+// It is returned when planning a cascade rather than only when writing a class,
+// because validation runs on write and a class stored before the rule existed
+// was never subject to it. PoolPer is immutable, so such a class is replaced
+// rather than corrected; refusing its claims is what keeps the guarantee true
+// of the pools that exist rather than only of the ones written from here on.
+var ErrPoolPerUndeclared = errors.New("class does not declare whether its pools are per-consumer or shared")
+
+// RequirePoolPerDeclaration reports whether a class's PoolPer names exactly one
+// of the reserved roles, and returns the reason it does not.
+//
+// Empty PoolPer is not a declaration and not an exemption: it means the class
+// provisions no pools at all. Callers that provision decide what to do with
+// that case; validation of a stored class rejects it, since a class named as a
+// parent does provision.
+func RequirePoolPerDeclaration(poolPer []string) error {
+	var perConsumer, shared bool
+	for _, r := range poolPer {
+		switch r {
+		case ReservedRoleProject:
+			perConsumer = true
+		case ReservedRoleAllProjects:
+			shared = true
+		}
+	}
+	switch {
+	case perConsumer && shared:
+		return fmt.Errorf("names both %q and %q, which contradict each other",
+			ReservedRoleProject, ReservedRoleAllProjects)
+	case !perConsumer && !shared:
+		return fmt.Errorf("names neither %q (each consuming project gets its own pool) nor %q (one pool every consuming project draws from)",
+			ReservedRoleProject, ReservedRoleAllProjects)
+	}
+	return nil
+}
 
 // PoolTenancy is the pair of projects a pool's identity depends on.
 //
@@ -92,8 +155,8 @@ type PoolTenancy struct {
 	// exactly when the class names ReservedRoleProject in PoolPer, and empty
 	// otherwise.
 	//
-	// Empty is not "unknown" and not "platform": it is a class that declined to
-	// carve per consumer, which is the correct and safest shape for public
+	// Empty is not "unknown" and not "platform": it is a class that said
+	// ReservedRoleAllProjects, which is the correct and safest shape for public
 	// unicast space — one pool per location shared by every project, one
 	// address space, and an exclusion constraint that keeps every consumer
 	// apart.
@@ -103,14 +166,16 @@ type PoolTenancy struct {
 // PoolPerRoles splits a class's PoolPer into the scope roles projected from the
 // claim body and whether the reserved project role was named.
 //
-// The reserved role never reaches Project: it is not a ScopeRef and never
-// arrives on a request, so looking for it in a claim's scope would fail every
-// claim of a per-consumer class with a missing-role error it cannot satisfy.
+// Neither reserved role reaches Project: they are not ScopeRefs and never
+// arrive on a request, so looking for them in a claim's scope would fail every
+// claim of the class with a missing-role error it cannot satisfy.
 func PoolPerRoles(poolPer []string) (roles []string, perConsumer bool) {
 	roles = make([]string, 0, len(poolPer))
 	for _, r := range poolPer {
 		if r == ReservedRoleProject {
 			perConsumer = true
+		}
+		if IsReservedRole(r) {
 			continue
 		}
 		roles = append(roles, r)
@@ -118,16 +183,15 @@ func PoolPerRoles(poolPer []string) (roles []string, perConsumer bool) {
 	return roles, perConsumer
 }
 
-// WithoutReservedRoles drops the reserved project role from a list of role
-// names.
+// WithoutReservedRoles drops the reserved roles from a list of role names.
 //
 // It is what IPClass.status.requiredScopeRoles is filtered through: that field
-// tells a client what to put in spec.scope, and the reserved role is the one
-// name a client must never put there.
+// tells a client what to put in spec.scope, and the reserved roles are the
+// names a client must never put there.
 func WithoutReservedRoles(roles []string) []string {
 	out := make([]string, 0, len(roles))
 	for _, r := range roles {
-		if r != ReservedRoleProject {
+		if !IsReservedRole(r) {
 			out = append(out, r)
 		}
 	}

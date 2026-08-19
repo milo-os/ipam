@@ -95,11 +95,12 @@ func (l CascadeLevel) OwnerProject() string {
 // The pool OBJECT lives in the project holding the class DEFINITION, not the
 // claimant's, and that is separate from what IDENTIFIES it. Two projects
 // referencing one class reach one class; whether they reach one pool is what
-// the class's poolPer declares. A class naming the reserved project role gets
-// one pool per consumer; one that does not gets one pool shared by every
-// consumer — which is the correct and safest shape for announceable public
-// space, where per-consumer blocks would exhaust the aggregate after one block
-// per project instead of one per location.
+// the class's poolPer declares, and it has to declare one or the other. A class
+// naming `project` gets one pool per consumer; a class naming `allProjects`
+// gets one pool every consumer draws from — the correct and safest shape for
+// announceable public space, where per-consumer blocks would exhaust the
+// aggregate after one block per project instead of one per location. A class
+// naming neither does not provision at all; its claims are refused.
 //
 // The consumer comes from RequireTenant, not FromContext: an untenanted caller
 // would otherwise provision into the shared identity by accident, and the
@@ -117,9 +118,21 @@ func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope
 
 	levels := make([]CascadeLevel, len(ancestry))
 	for i, class := range ancestry {
-		// The reserved role is dropped before projecting: it is not a ScopeRef
-		// and never arrives on a request, so a claim cannot supply it and must
-		// not be asked to.
+		// Every class in an ancestry provisions a pool, so every one of them
+		// has to have said who that pool is for. Validation refuses a class
+		// that does not, but validation runs on write and these classes were
+		// read: one stored before the rule, or with no poolPer at all, would
+		// otherwise fall through to the shared identity — which is the whole
+		// bug. poolPer is immutable, so the fix is a replacement, and the error
+		// says so.
+		if err := scope.RequirePoolPerDeclaration(class.Spec.PoolPer); err != nil {
+			return nil, fmt.Errorf("%w: class %q in project %q %s; replace it with one whose spec.poolPer names %q or %q",
+				scope.ErrPoolPerUndeclared, class.Name, class.Project, err,
+				scope.ReservedRoleProject, scope.ReservedRoleAllProjects)
+		}
+		// The reserved roles are dropped before projecting: neither is a
+		// ScopeRef and neither arrives on a request, so a claim cannot supply
+		// them and must not be asked to.
 		roles, perConsumer := scope.PoolPerRoles(class.Spec.PoolPer)
 		projected, err := scope.ProjectFor(claimScope, roles, "poolPer")
 		if err != nil {

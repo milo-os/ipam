@@ -20,29 +20,33 @@ func claim(mutate ...func(*ipam.IPClaim)) *ipam.IPClaim {
 	return c
 }
 
-// The reserved role names the CONSUMING project, and the server reads it off
-// the request rather than the body. Accepting it here is the whole attack: a
-// claimant could otherwise name another project's pool by writing a scope
-// reference.
+// The reserved roles declare who a class's pools belong to, and the consuming
+// project is read off the request rather than the body. Accepting them here is
+// the whole attack: a claimant could otherwise name another project's pool by
+// writing a scope reference.
 //
 // It is rejected rather than ignored. A claim that supplies it has
 // misunderstood which pool it will reach, and dropping the field silently would
 // confirm the misunderstanding — the claim would succeed, against a pool the
 // author did not mean.
-func TestTheReservedScopeRoleIsRefused(t *testing.T) {
-	errs := validateIPClaim(claim(func(c *ipam.IPClaim) {
-		c.Spec.Scope = map[string]ipam.ScopeRef{
-			"project": {APIGroup: "resourcemanager.miloapis.com", Kind: "Project", Name: "somebody-else"},
-		}
-	}))
-	if len(errs) == 0 {
-		t.Fatal("spec.scope accepted the reserved role")
-	}
-	if got := errs[0].Field; got != "spec.scope.project" {
-		t.Errorf("error names %q, want spec.scope.project", got)
-	}
-	if !strings.Contains(errs[0].Detail, "reserved") {
-		t.Errorf("message %q does not say the name is reserved", errs[0].Detail)
+func TestTheReservedScopeRolesAreRefused(t *testing.T) {
+	for _, role := range []string{"project", "allProjects"} {
+		t.Run(role, func(t *testing.T) {
+			errs := validateIPClaim(claim(func(c *ipam.IPClaim) {
+				c.Spec.Scope = map[string]ipam.ScopeRef{
+					role: {APIGroup: "resourcemanager.miloapis.com", Kind: "Project", Name: "somebody-else"},
+				}
+			}))
+			if len(errs) == 0 {
+				t.Fatal("spec.scope accepted a reserved role")
+			}
+			if got, want := errs[0].Field, "spec.scope."+role; got != want {
+				t.Errorf("error names %q, want %q", got, want)
+			}
+			if !strings.Contains(errs[0].Detail, "reserved") {
+				t.Errorf("message %q does not say the name is reserved", errs[0].Detail)
+			}
+		})
 	}
 }
 

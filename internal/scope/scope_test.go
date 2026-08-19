@@ -998,10 +998,13 @@ func TestPoolTenancyCannotBeForged(t *testing.T) {
 	}
 }
 
-// TestPoolPerRolesSplitsOutTheReservedRole covers the projection half of the
-// fix: the reserved role is a DECLARATION on the class, not a reference a claim
-// supplies, so it must never reach Project.
-func TestPoolPerRolesSplitsOutTheReservedRole(t *testing.T) {
+// TestPoolPerRolesSplitsOutTheReservedRoles covers the projection half of the
+// fix: both reserved roles are DECLARATIONS on the class, not references a
+// claim supplies, so neither may reach Project. `allProjects` in particular
+// contributes nothing to identity — a class declaring sharing must derive the
+// same pool as one that named no declaration at all, or writing the declaration
+// down would renumber the pools it describes.
+func TestPoolPerRolesSplitsOutTheReservedRoles(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		poolPer     []string
@@ -1009,7 +1012,9 @@ func TestPoolPerRolesSplitsOutTheReservedRole(t *testing.T) {
 		wantPerCons bool
 	}{
 		{"nothing declared", nil, []string{}, false},
-		{"one pool per location, shared", []string{"location"}, []string{"location"}, false},
+		{"one pool per location, declared shared", []string{"location", "allProjects"}, []string{"location"}, false},
+		{"one pool per location, declared nothing", []string{"location"}, []string{"location"}, false},
+		{"shared and nothing else", []string{"allProjects"}, []string{}, false},
 		{"one pool per location per consumer", []string{"location", "project"}, []string{"location"}, true},
 		{"one pool per consumer and nothing else", []string{"project"}, []string{}, true},
 		{"order does not matter", []string{"project", "network", "location"}, []string{"network", "location"}, true},
@@ -1065,5 +1070,54 @@ func TestWithoutReservedRoles(t *testing.T) {
 	}
 	if got := WithoutReservedRoles(nil); len(got) != 0 {
 		t.Errorf("WithoutReservedRoles(nil) = %v, want empty", got)
+	}
+}
+
+// TestRequirePoolPerDeclarationRefusesSilence is the rule that makes undeclared
+// sharing unrepresentable rather than merely warned about.
+//
+// #114 was not "sharing"; it was sharing nobody wrote down. Both answers stay
+// available — announceable public space has to be shared, and per-tenant space
+// has to not be — and neither is what a class gets by saying nothing.
+func TestRequirePoolPerDeclarationRefusesSilence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		poolPer []string
+		wantErr bool
+	}{
+		{"per consumer", []string{"location", "project"}, false},
+		{"shared", []string{"location", "allProjects"}, false},
+		{"per consumer, no other axis", []string{"project"}, false},
+		{"shared, no other axis", []string{"allProjects"}, false},
+		{"silent", []string{"location"}, true},
+		{"silent with no axis at all", nil, true},
+		{"both at once", []string{"project", "allProjects"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RequirePoolPerDeclaration(tc.poolPer)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("RequirePoolPerDeclaration(%v) = %v, want an error: %v", tc.poolPer, err, tc.wantErr)
+			}
+			if err == nil {
+				return
+			}
+			// The message is read by whoever has to replace an immutable
+			// class, so it names both answers rather than only the rule.
+			for _, want := range []string{ReservedRoleProject, ReservedRoleAllProjects} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// A declaration is not a reference, so neither name may be reported to a client
+// as a scope role it must supply.
+func TestWithoutReservedRolesDropsBothDeclarations(t *testing.T) {
+	got := WithoutReservedRoles([]string{"network", "project", "location", "allProjects"})
+	want := []string{"network", "location"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("WithoutReservedRoles = %v, want %v", got, want)
 	}
 }

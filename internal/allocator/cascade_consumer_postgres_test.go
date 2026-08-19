@@ -2,6 +2,8 @@ package allocator
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -15,15 +17,15 @@ import (
 
 // perTenantChain seeds the shape #114 was reported against: one platform class
 // carving per network, referenced by two projects, each of which names a
-// network `default`. perConsumer decides whether the provisioning class names
-// the reserved project role.
+// network `default`. perConsumer decides which declaration the provisioning
+// class makes; there is no third option, which is the point.
 func perTenantChain(t *testing.T, db *pgxpool.Pool, perConsumer bool) {
 	t.Helper()
 	ctx := context.Background()
 
-	poolPer := []string{"network"}
+	poolPer := []string{"network", scope.ReservedRoleAllProjects}
 	if perConsumer {
-		poolPer = append(poolPer, scope.ReservedRoleProject)
+		poolPer = []string{"network", scope.ReservedRoleProject}
 	}
 
 	tx := begin(t, db)
@@ -137,8 +139,7 @@ func TestTwoConsumersOfOnePerConsumerClassGetTwoPools(t *testing.T) {
 // TestTwoConsumersOfASharedClassGetOnePool is the guard against over-correcting
 // #114, and it is the case the fix must not break.
 //
-// A class that does NOT name the reserved role provisions one pool for every
-// consumer. That is what an announceable public block requires: per-consumer
+// A class that names `allProjects` provisions one pool for every consumer. That is what an announceable public block requires: per-consumer
 // blocks would exhaust the aggregate after one block per project rather than
 // one per location, and a project with one instance would burn a whole /24.
 //
@@ -155,8 +156,8 @@ func TestTwoConsumersOfASharedClassGetOnePool(t *testing.T) {
 	y := resolveFor(t, db, "projy", claimScope)
 
 	if x != y {
-		t.Fatalf("a class that did not name %q provisioned two pools, %q and %q",
-			scope.ReservedRoleProject, x, y)
+		t.Fatalf("a class naming %q provisioned two pools, %q and %q",
+			scope.ReservedRoleAllProjects, x, y)
 	}
 
 	// A shared pool carries no consumer label. Its absence is the fact an
@@ -420,5 +421,62 @@ func TestPlanCascadeRefusesAnUntenantedCaller(t *testing.T) {
 	}
 	if identities != 0 {
 		t.Errorf("a refused caller left %d pool identities behind", identities)
+	}
+}
+
+// TestAnUndeclaredClassProvisionsNothing is the other half of the fix: the half
+// that makes undeclared sharing impossible rather than merely discouraged.
+//
+// Validation refuses a provisioning class that says neither `project` nor
+// `allProjects`, but validation runs on write and a class is read. One written
+// before the rule existed looks exactly like the fixture here, and spec.poolPer
+// is immutable, so it cannot be corrected — it has to be replaced. Until it is,
+// its claims are refused rather than being quietly handed the shared identity,
+// which is the behaviour #114 reported.
+func TestAnUndeclaredClassProvisionsNothing(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+
+	tx := begin(t, db)
+	definition(t, tx, "platform", "tenant-ipv6", ipamv1alpha1.IPClassSpec{
+		IPFamily: ipamv1alpha1.IPv6, DefaultPrefixLength: 48, PoolPer: []string{"network"},
+	})
+	definition(t, tx, "platform", "tenant-subnet", ipamv1alpha1.IPClassSpec{
+		IPFamily: ipamv1alpha1.IPv6, ParentClassName: "tenant-ipv6", DefaultPrefixLength: 64,
+	})
+	reference(t, tx, "projx", "tenant-subnet", "platform", "tenant-subnet", nil)
+	reference(t, tx, "projy", "tenant-subnet", "platform", "tenant-subnet", nil)
+	offerPool(t, tx, "platform", "root", "fd00::/32", "tenant-ipv6", nil)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit fixtures: %v", err)
+	}
+
+	claimScope := map[string]ipam.ScopeRef{"network": claimScopeRef("Network", "default")}
+	for _, project := range []string{"projx", "projy"} {
+		read := begin(t, db)
+		leaf, err := LoadClass(ctxIn(project), read, "tenant-subnet")
+		if err != nil {
+			t.Fatalf("LoadClass in %q: %v", project, err)
+		}
+		_ = read.Rollback(ctx)
+
+		_, err = ResolvePool(ctxIn(project), db, leaf, claimScope)
+		if !errors.Is(err, scope.ErrPoolPerUndeclared) {
+			t.Fatalf("ResolvePool for %q returned %v, want ErrPoolPerUndeclared", project, err)
+		}
+		// The error has to say what to write, since the class cannot be edited.
+		for _, want := range []string{"tenant-ipv6", scope.ReservedRoleProject, scope.ReservedRoleAllProjects} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not name %q", err, want)
+			}
+		}
+	}
+
+	var identities int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM ipam_pool_identity`).Scan(&identities); err != nil {
+		t.Fatalf("count identities: %v", err)
+	}
+	if identities != 0 {
+		t.Errorf("an undeclared class provisioned %d pools", identities)
 	}
 }

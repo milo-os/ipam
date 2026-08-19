@@ -6,6 +6,7 @@ spec:
   ipFamily: IPv6
   poolPer:
     - network
+    - allProjects
   uniqueWithin: []
   allowedPrefixLengths:
     min: 48
@@ -24,6 +25,7 @@ spec:
   poolPer:
     - network
     - location
+    - allProjects
   uniqueWithin: []
   allowedPrefixLengths:
     min: 64
