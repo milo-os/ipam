@@ -1,0 +1,17 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: cr-endpoint-1
+  labels:
+    suite: class-reservations
+spec:
+  className: cr-endpoint
+  scope:
+    network:
+      apiGroup: networking.datumapis.com
+      kind: Network
+      name: vpc-reserved
+    location:
+      apiGroup: networking.datumapis.com
+      kind: Location
+      name: us-central-1

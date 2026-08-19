@@ -1,0 +1,69 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: cr-network
+spec:
+  ipFamily: IPv6
+  poolPer:
+    - network
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 48
+    max: 48
+  defaultPrefixLength: 48
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: cr-subnet
+spec:
+  ipFamily: IPv6
+  parentClassName: cr-network
+  poolPer:
+    - network
+    - location
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 64
+    max: 64
+  defaultPrefixLength: 64
+  strategy: FirstFit
+  reclaimPolicy: Retain
+  # The subnet's router takes the first address, so the first /96 of every
+  # subnet this class provisions is never handed to an endpoint.
+  reservations:
+    leading: 1
+    unitPrefixLength: 96
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: cr-endpoint
+spec:
+  ipFamily: IPv6
+  parentClassName: cr-subnet
+  uniqueWithin:
+    - network
+  allowedPrefixLengths:
+    min: 96
+    max: 96
+  defaultPrefixLength: 96
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: cr-root
+spec:
+  cidr: fd34::/20
+  ipFamily: IPv6
+  visibility: platform
+  classNames:
+    - cr-network
+  allocation:
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit

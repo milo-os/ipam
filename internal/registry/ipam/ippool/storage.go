@@ -262,6 +262,11 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 // allocations the row in ipam_cidr_allocations representing the child's
 // own reservation against its parent must also be released, in the same
 // transaction as the object delete.
+//
+// A pool's own reserved edge positions are not allocations against it. They are
+// held by the pool itself and released with it, so counting them here would
+// make every pool with reservations undeletable, with an error naming claims
+// that do not exist.
 func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
 	existing, err := r.Get(ctx, name, &metav1.GetOptions{})
 	if err != nil {
@@ -280,7 +285,8 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	poolKey := poolStorageKey(tenant.FromContext(ctx).Name, name)
 	var count int
 	if err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM ipam_cidr_allocations WHERE pool_key = $1`,
+		`SELECT COUNT(*) FROM ipam_cidr_allocations
+		  WHERE pool_key = $1 AND purpose <> 'Reservation'`,
 		poolKey,
 	).Scan(&count); err != nil {
 		return nil, false, fmt.Errorf("count active allocations for %q: %w", name, err)
@@ -294,7 +300,11 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	}
 
 	if pool.Spec.ParentPoolRef == nil {
-		// Root pool with zero allocations — delegate to the standard delete.
+		// Root pool with nothing allocated from it — release the positions it
+		// holds for itself, then delegate to the standard delete.
+		if err := r.releaseReservations(ctx, poolKey); err != nil {
+			return nil, false, err
+		}
 		return r.Store.Delete(ctx, name, deleteValidation, options)
 	}
 
@@ -303,6 +313,10 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin child-pool delete transaction: %w", err)
+	}
+	if err := r.allocator.ReleasePoolReservations(ctx, tx, poolKey); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, false, fmt.Errorf("release child-pool reservations: %w", err)
 	}
 	if _, err := r.allocator.Release(ctx, tx, poolKey); err != nil {
 		_ = tx.Rollback(ctx)
@@ -317,6 +331,27 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	}
 
 	return pool, true, nil
+}
+
+// releaseReservations frees the positions a root pool holds for itself.
+//
+// Its own transaction, because the object delete that follows goes through the
+// generic store and cannot join one. Losing the delete after this commits costs
+// the pool its reservation rows, which the next allocation from it writes
+// again.
+func (r *AllocatingIPPoolREST) releaseReservations(ctx context.Context, poolKey string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin reservation release transaction: %w", err)
+	}
+	if err := r.allocator.ReleasePoolReservations(ctx, tx, poolKey); err != nil {
+		_ = tx.Rollback(ctx)
+		return fmt.Errorf("release pool reservations: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit reservation release transaction: %w", err)
+	}
+	return nil
 }
 
 // poolStorageKey is the canonical ipam_objects key for an IPPool owned by the

@@ -1,0 +1,118 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: class-reservations
+spec:
+  description: |
+    A class that withholds the first block of every subnet it provisions must
+    have that honoured by the claims drawn from those subnets.
+
+    The subnet's router holds the first address. If an endpoint can be given
+    the block that address sits in, the endpoint and the router answer to the
+    same space and whoever assigned each believes they own it.
+
+    Nothing about the failure is visible from the API: the claim binds, the
+    pool is Ready, and no condition reports a conflict. So the assertion has to
+    be on the address itself, pinned to a block index rather than to a literal,
+    and it has to be made against a subnet the suite provisions fresh.
+
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    - name: setup
+      try:
+        - create:
+            file: test-data/setup.yaml
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              wait_pool_ready cr-root
+              expect_pool_count 0 cr-subnet network=vpc-reserved location=us-central-1
+              echo "OK: starting from a clean scope"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: starting from a clean scope'))": true
+
+    - name: the-first-claim-does-not-get-the-withheld-block
+      try:
+        - create:
+            file: test-data/claim.yaml
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              wait_claim_bound "$NAMESPACE" cr-endpoint-1 120
+
+              subnet=$(pool_cidr "$(pools_for_scope cr-subnet network=vpc-reserved location=us-central-1)")
+              got=$(claim_cidr "$NAMESPACE" cr-endpoint-1)
+
+              # Block 0 is the one the class withholds. The first claim into a
+              # fresh subnet takes block 1.
+              assert_nth_subnet "$subnet" 1 96 "$got" "first endpoint"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: first endpoint'))": true
+
+    - name: the-subnet-carries-the-withholding-and-holds-the-block
+      description: |
+        The pool the cascade built states what it withholds, and the withheld
+        position is a real allocation the pool holds rather than a hole only
+        the allocator knows about.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              pool=$(pools_for_scope cr-subnet network=vpc-reserved location=us-central-1)
+
+              leading=$(kubectl get ippool "$pool" -o jsonpath='{.spec.reservations.leading}')
+              unit=$(kubectl get ippool "$pool" -o jsonpath='{.spec.reservations.unitPrefixLength}')
+              if [ "$leading" != "1" ] || [ "$unit" != "96" ]; then
+                echo "FAIL: subnet pool withholds leading=$leading unit=/$unit, expected 1 and /96"
+                echo "      A pool provisioned by a class must carry that class's reservations."
+                exit 1
+              fi
+
+              allocated=$(kubectl get ippool "$pool" -o jsonpath='{.status.capacity.allocated}')
+              # One withheld /96 plus the endpoint's /96: 2 * 2^32.
+              if [ "$allocated" != "8589934592" ]; then
+                echo "FAIL: subnet pool reports $allocated addresses allocated, expected 8589934592"
+                echo "      Withheld space is inventory the pool holds, so it counts as allocated."
+                exit 1
+              fi
+              echo "OK: the subnet states what it withholds and holds it"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the subnet states what it withholds and holds it'))": true
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              kubectl delete ipclaim -n "$NAMESPACE" -l suite=class-reservations --ignore-not-found >/dev/null 2>&1 || true
+              for cls in cr-subnet cr-network; do
+                for p in $(kubectl get ippool -o json 2>/dev/null \
+                    | jq -r ".items[] | select(.spec.classRef.name == \"$cls\") | .metadata.name"); do
+                  release_pool_allocations "$NAMESPACE" "$p"
+                  kubectl delete ippool "$p" --ignore-not-found >/dev/null 2>&1 || true
+                done
+              done
+              kubectl delete ippool cr-root --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipclass cr-endpoint cr-subnet cr-network --ignore-not-found >/dev/null 2>&1 || true
+              echo "class-reservations cleanup done"
+            check:
+              ($error == null): true
