@@ -173,7 +173,7 @@ func TestACarveAvoidsClaimsInEverySpace(t *testing.T) {
 	}
 	block, err := carveFromPool(ctx, tx, poolKey, 20, poolCarve{
 		AllocationKey: "child-pool", ClassName: "child",
-		ScopeDigest: scope.PoolDigest(testProject, nil),
+		ScopeDigest: scope.PoolDigest(scope.PoolTenancy{Owner: testProject}, nil),
 		IPFamily:    "IPv4", OwnerProject: testProject,
 	})
 	if err != nil {

@@ -10,13 +10,15 @@
 // them differently, and using the wrong one fails on the success path rather
 // than returning an error:
 //
-//	PoolDigest         identity of a POOL a tenant owns
+//	PoolDigest         identity of a POOL, keyed on the project that OWNS the
+//	                   class and, when the class asked for it, the project
+//	                   CONSUMING it
 //	AddressSpaceDigest the uniqueness domain an ALLOCATION lives in
 //
 // Each documents where its tenant goes and what the other choice would break.
 //
-// The tenant is a plain string, and this package imports nothing but the API
-// types. It is imported by the allocator and by three registries, none of which
+// Tenants are plain strings — a pair, PoolTenancy, for pools — and this package
+// imports nothing but the API types. It is imported by the allocator and by three registries, none of which
 // should acquire a transitive k8s.io/apiserver dependency through it.
 package scope
 
@@ -43,16 +45,94 @@ import (
 // store. A change to either encoding therefore has no backfill, only a reset of
 // the rows that encoding wrote.
 const (
-	// canonicalPoolVersion must not change. A cascade pool's NAME embeds its
-	// digest, so re-tagging renames every provisioned pool: the identity lookup
-	// misses, a new pool is provisioned, and the scope is renumbered — against a
-	// model that promises subnets appear on first use and are never renumbered.
-	canonicalPoolVersion = "ipam.scope.v2"
+	// canonicalPoolVersion must not change without a reset. A cascade pool's
+	// NAME embeds its digest, so re-tagging renames every provisioned pool: the
+	// identity lookup misses, a new pool is provisioned, and the scope is
+	// renumbered — against a model that promises subnets appear on first use and
+	// are never renumbered.
+	//
+	// v4 replaced v2's single tenant field with the owner/consumer pair
+	// PoolTenancy carries, so that a class can declare whether the consuming
+	// project is part of a pool's identity. Every v2 digest is therefore stale,
+	// and migration 003 resets the rows that held them rather than backfilling
+	// values no schema stores the inputs for.
+	canonicalPoolVersion = "ipam.scope.v4"
 
 	// canonicalAddressSpaceVersion tags the form in which the tenant qualifies
 	// each ref rather than standing as its own field.
 	canonicalAddressSpaceVersion = "ipam.scope.v3"
 )
+
+// ReservedRoleProject is the scope role name that names the CONSUMING project.
+//
+// It is reserved rather than ordinary because its value is server-supplied: it
+// comes from the request tenant, never from the request body. A class names it
+// in PoolPer to say "one pool per consumer"; nothing may name it anywhere else.
+// An IPClass may not use it in UniqueWithin and an IPClaim may not supply it in
+// spec.scope, both refused at write time — otherwise a claimant could name
+// another project's pool by writing a scope ref.
+const ReservedRoleProject = "project"
+
+// PoolTenancy is the pair of projects a pool's identity depends on.
+//
+// A struct rather than two strings, deliberately: see RoleSetKey for why an
+// empty tenant string is a hazard on its own, and note that two adjacent
+// project-name arguments add a silent swap to it.
+type PoolTenancy struct {
+	// Owner holds the class DEFINITION. It keeps two classes that share a name
+	// in different projects from colliding on
+	// ipam_pool_identity(class_name, scope_digest): the primary key is the
+	// class NAME, and class names are project-scoped objects.
+	//
+	// It is also the key prefix of the pool object itself, so the digest is
+	// never coarser than the key space the storage layer keeps apart.
+	Owner string
+
+	// Consumer is the project whose claim triggered provisioning. It is set
+	// exactly when the class names ReservedRoleProject in PoolPer, and empty
+	// otherwise.
+	//
+	// Empty is not "unknown" and not "platform": it is a class that declined to
+	// carve per consumer, which is the correct and safest shape for public
+	// unicast space — one pool per location shared by every project, one
+	// address space, and an exclusion constraint that keeps every consumer
+	// apart.
+	Consumer string
+}
+
+// PoolPerRoles splits a class's PoolPer into the scope roles projected from the
+// claim body and whether the reserved project role was named.
+//
+// The reserved role never reaches Project: it is not a ScopeRef and never
+// arrives on a request, so looking for it in a claim's scope would fail every
+// claim of a per-consumer class with a missing-role error it cannot satisfy.
+func PoolPerRoles(poolPer []string) (roles []string, perConsumer bool) {
+	roles = make([]string, 0, len(poolPer))
+	for _, r := range poolPer {
+		if r == ReservedRoleProject {
+			perConsumer = true
+			continue
+		}
+		roles = append(roles, r)
+	}
+	return roles, perConsumer
+}
+
+// WithoutReservedRoles drops the reserved project role from a list of role
+// names.
+//
+// It is what IPClass.status.requiredScopeRoles is filtered through: that field
+// tells a client what to put in spec.scope, and the reserved role is the one
+// name a client must never put there.
+func WithoutReservedRoles(roles []string) []string {
+	out := make([]string, 0, len(roles))
+	for _, r := range roles {
+		if r != ReservedRoleProject {
+			out = append(out, r)
+		}
+	}
+	return out
+}
 
 // DO NOT MERGE THESE INTO ONE DIGEST FUNCTION. The two jobs need the tenant in
 // different places: a pool identity must be tenant-distinct even when the scope
@@ -61,13 +141,13 @@ const (
 // wrong for the other caller.
 
 // EmptyPoolDigest is the digest of a pool scope with no roles, for a given
-// tenant. Pools and the rows they hold carry this value rather than NULL so the
-// uniqueness indexes constrain them like any other.
+// tenancy. Pools and the rows they hold carry this value rather than NULL so
+// the uniqueness indexes constrain them like any other.
 //
-// It takes a tenant for the same reason PoolDigest does, and this is the case
-// where it matters most: "no roles" is not one pool, it is one pool per tenant.
-// A platform caller passes "".
-func EmptyPoolDigest(tenant string) string { return PoolDigest(tenant, nil) }
+// It takes a tenancy for the same reason PoolDigest does, and this is the case
+// where it matters most: "no roles" is not one pool, it is one pool per owner —
+// and, for a class naming the reserved project role, one per consumer as well.
+func EmptyPoolDigest(t PoolTenancy) string { return PoolDigest(t, nil) }
 
 // EmptyAddressSpaceDigest is the digest of the address space no refs separate:
 // the one space every `uniqueWithin: []` claim in a pool shares, whatever
@@ -79,18 +159,21 @@ func EmptyAddressSpaceDigest() string { return AddressSpaceDigest("", nil) }
 
 // CanonicalPool returns the byte-exact serialization PoolDigest is taken over.
 //
-// tenant is the project or organization the pool belongs to, empty for platform
-// callers, so every platform caller with the same scope shares one digest.
+// The tenancy is the pair of projects a pool's identity depends on: the OWNER
+// holding the class definition, and the CONSUMER whose claim triggered
+// provisioning. The consumer is set exactly when the class names
+// ReservedRoleProject in PoolPer; a class that does not name it derives one
+// pool for every consumer, which is what public unicast space requires.
 //
-// It must be the same discriminator that prefixes object keys
+// The owner must be the same discriminator that prefixes object keys
 // (tenant.Identity.Name). If key prefixes ever distinguish more than the name,
 // this must too, or two spaces the storage layer keeps apart will share a
-// digest. Every function here taking a tenant takes this value.
+// digest.
 //
 // The encoding is a flat sequence of length-prefixed fields, `<len>:<bytes>`,
 // where len is the byte length in decimal:
 //
-//	13:ipam.scope.v2 13:project-alpha 1:2 7:network 24:networking.datumapis.com 7:Network 7:default …
+//	13:ipam.scope.v4 13:project-alpha 12:project-tenx 1:2 7:network 24:networking.datumapis.com 7:Network 7:default …
 //
 // (spaces added for readability; there are none in the real encoding).
 //
@@ -108,21 +191,29 @@ func EmptyAddressSpaceDigest() string { return AddressSpaceDigest("", nil) }
 // emitted as a fixed-arity group so a role name cannot be mistaken for an
 // APIGroup.
 //
+// THE CONSUMER IS A TOP-LEVEL FIELD, NOT A ROLE GROUP, and that is not a
+// layout preference. A role group carries a client-supplied apiGroup and kind;
+// the consumer is a server-supplied fact read off the request tenant, and it
+// must not be encoded in a shape that has fields a client could vary. The
+// reserved role in PoolPer is the DECLARATION; this field is the mechanism.
+//
 // Exported because a digest is opaque: when two claims land in different pools
 // and someone needs to know why, the canonical forms are the answer and the
 // digests are not.
-func CanonicalPool(tenant string, s map[string]ipam.ScopeRef) string {
+func CanonicalPool(t PoolTenancy, s map[string]ipam.ScopeRef) string {
 	var b strings.Builder
 	writeField(&b, canonicalPoolVersion)
-	// The tenant precedes the role count and is length-prefixed like every
-	// other field, so a tenant name cannot be made to parse as a role and the
-	// empty (platform) tenant is a zero-length field rather than an absence.
-	writeField(&b, tenant)
+	// Owner and consumer precede the role count and are length-prefixed like
+	// every other field, so neither can be made to parse as a role and the
+	// empty consumer (a class that does not carve per consumer) is a
+	// zero-length field rather than an absence.
+	writeField(&b, t.Owner)
+	writeField(&b, t.Consumer)
 	writeField(&b, strconv.Itoa(len(s)))
 	for _, role := range Roles(s) {
 		ref := s[role]
-		// Five fields, fixed arity. The v3 form's group is six; neither can be
-		// parsed as the other even before the version tag is read.
+		// Four fields, fixed arity. The v3 address-space group is five; neither
+		// can be parsed as the other even before the version tag is read.
 		writeField(&b, role)
 		writeField(&b, ref.APIGroup)
 		writeField(&b, ref.Kind)
@@ -174,21 +265,33 @@ func writeField(b *strings.Builder, v string) {
 	b.WriteString(v)
 }
 
-// PoolDigest reduces a tenant's scope to the value a POOL's identity is keyed
-// on: the lowercase hex SHA-256 of its canonical form, 64 characters wide
+// PoolDigest reduces a tenancy and a scope to the value a POOL's identity is
+// keyed on: the lowercase hex SHA-256 of its canonical form, 64 characters wide
 // whatever the scope holds.
 //
-// THE TENANT IS FOLDED IN UNCONDITIONALLY, as its own field, and that is not
-// negotiable. A pool is an object in a tenant-prefixed key space: if two
-// tenants derived one pool identity, the second would be handed the first's
-// pool_key — a key in another project's space — and would allocate through it,
-// bypassing the prefixing every other path applies.
+// THE OWNER IS FOLDED IN UNCONDITIONALLY, as its own field, and that is not
+// negotiable. A pool is an object in a tenant-prefixed key space: if two owners
+// derived one pool identity, the second would be handed the first's pool_key —
+// a key in another project's space — and would allocate through it, bypassing
+// the prefixing every other path applies. It is also what keeps two classes
+// that share a NAME in different projects off one another's identity row, since
+// ipam_pool_identity's primary key is (class_name, scope_digest).
 //
 // A provisioning class may legitimately declare no poolPer, which projects to
-// the empty scope. The tenant field is then the only thing keeping two tenants'
+// the empty scope. The owner field is then the only thing keeping two owners'
 // pools apart. Nothing in the IPClass registry requires a parent class to
 // declare poolPer, so this shape is live rather than hypothetical — see
 // TestPoolDigestSeparatesTenantsWithNoScope.
+//
+// THE CONSUMER IS FOLDED IN ONLY WHEN THE CLASS ASKED FOR IT, by naming
+// ReservedRoleProject in PoolPer. Both directions are load-bearing:
+//
+//   - Set, two consumers claiming into identically-named scopes — a network
+//     each project calls `default` — reach two pools rather than one, which is
+//     what per-tenant address space means.
+//   - Empty, every consumer in a location reaches one pool, which is what an
+//     announceable public IPv4 block requires: per-consumer /24s would exhaust
+//     the aggregate after 256 projects rather than 256 locations.
 //
 // This is the digest for ipam_pool_identity, for the digest suffix in a
 // provisioned pool's name, for IPPool.status.scopeDigest, and for the PoolCarve
@@ -196,8 +299,8 @@ func writeField(b *strings.Builder, v string) {
 //
 // It is NOT the digest an allocation's uniqueness is enforced on. See
 // AddressSpaceDigest.
-func PoolDigest(tenant string, s map[string]ipam.ScopeRef) string {
-	sum := sha256.Sum256([]byte(CanonicalPool(tenant, s)))
+func PoolDigest(t PoolTenancy, s map[string]ipam.ScopeRef) string {
+	sum := sha256.Sum256([]byte(CanonicalPool(t, s)))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -243,7 +346,7 @@ func AddressSpaceDigest(tenant string, s map[string]ipam.ScopeRef) string {
 // the tenant exactly once, so passing "" leaves the refs and nothing else. The choice of form is not observable — the result
 // is never stored, only compared against another call of this same function.
 func SameRefs(a, b map[string]ipam.ScopeRef) bool {
-	return CanonicalPool("", a) == CanonicalPool("", b)
+	return CanonicalPool(PoolTenancy{}, a) == CanonicalPool(PoolTenancy{}, b)
 }
 
 // RoleSetKey reduces a list of role names to a comparable value, ignoring order
@@ -359,8 +462,15 @@ func Project(s map[string]ipam.ScopeRef, roles []string) (map[string]ipam.ScopeR
 
 // ProjectFor is Project with the name of the class field that asked, so the
 // error can say which one. Use "poolPer" or "uniqueWithin".
+//
+// The reserved project role is dropped before projecting. It names the
+// consuming project, which arrives on the request rather than in the request
+// body, so a claim can never supply it — and looking for it would fail every
+// claim of a per-consumer class with a missing-role error nothing could fix.
+// PoolPerRoles is the caller-side half of the same rule; this is the backstop,
+// so no path can reintroduce the lookup by passing PoolPer through unfiltered.
 func ProjectFor(s map[string]ipam.ScopeRef, roles []string, required string) (map[string]ipam.ScopeRef, error) {
-	out, err := Project(s, roles)
+	out, err := Project(s, WithoutReservedRoles(roles))
 	if err != nil {
 		var missing *MissingRoleError
 		if errors.As(err, &missing) {
@@ -374,12 +484,12 @@ func ProjectFor(s map[string]ipam.ScopeRef, roles []string, required string) (ma
 // ProjectPoolDigest projects a scope onto the named roles and takes the pool
 // digest of the result — the steps every caller of Project for a pool's
 // identity takes together. Use "poolPer" as required.
-func ProjectPoolDigest(tenant string, s map[string]ipam.ScopeRef, roles []string, required string) (string, error) {
+func ProjectPoolDigest(t PoolTenancy, s map[string]ipam.ScopeRef, roles []string, required string) (string, error) {
 	sub, err := ProjectFor(s, roles, required)
 	if err != nil {
 		return "", err
 	}
-	return PoolDigest(tenant, sub), nil
+	return PoolDigest(t, sub), nil
 }
 
 // ProjectAddressSpaceDigest projects a claim's scope onto a class's

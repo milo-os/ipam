@@ -261,3 +261,115 @@ func TestTheReferenceErrorSaysWhereThePolicyBelongs(t *testing.T) {
 		t.Errorf("detail = %q, want it to name where the field belongs", errs[0].Detail)
 	}
 }
+
+// The reserved role names the consuming project, and it is meaningful only as
+// an axis of POOL identity. uniqueWithin is already implicitly per-project —
+// an address space qualifies each reference by the claiming project — so
+// accepting it there would be a second spelling of a distinction the digest
+// already makes, and an operator reading the two fields could not tell which
+// one was doing the work.
+func TestTheReservedRoleIsRefusedInUniqueWithin(t *testing.T) {
+	errs := validateIPClass(definition("tenant-ipv6", func(c *ipam.IPClass) {
+		c.Spec.UniqueWithin = []string{"network", "project"}
+	}))
+	if len(errs) == 0 {
+		t.Fatal("spec.uniqueWithin accepted the reserved role")
+	}
+	if got := errs[0].Field; got != "spec.uniqueWithin[1]" {
+		t.Errorf("error names %q, want the offending entry", got)
+	}
+	if !strings.Contains(errs[0].Detail, "reserved") {
+		t.Errorf("message %q does not say the name is reserved", errs[0].Detail)
+	}
+}
+
+// The same role IS how a class asks for a pool per consumer, so poolPer must
+// keep accepting it.
+func TestTheReservedRoleIsAcceptedInPoolPer(t *testing.T) {
+	errs := validateIPClass(definition("tenant-ipv6", func(c *ipam.IPClass) {
+		c.Spec.PoolPer = []string{"network", "project"}
+	}))
+	if len(errs) != 0 {
+		t.Fatalf("poolPer: [network, project] rejected: %v", errs)
+	}
+}
+
+// poolPer is what a pool's identity is derived from, and a provisioned pool is
+// never renumbered. Editing it would strand every existing pool.
+func TestPoolPerStaysImmutable(t *testing.T) {
+	old := definition("tenant-ipv6", func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"network"} })
+	updated := definition("tenant-ipv6", func(c *ipam.IPClass) {
+		c.Spec.PoolPer = []string{"network", "project"}
+	})
+	errs := ipClassStrategy{}.ValidateUpdate(context.Background(), updated, old)
+	if len(errs) == 0 {
+		t.Fatal("spec.poolPer was edited to add the reserved role")
+	}
+	if got := errs[0].Field; got != "spec.poolPer" {
+		t.Errorf("error names %q, want spec.poolPer", got)
+	}
+}
+
+// The omission that produced #114 is silent by construction: a class that says
+// nothing about consumers gets one pool for all of them because that is what
+// the digest computes. It cannot be REJECTED — shared is correct, and required,
+// for announceable public space — and the server cannot tell the two apart
+// without a table of project-scoped kinds it deliberately does not have. So it
+// is stated once, where the decision is made and is irreversible.
+func TestASharedProvisioningClassWarnsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		class *ipam.IPClass
+		want  bool
+	}{
+		{
+			name:  "provisions per location, shared across consumers",
+			class: definition("public-ipv4-location", func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"location"} }),
+			want:  true,
+		},
+		{
+			name: "provisions per location per consumer",
+			class: definition("tenant-ipv6", func(c *ipam.IPClass) {
+				c.Spec.PoolPer = []string{"location", "project"}
+			}),
+			want: false,
+		},
+		{
+			// A leaf provisions nothing, so there is no sharing to state.
+			name:  "provisions nothing",
+			class: definition("public-ipv4-unicast"),
+			want:  false,
+		},
+		{
+			// A reference states no policy at all; the warning belongs on the
+			// definition, once, not on every project that points at it.
+			name:  "a reference",
+			class: reference("ours", "platform", "public-ipv4-location"),
+			want:  false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			warnings := ipClassStrategy{}.WarningsOnCreate(context.Background(), tc.class)
+			if got := len(warnings) > 0; got != tc.want {
+				t.Fatalf("warnings = %v, want a warning: %v", warnings, tc.want)
+			}
+			if !tc.want {
+				return
+			}
+			// The warning has to name the field to add and be readable by
+			// whoever is running kubectl, not just greppable.
+			if !strings.Contains(warnings[0], "project") || !strings.Contains(warnings[0], "poolPer") {
+				t.Errorf("warning %q does not name the field and the role to add", warnings[0])
+			}
+		})
+	}
+}
+
+// An update cannot change poolPer, so repeating the warning on every status
+// write would be noise about a decision nobody is making.
+func TestTheSharedPoolWarningIsNotRepeatedOnUpdate(t *testing.T) {
+	c := definition("public-ipv4-location", func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"location"} })
+	if w := (ipClassStrategy{}).WarningsOnUpdate(context.Background(), c, c); len(w) != 0 {
+		t.Errorf("update warned: %v", w)
+	}
+}
