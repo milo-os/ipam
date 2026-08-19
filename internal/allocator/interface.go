@@ -96,6 +96,12 @@ type PrefixAllocator interface {
 	// allocation, which no longer has a claim to release through.
 	ReleaseAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error
 
+	// ReleasePoolReservations frees the rows a pool holds for its own
+	// reserved edge positions. They belong to no claim, so no claim-driven
+	// release path reaches them, and a pool cannot be deleted while they
+	// remain.
+	ReleasePoolReservations(ctx context.Context, tx pgx.Tx, poolKey string) error
+
 	// GetObject reads the stored API object at key inside the supplied
 	// transaction, returning ErrObjectNotFound if no row exists.
 	GetObject(ctx context.Context, tx pgx.Tx, key string) ([]byte, error)

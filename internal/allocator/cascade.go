@@ -366,6 +366,11 @@ func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoo
 	if _, err := insertObject(ctx, tx, level.PoolKey, "IPPool", "", level.PoolName, data); err != nil {
 		return fmt.Errorf("persist provisioned pool: %w", err)
 	}
+	// After the object row exists, because reserving updates the pool's
+	// capacity and that is a write to the row.
+	if err := materialiseReservations(ctx, tx, level.PoolKey, pool, []net.IPNet{*cidr}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -385,6 +390,7 @@ func newProvisionedPool(level CascadeLevel, sourcePoolName string, prefixLen int
 			ClassRef:      &ipamv1alpha1.LocalRef{Name: level.Class.Name},
 			ParentPoolRef: &ipamv1alpha1.LocalRef{Name: sourcePoolName},
 			Scope:         scopeToVersioned(level.Scope),
+			Reservations:  level.Class.Spec.Reservations.DeepCopy(),
 		},
 		Status: ipamv1alpha1.IPPoolStatus{
 			Phase:         ipamv1alpha1.PoolReady,
@@ -467,6 +473,10 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 	}
 	parents, err := parsePoolCIDR(pool)
 	if err != nil {
+		return nil, err
+	}
+
+	if err := materialiseReservations(ctx, tx, sourcePoolKey, pool, parents); err != nil {
 		return nil, err
 	}
 

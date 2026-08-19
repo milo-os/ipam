@@ -73,6 +73,10 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
+	if err := materialiseReservations(ctx, tx, poolKey, pool, parents); err != nil {
+		return "", err
+	}
+
 	strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
 	ctx, fbSpan := tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
 	fbSpan.SetAttributes(attribute.String(tracing.AttrStrategy, string(strategy)))
@@ -184,6 +188,11 @@ func (a *PostgresPrefixAllocator) Release(ctx context.Context, tx pgx.Tx, claimK
 // ReleaseAllocation implements PrefixAllocator.ReleaseAllocation.
 func (a *PostgresPrefixAllocator) ReleaseAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error {
 	return deleteAllocations(ctx, tx, "allocation_key = $1", allocationKey)
+}
+
+// ReleasePoolReservations implements PrefixAllocator.ReleasePoolReservations.
+func (a *PostgresPrefixAllocator) ReleasePoolReservations(ctx context.Context, tx pgx.Tx, poolKey string) error {
+	return deleteAllocations(ctx, tx, "pool_key = $1 AND purpose = 'Reservation'", poolKey)
 }
 
 // retainAllocations unbinds the claim from the rows it holds under reclaim
