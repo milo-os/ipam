@@ -37,7 +37,7 @@ func TestFirstClaimProvisionsTheChain(t *testing.T) {
 	}
 	_ = read.Rollback(ctx)
 
-	poolKey, err := ResolvePool(ctx, db, leaf, claimScope)
+	poolKey, err := ResolvePool(ctxIn("platform"), db, leaf, claimScope)
 	if err != nil {
 		t.Fatalf("ResolvePool: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestAHerdOfFirstClaimsProducesOnePool(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			keys[i], errs[i] = ResolvePool(ctx, db, leaf, claimScope)
+			keys[i], errs[i] = ResolvePool(ctxIn("platform"), db, leaf, claimScope)
 		}()
 	}
 	close(start)
@@ -161,11 +161,11 @@ func TestEachScopeGetsItsOwnPool(t *testing.T) {
 	}
 	_ = read.Rollback(ctx)
 
-	lon, err := ResolvePool(ctx, db, leaf, map[string]ipam.ScopeRef{"location": claimScopeRef("Location", "lon1")})
+	lon, err := ResolvePool(ctxIn("platform"), db, leaf, map[string]ipam.ScopeRef{"location": claimScopeRef("Location", "lon1")})
 	if err != nil {
 		t.Fatalf("ResolvePool lon1: %v", err)
 	}
-	fra, err := ResolvePool(ctx, db, leaf, map[string]ipam.ScopeRef{"location": claimScopeRef("Location", "fra1")})
+	fra, err := ResolvePool(ctxIn("platform"), db, leaf, map[string]ipam.ScopeRef{"location": claimScopeRef("Location", "fra1")})
 	if err != nil {
 		t.Fatalf("ResolvePool fra1: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestAClaimMissingAScopeRoleProvisionsNothing(t *testing.T) {
 	}
 	_ = read.Rollback(ctx)
 
-	if _, err := ResolvePool(ctx, db, leaf, nil); err == nil {
+	if _, err := ResolvePool(ctxIn("platform"), db, leaf, nil); err == nil {
 		t.Fatal("a claim with no location resolved a pool")
 	}
 

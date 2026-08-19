@@ -226,6 +226,13 @@ type IPClassSpec struct {
 	// appears only on classes named as a parent, because only a parent
 	// provisions pools. It is a constraint backing a unique index, not a
 	// lookup.
+	//
+	// The role name "project" is reserved and names the CONSUMING project,
+	// supplied by the request rather than by a claim's scope. Naming it gives
+	// one pool per consumer; omitting it gives one pool that every consuming
+	// project shares, which is the default. A class that separates address
+	// space per tenant must name it, and cannot start doing so afterwards,
+	// since PoolPer is immutable. See the v1alpha1 type for the full table.
 	PoolPer []string
 
 	// UniqueWithin states what defines one independent address space: two
@@ -291,8 +298,9 @@ type IPClassStatus struct {
 	ProvisionedPools int32
 	// RequiredScopeRoles is the resolved set of scope roles a claim of this
 	// class must supply: this class's UniqueWithin unioned with every PoolPer
-	// along its parent chain. Resolved server-side so a client need not walk
-	// ParentClassName upward and union by hand.
+	// along its parent chain, less the reserved "project" role, which no claim
+	// supplies. Resolved server-side so a client need not walk ParentClassName
+	// upward and union by hand.
 	RequiredScopeRoles []string
 	Conditions         []metav1.Condition
 }

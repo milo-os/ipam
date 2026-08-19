@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 
 	"go.miloapis.com/ipam/internal/allocator"
+	"go.miloapis.com/ipam/internal/scope"
 	pgstore "go.miloapis.com/ipam/internal/storage/postgres"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/testdb"
@@ -55,11 +56,12 @@ func newTenantREST(t *testing.T) (*AllocatingREST, *pgxpool.Pool) {
 	}
 
 	class("tenant-vpc", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv6, DefaultPrefixLength: 48, PoolPer: []string{"network"},
+		IPFamily: ipamv1alpha1.IPv6, DefaultPrefixLength: 48,
+		PoolPer: []string{"network", scope.ReservedRoleProject},
 	})
 	class("tenant-subnet", ipamv1alpha1.IPClassSpec{
-		IPFamily: ipamv1alpha1.IPv6, ParentClassName: "tenant-vpc",
-		DefaultPrefixLength: 64, PoolPer: []string{"network", "location"},
+		IPFamily: ipamv1alpha1.IPv6, ParentClassName: "tenant-vpc", DefaultPrefixLength: 64,
+		PoolPer: []string{"network", "location", scope.ReservedRoleProject},
 	})
 	class("tenant-endpoint", ipamv1alpha1.IPClassSpec{
 		IPFamily: ipamv1alpha1.IPv6, ParentClassName: "tenant-subnet", DefaultPrefixLength: 96,

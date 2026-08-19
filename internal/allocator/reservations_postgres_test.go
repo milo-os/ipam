@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"go.miloapis.com/ipam/internal/allocation"
+	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/internal/testdb"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -48,7 +49,7 @@ func subnetChain(t *testing.T, db *pgxpool.Pool, reservations *ipamv1alpha1.Rese
 	}
 	_ = read.Rollback(ctx)
 
-	poolKey, err := ResolvePool(ctx, db, leaf, map[string]ipam.ScopeRef{
+	poolKey, err := ResolvePool(ctxIn("platform"), db, leaf, map[string]ipam.ScopeRef{
 		"network": claimScopeRef("Network", "net-a"),
 	})
 	if err != nil {
@@ -294,7 +295,7 @@ func TestACarveAvoidsTheParentsReservedSpace(t *testing.T) {
 	}
 	_ = read.Rollback(ctx)
 
-	poolKey, err := ResolvePool(ctx, db, leaf, map[string]ipam.ScopeRef{
+	poolKey, err := ResolvePool(ctxIn("platform"), db, leaf, map[string]ipam.ScopeRef{
 		"location": claimScopeRef("Location", "lon1"),
 	})
 	if err != nil {
@@ -312,5 +313,52 @@ func TestACarveAvoidsTheParentsReservedSpace(t *testing.T) {
 	}
 	if cidr != "fd40:0:0:100::/56" {
 		t.Errorf("child pool carved %s, want the first /56 after the withheld one", cidr)
+	}
+}
+
+// A pool provisioned through the RANGE path carries its class's reservations
+// too.
+//
+// The range path is the only one that provisions the LEAF's own pool: a block
+// claim of the same class stops at the parent and carves out of it, so the leaf
+// pool is the one no block claim would ever have materialised reservations for.
+// A tenant handed a fresh subnet range whose router block was never withheld
+// gets that block handed to its first endpoint, which is the bug #116 fixed
+// arriving through the door #118 opened.
+func TestARangeProvisionedPoolCarriesItsClassReservations(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+
+	tx := begin(t, db)
+	definition(t, tx, "platform", "subnets", ipamv1alpha1.IPClassSpec{
+		IPFamily:            ipamv1alpha1.IPv6,
+		DefaultPrefixLength: 64,
+		PoolPer:             []string{"network", scope.ReservedRoleProject},
+		Reservations:        gatewayReservation,
+	})
+	offerPool(t, tx, "platform", "root", "fd20:f000::/48", "subnets", nil)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit fixtures: %v", err)
+	}
+
+	read := begin(t, db)
+	leaf, err := LoadClass(ctxIn("platform"), read, "subnets")
+	if err != nil {
+		t.Fatalf("LoadClass: %v", err)
+	}
+	_ = read.Rollback(ctx)
+
+	poolKey, err := ResolveScopeRange(ctxIn("platform"), db, leaf, map[string]ipam.ScopeRef{
+		"network": claimScopeRef("Network", "net-a"),
+	})
+	if err != nil {
+		t.Fatalf("ResolveScopeRange: %v", err)
+	}
+
+	if n := countReservations(t, db, poolKey); n != 1 {
+		t.Fatalf("range pool holds %d reservation(s), want the class's 1", n)
+	}
+	if got := claimBlock(t, db, poolKey, "tenant/ipclaims/endpoint-1"); got == "fd20:f000::/96" {
+		t.Errorf("first endpoint in the range received %s, the block holding the subnet's gateway", got)
 	}
 }
