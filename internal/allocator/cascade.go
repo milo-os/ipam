@@ -73,9 +73,31 @@ func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope
 	if err != nil {
 		return nil, err
 	}
+	return planLevels(ancestry, claimScope)
+}
 
-	levels := make([]CascadeLevel, len(ancestry))
-	for i, class := range ancestry {
+// PlanScopeRangeCascade computes the pools that must exist for a class to hold
+// the range its scope names, ending with the class's own pool.
+//
+// It is PlanCascade with the leaf included rather than excluded, and that one
+// difference is the whole feature. A Block claim stops at the leaf's PARENT,
+// because the leaf binds an allocation out of it. A ScopeRange claim binds the
+// leaf's own pool, so the leaf is a level like any other and every level below
+// the root is provisioned the same way — including the identity row that makes
+// a later Block claim adopt this pool instead of provisioning a second one.
+func PlanScopeRangeCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
+	ancestry, err := LoadAncestry(ctx, tx, leaf)
+	if err != nil {
+		return nil, err
+	}
+	// LoadAncestry is nearest-first, so the leaf goes on the front.
+	return planLevels(append([]*ResolvedClass{leaf}, ancestry...), claimScope)
+}
+
+// planLevels turns a nearest-first chain of classes into root-first levels.
+func planLevels(chain []*ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
+	levels := make([]CascadeLevel, len(chain))
+	for i, class := range chain {
 		projected, err := scope.ProjectFor(claimScope, class.Spec.PoolPer, "poolPer")
 		if err != nil {
 			return nil, err
@@ -84,7 +106,7 @@ func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope
 		name := poolNameFor(project, class.Name, projected)
 		// Built nearest-first from the ancestry, stored root-first: a level
 		// cannot be carved before the level it carves from exists.
-		levels[len(ancestry)-1-i] = CascadeLevel{
+		levels[len(chain)-1-i] = CascadeLevel{
 			Class:       class,
 			Scope:       projected,
 			ScopeDigest: scope.PoolDigest(project, projected),
