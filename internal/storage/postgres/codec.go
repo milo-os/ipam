@@ -52,17 +52,33 @@ func labelsJSON(obj runtime.Object) []byte {
 	return b
 }
 
-// extractMetadata extracts kind, namespace, and name from a runtime.Object.
-func extractMetadata(obj runtime.Object) (kind, namespace, name string) {
+// extractMetadata extracts kind, namespace, and name for the object's row.
+//
+// data is the encoded document about to be written. The kind is taken from it
+// rather than from the object's TypeMeta: the encoder writes the kind from the
+// scheme, whereas TypeMeta is cleared by the conversion to the internal version
+// that every server-side apply goes through, so an apply-written row would
+// otherwise record no kind at all. Taking both from the same bytes also means
+// the column and the document can never disagree.
+func extractMetadata(obj runtime.Object, data []byte) (kind, namespace, name string) {
 	accessor, err := meta.Accessor(obj)
 	if err == nil {
 		namespace = accessor.GetNamespace()
 		name = accessor.GetName()
 	}
-	if gvk := obj.GetObjectKind().GroupVersionKind(); gvk.Kind != "" {
-		kind = gvk.Kind
+	return kindFromData(data, obj), namespace, name
+}
+
+// kindFromData reads the kind out of an encoded API object, falling back to the
+// object's TypeMeta if the document does not carry one.
+func kindFromData(data []byte, obj runtime.Object) string {
+	var doc struct {
+		Kind string `json:"kind"`
 	}
-	return kind, namespace, name
+	if err := json.Unmarshal(data, &doc); err == nil && doc.Kind != "" {
+		return doc.Kind
+	}
+	return obj.GetObjectKind().GroupVersionKind().Kind
 }
 
 // isUniqueViolation checks if the error is a Postgres unique constraint violation.

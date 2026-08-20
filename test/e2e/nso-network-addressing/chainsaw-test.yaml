@@ -95,7 +95,12 @@ spec:
               PLATFORM="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
               POOL_KUBECTL="$PLATFORM"
 
-              $PLATFORM create -f test-data/platform-classes.yaml
+              # Server-side apply, not create: a GitOps deployment applies, and
+              # apply is the path that hands the registry an object with no
+              # TypeMeta on it. A create here passes whether or not the storage
+              # layer depends on that TypeMeta.
+              $PLATFORM apply --server-side --field-manager kustomize-controller \
+                -f test-data/platform-classes.yaml
               wait_pool_ready datum-vpc-ipv6-root
 
               # Nothing may exist for the networks this suite is about to

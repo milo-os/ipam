@@ -104,7 +104,7 @@ func PoolsOffering(ctx context.Context, tx pgx.Tx, project, className string) ([
 		   FROM ipam_pool_class_offer o
 		   JOIN ipam_objects obj ON obj.key = o.pool_key
 		  WHERE o.class_name = $1
-		    AND obj.kind = 'IPPool'
+		    AND ipam_data_to_jsonb(obj.data) ->> 'kind' = 'IPPool'
 		    AND obj.key LIKE $2
 		  ORDER BY obj.name`,
 		className, resourceKeyPrefixFor(project, "ippools")+"%",

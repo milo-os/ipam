@@ -131,6 +131,9 @@ func (a *PostgresPrefixAllocator) InsertObject(ctx context.Context, tx pgx.Tx, k
 func insertObject(ctx context.Context, tx pgx.Tx, key, kind, namespace, name string, data []byte) (int64, error) {
 	defer metrics.ObserveQuery("insert_object", time.Now())
 	labels := labelsFromData(data)
+	if k := kindFromData(data); k != "" {
+		kind = k
+	}
 	var rv int64
 	err := tx.QueryRow(ctx,
 		`INSERT INTO ipam_objects (key, kind, namespace, name, data, labels)
@@ -149,6 +152,19 @@ func insertObject(ctx context.Context, tx pgx.Tx, key, kind, namespace, name str
 		return 0, fmt.Errorf("insert changelog for %q: %w", key, err)
 	}
 	return rv, nil
+}
+
+// kindFromData reads the kind out of a JSON-encoded API object. The document is
+// the one source of the kind that no request path can clear, so the column
+// always agrees with the row it describes.
+func kindFromData(data []byte) string {
+	var obj struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return ""
+	}
+	return obj.Kind
 }
 
 // labelsFromData extracts metadata.labels from a JSON-encoded API object.
