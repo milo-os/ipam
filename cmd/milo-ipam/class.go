@@ -124,60 +124,30 @@ func (a *app) renderClassTable(classes []ipamv1alpha1.IPClass) error {
 	sort.Slice(classes, func(i, j int) bool { return classes[i].Name < classes[j].Name })
 
 	wide := a.opts.output == outputWide
-	headers := []string{"NAME", "FAMILY", "PARENT", "UNIT", "POOLS", "PHASE", "AGE"}
+	headers := []string{"NAME", "FAMILY", "PARENT", "UNIT", "PHASE", "AGE"}
 	if wide {
-		headers = []string{"NAME", "FAMILY", "PARENT", "UNIT", "POOLS", "PROVISIONED", "REQUIRED SCOPE", "UNIQUE WITHIN", "SOURCE", "PHASE", "AGE"}
+		headers = []string{"NAME", "FAMILY", "PARENT", "UNIT", "UNIQUE WITHIN", "SOURCE", "PHASE", "AGE"}
 	}
 	t := newTable(a.io.Out, headers)
 
-	var starved []string
 	for i := range classes {
 		c := &classes[i]
-		if c.Status.OfferingPools == 0 {
-			starved = append(starved, c.Name)
-		}
 		name := c.Name
 		if isDefaultClass(c) {
 			name += " (default)"
 		}
-		pools := classPoolsCell(c.Status.OfferingPools, a.color.enabled)
 		if wide {
 			t.row(name, orDash(string(c.Spec.IPFamily)), orDash(c.Spec.ParentClassName),
-				classUnitCell(c), pools, itoa(int(c.Status.ProvisionedPools)),
-				orDashList(c.Status.RequiredScopeRoles), orDashList(c.Spec.UniqueWithin),
+				classUnitCell(c), orDashList(c.Spec.UniqueWithin),
 				classSourceCell(c), phaseText(string(c.Status.Phase)),
 				humanDuration(c.CreationTimestamp))
 		} else {
 			t.row(name, orDash(string(c.Spec.IPFamily)), orDash(c.Spec.ParentClassName),
-				classUnitCell(c), pools, phaseText(string(c.Status.Phase)),
+				classUnitCell(c), phaseText(string(c.Status.Phase)),
 				humanDuration(c.CreationTimestamp))
 		}
 	}
-	if err := t.flush(); err != nil {
-		return err
-	}
-
-	// A class with no offering pool is a live outage for every claim that names
-	// it, and the table cell alone is easy to skim past. Say it in words.
-	if len(starved) > 0 && !a.opts.quiet {
-		_, _ = fmt.Fprintf(a.io.ErrOut,
-			"\nNo pool offers %s. A claim naming a class with no pool fails; an\n"+
-				"operator fixes it by adding the class to a pool's classNames.\n",
-			strings.Join(quoteAll(starved), ", "))
-	}
-	return nil
-}
-
-// classPoolsCell renders the offering-pool count, calling out zero because that
-// value means the class cannot satisfy a claim at all.
-func classPoolsCell(n int32, useColor bool) string {
-	if n > 0 {
-		return itoa(int(n))
-	}
-	if useColor {
-		return colorize("0 (none)", colorRed)
-	}
-	return "0 (none)"
+	return t.flush()
 }
 
 // classSourceCell names the project a referencing class draws its policy from.
@@ -262,10 +232,9 @@ func (a *app) renderClassDetail(c *ipamv1alpha1.IPClass, cs clientset.Interface)
 	if r := c.Spec.AllowedPrefixLengths; r != nil {
 		t.row("Allowed sizes", fmt.Sprintf("/%d–/%d", r.Min, r.Max))
 	}
-	// The resolved requirement is what a claim must supply, so it leads, with
-	// the inputs it was derived from underneath.
-	t.row("Claims must scope by", scopeRolesCell(c.Status.RequiredScopeRoles,
-		"— (no scope required)"))
+	// This class's own inputs only. What a claim must supply is the union of
+	// these with every poolPer up the parent chain, which the server does not
+	// publish — see `class show` on each ancestor.
 	t.row("Unique within", scopeRolesCell(c.Spec.UniqueWithin,
 		"— (one address space platform-wide)"))
 	if len(c.Spec.PoolPer) > 0 {
@@ -290,17 +259,14 @@ func (a *app) renderClassDetail(c *ipamv1alpha1.IPClass, cs clientset.Interface)
 	for _, k := range sortedKeys(c.Spec.Parameters) {
 		t.row("Parameter "+k, c.Spec.Parameters[k])
 	}
-	t.row("Offering pools", classPoolsCell(c.Status.OfferingPools, a.color.enabled))
-	if len(c.Spec.PoolPer) > 0 {
-		t.row("Provisioned pools", itoa(int(c.Status.ProvisionedPools)))
-	}
 	t.row("Age", humanDuration(c.CreationTimestamp))
 	if err := t.flush(); err != nil {
 		return err
 	}
 
-	// Naming the pools makes "POOLS: 0" actionable: an operator sees which
-	// pools do offer the class, and which one is missing the classNames entry.
+	// Listing the pools by name is how this view answers "is the class backed":
+	// it reads spec.classNames off the pools the caller can see, which is a fact
+	// rather than a count nothing maintains.
 	offering, provisioned := poolsForClass(cs, c.Name)
 	if len(offering) > 0 {
 		_, _ = fmt.Fprintf(a.io.Out, "\nPools offering this class:\n")

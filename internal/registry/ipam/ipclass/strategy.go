@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -64,9 +65,26 @@ func NewStatusStrategy(typer runtime.ObjectTyper) ipClassStatusStrategy {
 
 func (ipClassStrategy) NamespaceScoped() bool { return false }
 
+// PrepareForCreate stamps the only status a class has to report.
+//
+// Everything checkable about a class is checked synchronously: validation here,
+// the source authorization and the offer agreement in Create. A class that
+// fails any of them is rejected and never stored, so reaching this point IS the
+// class being accepted — there is no later step for a phase to track and
+// nothing to advance it from. It was previously stamped Pending and left there
+// forever, which read as an outage on a class that was working.
 func (ipClassStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
 	c := obj.(*ipam.IPClass)
-	c.Status = ipam.IPClassStatus{Phase: ipam.ClassPending}
+	c.Status = ipam.IPClassStatus{
+		Phase: ipam.ClassReady,
+		Conditions: []metav1.Condition{{
+			Type:               "Accepted",
+			Status:             metav1.ConditionTrue,
+			Reason:             "ClassAccepted",
+			Message:            "IPClass passed validation and is available to claims",
+			LastTransitionTime: metav1.Now(),
+		}},
+	}
 }
 
 func (ipClassStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {

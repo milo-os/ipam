@@ -158,13 +158,6 @@ func runClaimCreate(a *app, o *claimOptions) error {
 		}
 	}
 
-	// This must stay after the idempotency lookup, for the reason above.
-	// Hoisting it to the top of the function reads like a tidy-up and changes
-	// behaviour.
-	if pErr := a.preflightClaimScope(cs, claim); pErr != nil {
-		return pErr
-	}
-
 	if o.dryRun {
 		// Server-side dry-run: the apiserver resolves the pool and computes the
 		// real next address inside the allocation transaction and rolls back,
@@ -183,62 +176,6 @@ func runClaimCreate(a *app, o *claimOptions) error {
 		return a.claimCreateError(cErr, o, cs)
 	}
 	return a.renderClaimResult(created, cs, false)
-}
-
-// preflightClaimScope checks the claim's scope against the class's resolved
-// RequiredScopeRoles before spending a round trip on it.
-//
-// The server rejects a claim missing a required role rather than widening the
-// comparison, so this is a real failure the caller can be told about precisely:
-// the missing role names, and the flags that supply them. Checking client side
-// costs one GET rather than a walk, because the class reports the resolved set
-// already: the union of its own UniqueWithin with every PoolPer up its parent
-// chain.
-//
-// Any error other than a missing class falls back to server-side validation. A
-// preflight that blocks a valid request is worse than no preflight at all.
-func (a *app) preflightClaimScope(cs clientset.Interface, claim *ipamv1alpha1.IPClaim) error {
-	if claim.Spec.ClassName == "" {
-		// The server resolves the default class for the family. Re-deriving which
-		// class that is would duplicate server logic that could disagree with it.
-		return nil
-	}
-	class, err := cs.IpamV1alpha1().IPClasses().Get(context.Background(), claim.Spec.ClassName, metav1.GetOptions{})
-	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return classGetError(err, claim.Spec.ClassName, cs)
-		}
-		a.vlogf("could not pre-check scope against class %q (%v); leaving it to the server", claim.Spec.ClassName, err)
-		return nil
-	}
-
-	// An empty RequiredScopeRoles means "nothing to check", never "reject
-	// everything". A class legitimately requires no scope, so the loop below
-	// stays a check of what the class asked for rather than an assertion that it
-	// asked for something.
-	var missing []string
-	for _, role := range class.Status.RequiredScopeRoles {
-		if _, ok := claim.Spec.Scope[role]; !ok {
-			missing = append(missing, role)
-		}
-	}
-	if len(missing) == 0 {
-		return nil
-	}
-	sort.Strings(missing)
-
-	var fix strings.Builder
-	fix.WriteString("add:")
-	for _, role := range missing {
-		fix.WriteString("\n       --scope " + role + "=<name>")
-	}
-	fmt.Fprintf(&fix, "\n       class %s requires: %s", class.Name, strings.Join(class.Status.RequiredScopeRoles, ", "))
-	return newCLIError(exitUsage, fmt.Sprintf(
-		"class %q needs a %s in scope, and this claim supplies %s",
-		class.Name,
-		strings.Join(quoteAll(missing), " and a "),
-		scopeRolesCell(sortedScopeRoles(claim.Spec.Scope), "none"))).
-		withFix(fix.String())
 }
 
 // buildClaim validates the flags and assembles the IPClaim to submit. It takes

@@ -157,7 +157,7 @@ func TestAllocationReleaseDryRun(t *testing.T) {
 // The reverse lookup answers the incident question: what is this address, and
 // who holds it.
 func TestAddressShowNamesTheHolder(t *testing.T) {
-	class := newClass("public-unicast-ipv4", ipamv1alpha1.IPv4, 1)
+	class := newClass("public-unicast-ipv4", ipamv1alpha1.IPv4)
 	class.Spec.Routing = ipamv1alpha1.RoutingSpec{
 		Internal: ipamv1alpha1.InternalRoutingHost,
 		External: ipamv1alpha1.ExternalRoutingAggregate,

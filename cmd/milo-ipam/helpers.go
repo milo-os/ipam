@@ -58,15 +58,6 @@ func scopeRolesCell(roles []string, whenEmpty string) string {
 	return strings.Join(roles, ", ")
 }
 
-// quoteAll wraps each element in double quotes, for listing names in prose.
-func quoteAll(items []string) []string {
-	out := make([]string, 0, len(items))
-	for _, s := range items {
-		out = append(out, `"`+s+`"`)
-	}
-	return out
-}
-
 // sortedKeys returns a map's keys in stable order.
 func sortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
