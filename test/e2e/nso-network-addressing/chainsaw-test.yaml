@@ -25,7 +25,8 @@ spec:
          range. This is the property that makes it one network.
       4. Two networks get different ranges.
       5. Two projects that each call a network `default` do not share a range.
-         Read the step: what it can prove depends on the server.
+         The carving classes name the reserved `project` role, so the consuming
+         project is part of a pool's identity.
       6. The address the subnet's router answers on is never handed to an
          endpoint.
       7. Deleting the network gives the range back, and a range still holding a
@@ -79,58 +80,22 @@ spec:
         fd20::/20, a /48 per VPC, a /64 per region, a /96 per endpoint, with the
         first /96 of every region subnet withheld for the router.
 
-        The setup asks the server whether a carving class must declare who its
-        pools serve before it fills that in, rather than assuming. Which answer
-        it got decides what the isolation step further down is able to prove,
-        and the step says so out loud either way.
+        Both carving classes name the reserved `project` role, so the consuming
+        project is part of a pool's identity and two tenants that each call a
+        network `default` are handed two ranges. That declaration is opt-in: a
+        class omitting it shares one pool across every consumer, which is right
+        for announceable public space and wrong for a tenant plan. This is a
+        tenant plan.
       try:
         - script:
             timeout: 120s
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
             content: |
               . ../lib/ipam.sh
               KCFG=../.tenant-impersonation.kubeconfig
               PLATFORM="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
               POOL_KUBECTL="$PLATFORM"
-              MODE_FILE="${TMPDIR:-/tmp}/nso-addr-$NAMESPACE.tenancy"
 
-              # Ask the server. A class that carves per network either must
-              # declare who its pools serve or must not; a probe is the only
-              # honest way to find out, and the answer changes what the
-              # isolation step can assert.
-              probe=$($PLATFORM create -f - 2>&1 <<'EOF' || true
-              apiVersion: ipam.miloapis.com/v1alpha1
-              kind: IPClass
-              metadata:
-                name: nso-addr-tenancy-probe
-              spec:
-                ipFamily: IPv6
-                poolPer:
-                  - network
-                uniqueWithin: []
-                allowedPrefixLengths:
-                  min: 48
-                  max: 48
-                defaultPrefixLength: 48
-              EOF
-              )
-              $PLATFORM delete ipclass nso-addr-tenancy-probe --ignore-not-found >/dev/null 2>&1 || true
-
-              if printf '%s\n' "$probe" | grep -Eq 'allProjects'; then
-                echo "TENANCY: this server requires a carving class to declare who its pools serve"
-                printf 'declared\n' > "$MODE_FILE"
-                sed 's|^\( *\)# POOL_PER_TENANCY$|\1- project|' \
-                  test-data/platform-classes.yaml > "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE-classes.yaml"
-              else
-                echo "TENANCY: this server has no per-consumer pool identity"
-                printf 'undeclared\n' > "$MODE_FILE"
-                sed '/# POOL_PER_TENANCY$/d' \
-                  test-data/platform-classes.yaml > "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE-classes.yaml"
-              fi
-
-              $PLATFORM create -f "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE-classes.yaml"
+              $PLATFORM create -f test-data/platform-classes.yaml
               wait_pool_ready datum-vpc-ipv6-root
 
               # Nothing may exist for the networks this suite is about to
@@ -490,17 +455,16 @@ spec:
 
     - name: two-projects-naming-one-network-do-not-share-a-range
       description: |
-        Both consumer projects reference the same platform class and both create
-        a network called `default`. Pool identity keys on the class and the
-        scope, and a scope carries only names — so unless the consuming project
-        is part of that identity, two tenants are handed one /48 with no error
-        and nothing to see.
+        Both consumer projects reference the same platform class and both call a
+        network `default`. A scope carries only names, so the two claims project
+        to an identical scope and nothing in either request body tells them
+        apart. What separates them is the consuming project, and it is in the
+        pool's identity because the class named `project`.
 
-        What this step can prove depends on the server it runs against, and it
-        says which it did. Where the reserved tenancy declaration exists it
-        asserts the two ranges are disjoint. Where it does not, per-project
-        isolation is not a property the service has yet, and the step reports
-        that rather than dressing the current behaviour up as isolation.
+        Both ranges must exist and must be disjoint. Two projects handed one
+        /48, or a project refused a range because another project already named
+        that network, are the same failure wearing two faces: a tenant in
+        somebody else's address space.
       try:
         - script:
             timeout: 150s
@@ -513,7 +477,6 @@ spec:
               A="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
               B="kubectl --kubeconfig $KCFG --context tenant-project-beta"
               POOL_KUBECTL="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
-              MODE=$(cat "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE.tenancy")
 
               claim_default() {
                 _name="$1"
@@ -541,56 +504,23 @@ spec:
               wait_claim_bound "$NAMESPACE" net-default-a0000001 120
               a_range=$(claim_cidr "$NAMESPACE" net-default-a0000001)
 
-              # Raw create rather than the reconcile helper: on a server without
-              # per-consumer identity this is expected to be refused, and the
-              # refusal is the finding.
-              b_out=$(claim_default net-default-b0000001 | $B create -n "$NAMESPACE" -f - 2>&1) && b_rc=0 || b_rc=$?
-              b_range=$($B get ipclaim -n "$NAMESPACE" net-default-b0000001 \
-                -o jsonpath='{.status.allocatedCIDR}' 2>/dev/null || echo "")
+              KUBECTL="$B"
+              claim_default net-default-b0000001 | reconcile_claim "$NAMESPACE" net-default-b0000001 "project B's default network"
+              wait_claim_bound "$NAMESPACE" net-default-b0000001 120
+              b_range=$(claim_cidr "$NAMESPACE" net-default-b0000001)
 
-              if [ "$MODE" = "declared" ]; then
-                if [ "$b_rc" != "0" ]; then
-                  echo "FAIL: project B could not hold a range for its own network."
-                  echo "      Each consuming project is supposed to get its own."
-                  printf '%s\n' "$b_out" | tail -3
-                  exit 1
-                fi
-                KUBECTL="$B"
-                wait_claim_bound "$NAMESPACE" net-default-b0000001 120
-                b_range=$(claim_cidr "$NAMESPACE" net-default-b0000001)
-                assert_disjoint "$a_range" "$b_range"
-                # Two ranges means two pools, not one adopted twice.
-                expect_pool_count 2 datum-vpc-ipv6 network=default
-                echo "OK: the two projects hold separate ranges"
-              else
-                echo "NOT PROVEN: per-project isolation."
-                echo "  This server keys a range on the class and the network NAME alone, so"
-                echo "  both projects reach one range. Project A holds $a_range."
-                if [ "$b_rc" = "0" ]; then
-                  echo "  Project B's claim for a network of the same name was accepted and"
-                  echo "  reports ${b_range:-<no cidr>}."
-                else
-                  echo "  Project B's claim for a network of the same name was refused:"
-                  printf '%s\n' "$b_out" | tail -2 | sed 's/^/    /'
-                  echo "  A project cannot be refused a range on account of a network it"
-                  echo "  cannot see, in a project it is not a member of. Isolation would"
-                  echo "  have given it one of its own."
-                fi
-                echo "  This is milo-os/ipam#114. The assertion this step exists to make"
-                echo "  becomes possible when a carving class can declare that each consuming"
-                echo "  project gets its own range; until then the suite refuses to report a"
-                echo "  property the service does not have."
-                if [ "$b_rc" = "0" ] && [ -n "$b_range" ] && [ "$b_range" != "$a_range" ]; then
-                  echo "FAIL: the two projects were handed different ranges, which this"
-                  echo "      server has no mechanism to do. Something else changed; the"
-                  echo "      probe in the setup step is reading the wrong answer."
-                  exit 1
-                fi
-                echo "OK: the isolation gap is reported, not asserted away"
-              fi
+              assert_prefix_len "$a_range" 48 "project A's default range"
+              assert_prefix_len "$b_range" 48 "project B's default range"
+              assert_within "$a_range" "fd20::/20" "project A's default range"
+              assert_within "$b_range" "fd20::/20" "project B's default range"
+              assert_disjoint "$a_range" "$b_range"
+
+              # Two ranges means two pools, not one pool adopted twice.
+              expect_pool_count 2 datum-vpc-ipv6 network=default
+              echo "OK: the two projects hold separate ranges, $a_range and $b_range"
             check:
               ($error == null): true
-              "(contains($stdout, 'OK: '))": true
+              "(contains($stdout, 'OK: the two projects hold separate ranges'))": true
 
     - name: a-range-still-holding-a-live-address-is-not-given-back
       description: |
@@ -698,10 +628,7 @@ spec:
               done
               $PLATFORM delete ippool datum-vpc-ipv6-root --ignore-not-found >/dev/null 2>&1 || true
               $PLATFORM delete ipclass datum-endpoint-ipv6 datum-subnet-ipv6 datum-vpc-ipv6 \
-                nso-addr-tenancy-probe --ignore-not-found >/dev/null 2>&1 || true
-
-              rm -f "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE.tenancy" \
-                    "${TMPDIR:-/tmp}/nso-addr-$NAMESPACE-classes.yaml"
+                --ignore-not-found >/dev/null 2>&1 || true
               echo "nso-network-addressing cleanup done"
             check:
               ($error == null): true

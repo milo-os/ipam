@@ -32,25 +32,22 @@ Containment and disjointness go through `ipaddress` arithmetic in
 `../lib/ipam.sh`. A prefix that merely starts with the right characters is not
 inside anything.
 
-## What it cannot prove, and says so
+## How tenant isolation is arranged
 
-**Per-project isolation depends on the server.** A pool's identity is the class
-plus the scope, and a scope carries only names. Unless the consuming project is
-part of that identity, two projects that each call a network `default` are
-handed one range, with no error and nothing to see. The declaration that fixes
-this — a carving class stating whether each consuming project gets its own range
-or they all share one — is not in every revision of the service.
+A pool's identity is the class plus the scope, and a scope carries only names.
+Two projects that each call a network `default` project to an identical scope,
+so nothing in either request tells them apart. What separates them is the
+consuming project, which enters a pool's identity only when the class names the
+reserved `project` role in `spec.poolPer`.
 
-So the setup step asks the server which revision it is, by offering it a
-carving class with no such declaration and reading whether it is refused. Where
-the declaration exists, the isolation step asserts the two projects' ranges are
-disjoint. Where it does not, the step prints what actually happened and states
-plainly that isolation was **not proven**. It does not restate the current
-behaviour as though it were the guarantee.
+That is opt-in. A class omitting it shares one pool across every consuming
+project, which is the right shape for announceable public space where
+per-consumer carving would exhaust the aggregate. A per-tenant plan is the
+opposite case, so both classes here that carve per network name `project`, and
+the platform's own classes have to as well.
 
-That is why `test-data/platform-classes.yaml` carries `# POOL_PER_TENANCY`
-marker lines instead of a literal declaration. The marker is where the
-declaration goes; the setup step fills it in or removes it.
+`two-projects-naming-one-network-do-not-share-a-range` asserts that outright:
+both projects hold a range, and the two are disjoint.
 
 ## Where it diverges from production, and why
 

@@ -7,11 +7,11 @@
 # Class names and prefix lengths are the real ones on purpose: a fixture that
 # renamed them would stop being a reading of the plan.
 #
-# The POOL_PER_TENANCY markers are filled in by the suite's setup step. A class
-# that carves per network has to say whether each consuming project gets its own
-# range or they all share one, and whether that declaration exists is the one
-# difference between the two IPAM revisions this suite can run against. See the
-# README: the suite asks the server which it is rather than guessing.
+# Every class that carves per network also names `project`, the reserved role
+# that puts the consuming project into a pool's identity. A tenant plan requires
+# it: without it two projects that each call a network `default` are handed one
+# /48. Naming it is opt-in and the platform's own classes have to do it, so the
+# fixture does what they do.
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:
@@ -20,7 +20,7 @@ spec:
   ipFamily: IPv6
   poolPer:
     - network
-    # POOL_PER_TENANCY
+    - project
   uniqueWithin: []
   allowedPrefixLengths:
     min: 48
@@ -40,7 +40,7 @@ spec:
   poolPer:
     - network
     - location
-    # POOL_PER_TENANCY
+    - project
   uniqueWithin: []
   allowedPrefixLengths:
     min: 64
