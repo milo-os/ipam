@@ -32,10 +32,9 @@ const entitlementWatchTimeout = 15 * time.Second
 // call: it verifies the active project has an Active ServiceEntitlement for the
 // IPAM service, and offers to request one when it doesn't.
 //
-// IPAM's Service uses enablementPolicy.mode: GatedByProvider, so an entitlement
-// this plugin creates lands in PendingApproval (not Active). The messaging
-// reflects that: requesting access submits a request that a provider must
-// approve before IPAM becomes usable.
+// IPAM's Service is self-service, so an entitlement this plugin creates becomes
+// Active without anyone approving it. The PendingApproval and Rejected branches
+// remain for entitlements created while the service was provider-gated.
 //
 //   - project == "" (platform scope): no-op. Platform/operator calls are not
 //     project-entitled.
@@ -81,7 +80,7 @@ func EnsureIPAMEntitlement(ctx context.Context, env datumEnv, in io.Reader, out 
 			return nil
 		case servicesv1alpha1.EntitlementPhasePendingApproval:
 			return newCLIError(exitForbidden,
-				fmt.Sprintf("IPAM is not yet enabled for project %q: the entitlement request is pending provider approval.", project)).
+				fmt.Sprintf("IPAM is not yet enabled for project %q: the entitlement is still being activated.", project)).
 				withFix("check the status with:\n       datumctl services list")
 		case servicesv1alpha1.EntitlementPhaseRejected:
 			return newCLIError(exitForbidden,
@@ -94,21 +93,20 @@ func EnsureIPAMEntitlement(ctx context.Context, env datumEnv, in io.Reader, out 
 }
 
 // promptAndRequestEntitlement handles the "no entitlement yet" case. On a TTY it
-// asks whether to submit a request and, if confirmed, creates the
-// ServiceEntitlement and watches briefly for it to reach a terminal phase.
-// Because IPAM is GatedByProvider, the realistic happy path is PendingApproval,
-// not Active — the messaging says so. Non-interactively it returns an actionable
-// error rather than blocking on an unanswerable prompt.
+// asks whether to enable IPAM and, if confirmed, creates the ServiceEntitlement
+// and watches briefly for it to reach a terminal phase. IPAM is self-service, so
+// the happy path is Active. Non-interactively it returns an actionable error
+// rather than blocking on an unanswerable prompt.
 func promptAndRequestEntitlement(ctx context.Context, project string, wc client.WithWatch, in io.Reader, out io.Writer) error {
 	if !isTTYReader(in) {
 		return newCLIError(exitForbidden,
 			fmt.Sprintf("IPAM is not enabled for project %q.", project)).
-			withFix(fmt.Sprintf("request access (requires provider approval) with:\n       datumctl services enable %s", ipamServiceName))
+			withFix(fmt.Sprintf("enable it with:\n       datumctl services enable %s", ipamServiceName))
 	}
 
 	_, _ = fmt.Fprintf(out, "IPAM is not enabled for project %q.\n", project)
-	_, _ = fmt.Fprint(out, "Requesting access submits a request that a provider must approve before IPAM can be used.\n")
-	_, _ = fmt.Fprint(out, "Would you like to submit the request now? [y/N]: ")
+	_, _ = fmt.Fprint(out, "Enabling it takes effect right away; no approval is needed.\n")
+	_, _ = fmt.Fprint(out, "Would you like to enable it now? [y/N]: ")
 
 	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
@@ -119,7 +117,7 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 		return entitlementNotEnabledErr(project)
 	}
 
-	_, _ = fmt.Fprintf(out, "Submitting an IPAM access request for project %q...\n", project)
+	_, _ = fmt.Fprintf(out, "Enabling IPAM for project %q...\n", project)
 
 	entitlement := &servicesv1alpha1.ServiceEntitlement{
 		ObjectMeta: metav1.ObjectMeta{Name: ipamServiceName},
@@ -129,13 +127,12 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 	}
 	if err := wc.Create(ctx, entitlement); err != nil {
 		return newCLIError(exitUnavailable,
-			fmt.Sprintf("could not submit the IPAM access request for project %q: %v", project, err)).
+			fmt.Sprintf("could not enable IPAM for project %q: %v", project, err)).
 			withCause(err)
 	}
 
-	// Watch for the reconciler to publish the Ready condition. For a
-	// GatedByProvider service the expected terminal phase here is
-	// PendingApproval; Active would mean it was auto-approved.
+	// Watch for the reconciler to publish the Ready condition. The expected
+	// terminal phase is Active.
 	watchCtx, cancel := context.WithTimeout(ctx, entitlementWatchTimeout)
 	defer cancel()
 
@@ -150,7 +147,7 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 	for {
 		select {
 		case <-watchCtx.Done():
-			_, _ = fmt.Fprintf(out, "\nYour IPAM access request for project %q has been submitted and is awaiting provider approval.\n", project)
+			_, _ = fmt.Fprintf(out, "\nIPAM for project %q has been requested but is not active yet.\n", project)
 			_, _ = fmt.Fprintf(out, "Run your command again once it becomes active.\n\n")
 			_, _ = fmt.Fprintf(out, "Check status with: datumctl services list\n")
 			return pendingApprovalErr(project)
@@ -174,9 +171,7 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 				_, _ = fmt.Fprintf(out, "IPAM enabled for project %q.\n\n", project)
 				return nil
 			case servicesv1alpha1.EntitlementPhasePendingApproval:
-				_, _ = fmt.Fprintf(out, "\nYour IPAM access request for project %q has been submitted,\n", project)
-				_, _ = fmt.Fprintf(out, "but it requires provider approval before IPAM can be used.\n")
-				_, _ = fmt.Fprintf(out, "You will be notified when access is granted.\n\n")
+				_, _ = fmt.Fprintf(out, "\nIPAM for project %q has been requested but is not active yet.\n", project)
 				_, _ = fmt.Fprintf(out, "Check status with: datumctl services list\n")
 				return pendingApprovalErr(project)
 			case servicesv1alpha1.EntitlementPhaseRejected:
@@ -195,13 +190,13 @@ func promptAndRequestEntitlement(ctx context.Context, project string, wc client.
 func entitlementNotEnabledErr(project string) *cliError {
 	return newCLIError(exitForbidden,
 		fmt.Sprintf("IPAM is not enabled for project %q.", project)).
-		withFix(fmt.Sprintf("request access (requires provider approval) with:\n       datumctl services enable %s", ipamServiceName))
+		withFix(fmt.Sprintf("enable it with:\n       datumctl services enable %s", ipamServiceName))
 }
 
-// pendingApprovalErr is the "request submitted, awaiting approval" result.
+// pendingApprovalErr is the "requested, not active yet" result.
 func pendingApprovalErr(project string) *cliError {
 	return newCLIError(exitForbidden,
-		fmt.Sprintf("IPAM access for project %q is pending provider approval.", project)).
+		fmt.Sprintf("IPAM for project %q is not active yet.", project)).
 		withFix("check the status with:\n       datumctl services list")
 }
 
