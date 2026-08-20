@@ -24,6 +24,13 @@ set -e
 # has to word-split. It is set by suites, never by user input.
 KUBECTL="${KUBECTL:-kubectl}"
 
+# Pools are read through $POOL_KUBECTL, which defaults to the same plain
+# kubectl. They are split from $KUBECTL because a pool does not necessarily live
+# in the project that claims from it: a class provisions its pools in the
+# project holding the DEFINITION, so a consumer project referencing a platform
+# class reads its own claims in one project and the pool behind them in another.
+POOL_KUBECTL="${POOL_KUBECTL:-kubectl}"
+
 # ---------------------------------------------------------------------------
 # Waiting
 # ---------------------------------------------------------------------------
@@ -48,14 +55,14 @@ wait_claim_bound() {
 wait_pool_ready() {
   name="$1"; timeout="${2:-60}"; phase=""
   for _ in $(seq 1 "$timeout"); do
-    phase=$(kubectl get ippool "$name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+    phase=$($POOL_KUBECTL get ippool "$name" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     if [ "$phase" = "Ready" ]; then
       return 0
     fi
     sleep 1
   done
   echo "FAIL: ippool $name not Ready after ${timeout}s (phase=${phase:-<none>})"
-  kubectl get ippool "$name" -o yaml 2>&1 | sed 's/^/    /' || true
+  $POOL_KUBECTL get ippool "$name" -o yaml 2>&1 | sed 's/^/    /' || true
   return 1
 }
 
@@ -90,7 +97,7 @@ claim_pool() {
 
 # pool_cidr <pool> — the block a pool holds.
 pool_cidr() {
-  kubectl get ippool "$1" -o jsonpath='{.status.allocatedCIDR}'
+  $POOL_KUBECTL get ippool "$1" -o jsonpath='{.status.allocatedCIDR}'
 }
 
 # ---------------------------------------------------------------------------
@@ -113,7 +120,7 @@ pools_for_scope() {
     _value=$(printf '%s' "$_pair" | cut -d= -f2-)
     _filter="$_filter and (.spec.scope[\"$_role\"].name // \"\") == \"$_value\""
   done
-  kubectl get ippool -o json | jq -r ".items[] | select($_filter) | .metadata.name" | sort
+  $POOL_KUBECTL get ippool -o json | jq -r ".items[] | select($_filter) | .metadata.name" | sort
 }
 
 # expect_pool_count <expected> <className> [role=value ...]
@@ -482,4 +489,71 @@ expect_507_details() {
   fi
 
   echo "OK: $_label returned 507 with details naming pool '$_name'"
+}
+
+# ---------------------------------------------------------------------------
+# Reconciling a claim the way a controller does
+# ---------------------------------------------------------------------------
+
+# reconcile_claim <namespace> <name> [label] — manifest on stdin.
+#
+# Mirrors what network-services-operator does on every pass: the claim's name is
+# derived from the object it belongs to, and the controller asks whether the
+# claim exists before creating it. A reconcile that lost its answer therefore
+# finds the same address again instead of taking a second one, and a repeated
+# pass is not an error.
+#
+# Calling this twice must be indistinguishable from calling it once. A suite
+# that only ever created claims once would pass against a server on which the
+# second pass of a controller took a second address.
+reconcile_claim() {
+  _ns="$1"; _name="$2"; _label="${3:-claim}"
+  _manifest=$(cat)
+  if $KUBECTL get ipclaim -n "$_ns" "$_name" >/dev/null 2>&1; then
+    echo "OK: $_label already held, reconcile is a no-op"
+    return 0
+  fi
+  if ! printf '%s\n' "$_manifest" | $KUBECTL create -n "$_ns" -f - >/dev/null 2>&1; then
+    # Lost a race with another writer of the same name. The controller re-reads
+    # rather than failing, and so does this.
+    if $KUBECTL get ipclaim -n "$_ns" "$_name" >/dev/null 2>&1; then
+      echo "OK: $_label was created concurrently, reconcile adopted it"
+      return 0
+    fi
+    echo "FAIL: $_label could not be created and does not exist"
+    printf '%s\n' "$_manifest" | $KUBECTL create -n "$_ns" -f - 2>&1 | tail -3
+    return 1
+  fi
+  echo "OK: $_label created"
+}
+
+# ---------------------------------------------------------------------------
+# The address a subnet keeps for itself
+# ---------------------------------------------------------------------------
+
+# subnet_gateway <cidr> — the first usable address of a subnet, which the
+# tenant addressing plan gives to the subnet's virtual router.
+subnet_gateway() {
+  python3 -c '
+import ipaddress, sys
+print(ipaddress.ip_network(sys.argv[1], strict=False).network_address + 1)
+' "$1"
+}
+
+# assert_excludes_address <cidr> <address> [label]
+# Fails if <address> falls inside <cidr>. The gateway assertion: an endpoint
+# handed the block its router answers on is a conflict nothing reports — the
+# claim binds, the pool is Ready, and both holders believe the address is
+# theirs.
+assert_excludes_address() {
+  python3 -c '
+import ipaddress, sys
+cidr, addr, label = sys.argv[1], sys.argv[2], sys.argv[3]
+net = ipaddress.ip_network(cidr, strict=False)
+ip = ipaddress.ip_address(addr)
+if ip in net:
+    print(("FAIL: %s %s contains %s" % (label, cidr, addr)).strip())
+    sys.exit(1)
+print(("OK: %s %s does not contain %s" % (label, cidr, addr)).strip())
+' "$1" "$2" "${3:-}"
 }

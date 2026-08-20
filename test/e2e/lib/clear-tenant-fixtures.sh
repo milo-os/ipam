@@ -9,7 +9,7 @@ set -eu
 
 KCFG="${1:-test/e2e/.tenant-impersonation.kubeconfig}"
 
-for ctx in tenant-project-alpha tenant-project-beta; do
+for ctx in tenant-project-alpha tenant-project-beta tenant-project-datum-cloud; do
   for kind in ipclaims ipallocations ippools ipclasses; do
     KUBECONFIG="$KCFG" kubectl --context "$ctx" delete "$kind" \
       --all --all-namespaces --ignore-not-found >/dev/null 2>&1 || true
