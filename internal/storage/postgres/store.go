@@ -105,7 +105,7 @@ func (s *Store) Create(ctx context.Context, key string, obj, out runtime.Object,
 		return storage.NewInternalError(fmt.Errorf("failed to encode object: %w", err))
 	}
 
-	kind, namespace, name := extractMetadata(obj)
+	kind, namespace, name := extractMetadata(obj, data)
 	labels := labelsJSON(obj)
 
 	_, err = tx.ExecContext(ctx,
@@ -500,7 +500,7 @@ func (s *Store) guaranteedUpdateOnce(ctx context.Context, key string, destinatio
 		return nil, 0, storage.NewInternalError(fmt.Errorf("failed to encode updated object: %w", err))
 	}
 
-	kind, namespace, name := extractMetadata(ret)
+	kind, namespace, name := extractMetadata(ret, data)
 	labels := labelsJSON(ret)
 
 	if existingData == nil {
