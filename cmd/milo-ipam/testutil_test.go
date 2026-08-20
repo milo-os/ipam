@@ -57,14 +57,11 @@ func newTestApp(cs clientset.Interface, opts *globalOptions) *testApp {
 }
 
 // newClass builds a minimal IPClass for table/detail tests.
-func newClass(name string, family ipamv1alpha1.IPFamily, offeringPools int32) *ipamv1alpha1.IPClass {
+func newClass(name string, family ipamv1alpha1.IPFamily) *ipamv1alpha1.IPClass {
 	return &ipamv1alpha1.IPClass{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec:       ipamv1alpha1.IPClassSpec{IPFamily: family},
-		Status: ipamv1alpha1.IPClassStatus{
-			Phase:         ipamv1alpha1.ClassReady,
-			OfferingPools: offeringPools,
-		},
+		Status:     ipamv1alpha1.IPClassStatus{Phase: ipamv1alpha1.ClassReady},
 	}
 }
 

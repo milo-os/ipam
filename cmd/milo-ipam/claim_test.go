@@ -120,37 +120,10 @@ func TestBuildClaim(t *testing.T) {
 	}
 }
 
-// A claim naming a class whose required roles it does not supply is caught
-// before the round trip, and the message names the missing roles.
-func TestClaimCreatePreflightsScope(t *testing.T) {
-	class := newClass("tenant-endpoint-ipv4", ipamv1alpha1.IPv4, 1)
-	class.Status.RequiredScopeRoles = []string{"location", "network"}
-	cs := newFakeClientset(class)
-	ta := newTestApp(cs, nil)
-
-	err := runClaimCreate(ta.app, &claimOptions{
-		class: "tenant-endpoint-ipv4",
-		scope: []string{"network=default"},
-	})
-	if err == nil {
-		t.Fatal("expected a refusal for the missing role")
-	}
-	ce := toCLIError(err)
-	if ce.code != exitUsage {
-		t.Fatalf("code = %d, want usage(%d)", ce.code, exitUsage)
-	}
-	if !strings.Contains(ce.msg, `"location"`) {
-		t.Errorf("message does not name the missing role: %q", ce.msg)
-	}
-	if !strings.Contains(ce.fix, "--scope location=") {
-		t.Errorf("fix does not offer the flag: %q", ce.fix)
-	}
-}
-
-// A class that requires no scope must not be turned into a refusal by an empty
-// RequiredScopeRoles.
+// A class that requires no scope creates cleanly. Scope requirements are
+// enforced server-side; the client sends the claim and reports what comes back.
 func TestClaimCreateAllowsScopelessClass(t *testing.T) {
-	cs := newFakeClientset(newClass("flat", ipamv1alpha1.IPv4, 1))
+	cs := newFakeClientset(newClass("flat", ipamv1alpha1.IPv4))
 	ta := newTestApp(cs, nil)
 	if err := runClaimCreate(ta.app, &claimOptions{class: "flat", name: "web-vip"}); err != nil {
 		t.Fatal(err)
@@ -164,7 +137,7 @@ func TestClaimCreateAllowsScopelessClass(t *testing.T) {
 // consuming a second address.
 func TestClaimCreateIsIdempotentOnName(t *testing.T) {
 	cs := newFakeClientset(
-		newClass("public-unicast-ipv4", ipamv1alpha1.IPv4, 1),
+		newClass("public-unicast-ipv4", ipamv1alpha1.IPv4),
 		newClaim("web-vip", "public-unicast-ipv4", "198.51.100.11/32", "public-v4"),
 	)
 	ta := newTestApp(cs, nil)
@@ -187,7 +160,7 @@ func TestClaimCreateRefusesReusedNameForADifferentRequest(t *testing.T) {
 	existing.Spec.Scope = map[string]ipamv1alpha1.ScopeRef{
 		"network": {APIGroup: "networking.datumapis.com", Kind: "Network", Name: "prod"},
 	}
-	cs := newFakeClientset(newClass("public-unicast-ipv4", ipamv1alpha1.IPv4, 1), existing)
+	cs := newFakeClientset(newClass("public-unicast-ipv4", ipamv1alpha1.IPv4), existing)
 	ta := newTestApp(cs, nil)
 
 	err := runClaimCreate(ta.app, &claimOptions{
@@ -226,7 +199,7 @@ func TestClaimRequestDiffIgnoresSilence(t *testing.T) {
 // Dry-run must reach the server with DryRunAll, since the exact address and the
 // resolved pool can only come from the allocation transaction.
 func TestClaimCreateDryRunIsServerSide(t *testing.T) {
-	cs := newFakeClientset(newClass("tenant-endpoint-ipv4", ipamv1alpha1.IPv4, 1))
+	cs := newFakeClientset(newClass("tenant-endpoint-ipv4", ipamv1alpha1.IPv4))
 	var sawDryRun bool
 	cs.PrependReactor("create", "ipclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		create := action.(k8stesting.CreateAction)
@@ -264,7 +237,7 @@ func TestClaimCreateDryRunIsServerSide(t *testing.T) {
 func TestClaimCreateExhaustionNamesTheBackingPools(t *testing.T) {
 	pool := newPool("us-west-v4", "10.1.0.0/16", ipamv1alpha1.IPv4, 100, 100)
 	pool.Spec.ClassNames = []string{"tenant-endpoint-ipv4"}
-	cs := newFakeClientset(newClass("tenant-endpoint-ipv4", ipamv1alpha1.IPv4, 1), pool)
+	cs := newFakeClientset(newClass("tenant-endpoint-ipv4", ipamv1alpha1.IPv4), pool)
 	cs.PrependReactor("create", "ipclaims", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, statusErr(507, "InsufficientStorage", "pool exhausted")
 	})
@@ -287,7 +260,7 @@ func TestClaimCreateExhaustionNamesTheBackingPools(t *testing.T) {
 
 // -o quiet is the scripting contract: the address, and nothing else.
 func TestClaimCreateQuietPrintsOnlyTheAddress(t *testing.T) {
-	cs := newFakeClientset(newClass("c", ipamv1alpha1.IPv4, 1))
+	cs := newFakeClientset(newClass("c", ipamv1alpha1.IPv4))
 	cs.PrependReactor("create", "ipclaims", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		claim := action.(k8stesting.CreateAction).GetObject().(*ipamv1alpha1.IPClaim).DeepCopy()
 		claim.Status.AllocatedCIDR = "10.0.0.8/32"
@@ -393,7 +366,7 @@ func TestClaimShowByAddressPointsAtTheReverseLookup(t *testing.T) {
 // The release prompt must state the real fate of the address. A claim silent on
 // reclaim policy inherits it from its class, so the class has to be consulted.
 func TestClaimReleaseDryRunResolvesReclaimPolicyFromTheClass(t *testing.T) {
-	class := newClass("retained", ipamv1alpha1.IPv4, 1)
+	class := newClass("retained", ipamv1alpha1.IPv4)
 	class.Spec.ReclaimPolicy = ipamv1alpha1.ReclaimRetain
 	claim := newClaim("web-vip", "retained", "198.51.100.11/32", "public-v4")
 	claim.Status.BoundAllocationRef = &ipamv1alpha1.LocalRef{Name: "alloc-1"}
@@ -417,7 +390,7 @@ func TestClaimReleaseDryRunResolvesReclaimPolicyFromTheClass(t *testing.T) {
 }
 
 func TestClaimReleaseDeletesAndReportsRetention(t *testing.T) {
-	class := newClass("retained", ipamv1alpha1.IPv4, 1)
+	class := newClass("retained", ipamv1alpha1.IPv4)
 	class.Spec.ReclaimPolicy = ipamv1alpha1.ReclaimRetain
 	cs := newFakeClientset(class, newClaim("web-vip", "retained", "198.51.100.11/32", "public-v4"))
 	// Non-interactive stdin auto-confirms a single-claim release.

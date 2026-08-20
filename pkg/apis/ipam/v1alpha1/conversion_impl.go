@@ -210,11 +210,8 @@ func convert_v1alpha1_IPClass_To_ipam(in *IPClass, out *ipam.IPClass) error {
 		Parameters:           copyParameters(in.Spec.Parameters),
 	}
 	out.Status = ipam.IPClassStatus{
-		Phase:              ipam.ClassPhase(in.Status.Phase),
-		OfferingPools:      in.Status.OfferingPools,
-		ProvisionedPools:   in.Status.ProvisionedPools,
-		RequiredScopeRoles: copyStrings(in.Status.RequiredScopeRoles),
-		Conditions:         toIpamConditions(in.Status.Conditions),
+		Phase:      ipam.ClassPhase(in.Status.Phase),
+		Conditions: toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }
@@ -238,11 +235,8 @@ func convert_ipam_IPClass_To_v1alpha1(in *ipam.IPClass, out *IPClass) error {
 		Parameters:           copyParameters(in.Spec.Parameters),
 	}
 	out.Status = IPClassStatus{
-		Phase:              ClassPhase(in.Status.Phase),
-		OfferingPools:      in.Status.OfferingPools,
-		ProvisionedPools:   in.Status.ProvisionedPools,
-		RequiredScopeRoles: copyStrings(in.Status.RequiredScopeRoles),
-		Conditions:         toIpamConditions(in.Status.Conditions),
+		Phase:      ClassPhase(in.Status.Phase),
+		Conditions: toIpamConditions(in.Status.Conditions),
 	}
 	return nil
 }

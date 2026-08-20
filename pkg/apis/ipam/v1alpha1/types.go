@@ -269,7 +269,6 @@ const (
 // +kubebuilder:printcolumn:name="Parent",type=string,JSONPath=`.spec.parentClassName`
 // +kubebuilder:printcolumn:name="Default Length",type=integer,JSONPath=`.spec.defaultPrefixLength`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
-// +kubebuilder:printcolumn:name="Pools",type=integer,JSONPath=`.status.offeringPools`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +genclient
 // +genclient:nonNamespaced
@@ -457,42 +456,12 @@ type IPClassSpec struct {
 }
 
 type IPClassStatus struct {
+	// Phase reports whether the class was accepted. A class is validated
+	// synchronously at admission, so a stored class is a valid one and this is
+	// always Ready; a class that fails validation is rejected and never stored.
+	// Conditions carries the same fact in the form a controller should read.
 	// +optional
 	Phase ClassPhase `json:"phase,omitempty"`
-	// OfferingPools is the number of pools backing this class. Zero means every
-	// claim naming this class fails, which is worth surfacing before a consumer
-	// discovers it.
-	//
-	// It counts the pools offering the ROOT of this class's chain, which for a
-	// class with a parentClassName is not this class. Only the root is backed by
-	// operator-authored pools; every class below it is served out of the level
-	// above, and no pool ever names it. Counting this class directly would
-	// report zero for a chain whose claims all succeed.
-	//
-	// The server computes it on read, so it does NOT appear in WATCH events: no
-	// event fires when a pool changes the count, because nothing writes to the
-	// class. Read it with GET or LIST. A controller written to reconcile on
-	// changes to this field would never wake up.
-	// +optional
-	OfferingPools int32 `json:"offeringPools"`
-	// ProvisionedPools is the number of pools this class has provisioned for
-	// its children. Meaningful only when PoolPer is set.
-	// +optional
-	ProvisionedPools int32 `json:"provisionedPools"`
-	// RequiredScopeRoles is the resolved set of scope roles a claim of this
-	// class must supply: this class's UniqueWithin unioned with every
-	// PoolPer along its parent chain. The server resolves it because a client
-	// otherwise has to walk ParentClassName upward and union by hand — several
-	// GETs to validate one field — and because a claim missing a role is
-	// rejected rather than widened, so knowing the set in advance is the
-	// difference between a clear client-side error and a round trip.
-	//
-	// The reserved "project" role never appears here. It is supplied by the
-	// request rather than by spec.scope, so listing it would tell a client to
-	// set a field the server rejects.
-	// +optional
-	// +listType=atomic
-	RequiredScopeRoles []string `json:"requiredScopeRoles,omitempty"`
 	// +optional
 	// +listType=map
 	// +listMapKey=type

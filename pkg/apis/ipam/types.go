@@ -286,23 +286,8 @@ type IPClassSpec struct {
 }
 
 type IPClassStatus struct {
-	Phase ClassPhase
-	// OfferingPools is the number of pools backing this class: those offering
-	// the root of its chain, which for a parented class is not this class. Zero
-	// means every claim naming this class fails. Computed on read and absent
-	// from WATCH events — see the v1alpha1 type for the full statement, which is
-	// the one consumers read.
-	OfferingPools int32
-	// ProvisionedPools is the number of pools this class has provisioned for
-	// its children. Meaningful only when PoolPer is set.
-	ProvisionedPools int32
-	// RequiredScopeRoles is the resolved set of scope roles a claim of this
-	// class must supply: this class's UniqueWithin unioned with every PoolPer
-	// along its parent chain, less the reserved "project" role, which no claim
-	// supplies. Resolved server-side so a client need not walk ParentClassName
-	// upward and union by hand.
-	RequiredScopeRoles []string
-	Conditions         []metav1.Condition
+	Phase      ClassPhase
+	Conditions []metav1.Condition
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
