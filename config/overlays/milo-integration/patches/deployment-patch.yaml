@@ -1,0 +1,48 @@
+---
+# milo-integration deployment patch.
+#
+# Flips the IPAM apiserver from the standalone configuration (quota OFF,
+# in-cluster authn/authz fallback) to the FULL milo-delegated configuration:
+#
+#   * --enable-quota=true              -> milo's ResourceQuotaEnforcement
+#                                         admission plugin runs on IPClaim CREATE
+#   * --kubeconfig / --authentication-kubeconfig / --authorization-kubeconfig
+#                                       -> all point at the mounted milo
+#                                          kubeconfig file, so TokenReview /
+#                                          SubjectAccessReview resolve against
+#                                          milo's IAM and the quota plugin's
+#                                          loopback config targets milo.
+#
+# imagePullPolicy: Never because the image is `kind load`-ed, never pulled
+# (same rationale as the test-infra overlay).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-apiserver
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: migrate
+          imagePullPolicy: Never
+      containers:
+        - name: apiserver
+          imagePullPolicy: Never
+          env:
+            - name: ENABLE_QUOTA
+              value: "true"
+            # All three delegation flags read the same mounted kubeconfig file.
+            - name: KUBECONFIG
+              value: "/var/run/ipam-apiserver/milo/kubeconfig"
+            - name: AUTHENTICATION_KUBECONFIG
+              value: "/var/run/ipam-apiserver/milo/kubeconfig"
+            - name: AUTHORIZATION_KUBECONFIG
+              value: "/var/run/ipam-apiserver/milo/kubeconfig"
+            # milo's TokenReview is authoritative; don't require the local host
+            # apiserver to also know the identity.
+            - name: AUTHENTICATION_TOLERATE_LOOKUP_FAILURE
+              value: "true"
+          volumeMounts:
+            - name: milo-kubeconfig
+              mountPath: /var/run/ipam-apiserver/milo
+              readOnly: true

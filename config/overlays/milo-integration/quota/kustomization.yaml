@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# IPAM quota provisioning, applied to the MILO control plane (NOT the IPAM
+# apiserver cluster). These are quota.miloapis.com primitives that register the
+# IPAM quotable resource type and wire the auto-claim / auto-grant policies so a
+# project gets an IPClaim allowance and IPClaim creates are quota-enforced.
+#
+# Apply with the milo kubeconfig:
+#   KUBECONFIG=<milo>/.milo/kubeconfig kubectl apply -k config/overlays/milo-integration/quota
+# (the milo-integration:up Taskfile target does this for you).
+#
+# NOTE: ordering matters — ResourceRegistration must exist before the policies
+# reference its resourceType. kubectl apply -k applies all at once; the milo
+# controllers reconcile to a consistent state regardless of apply order.
+resources:
+  - resource-registration.yaml
+  - grant-creation-policy.yaml
+  - claim-creation-policy.yaml

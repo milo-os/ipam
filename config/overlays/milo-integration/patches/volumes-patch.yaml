@@ -1,0 +1,29 @@
+# JSON6902 volume rewrite for the milo-integration overlay.
+#
+# Two changes, applied as explicit array ops so the base default-deny /
+# strategic-merge ordering can't produce a duplicate "tls-certs" volume (which
+# is what happens if a CSI volume and a secret volume of the same name are
+# merged from two different patches):
+#
+#  1. Replace volumes[0] (the base cert-manager CSI TLS volume) with the
+#     cert-manager Certificate Secret (ipam-tls). The built-in cert-manager
+#     approver auto-approves Certificate-issued CertificateRequests; the CSI
+#     driver's requests are NOT approved by it, which hangs the pod in Init.
+#     Same swap the test-infra overlay performs.
+#  2. Append the milo-kubeconfig Secret volume the apiserver mounts for its
+#     delegation kubeconfig.
+#
+# volumes[0] is the TLS volume in config/base/deployment.yaml; keep this index
+# in sync if the base volume order changes.
+- op: replace
+  path: /spec/template/spec/volumes/0
+  value:
+    name: tls-certs
+    secret:
+      secretName: ipam-tls
+- op: add
+  path: /spec/template/spec/volumes/-
+  value:
+    name: milo-kubeconfig
+    secret:
+      secretName: milo-kubeconfig
