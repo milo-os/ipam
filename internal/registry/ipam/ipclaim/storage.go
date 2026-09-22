@@ -439,6 +439,10 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			ScopeDigest:   scopeDigest,
 		},
 	}
+	// The allocation never passes through a create handler of its own, so the
+	// system fields a POSTed object gets are stamped here instead. Otherwise it
+	// reports a zero creation timestamp and no UID.
+	rest.FillObjectMetaSystemFields(&alloc.ObjectMeta)
 	allocData, err := runtime.Encode(r.codec, alloc)
 	if err != nil {
 		_ = tx.Rollback(ctx)

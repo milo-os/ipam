@@ -58,6 +58,24 @@ func TestFirstClaimProvisionsTheChain(t *testing.T) {
 		t.Errorf("provisioned-by = %q, want backbone", provisionedBy)
 	}
 
+	// A provisioned pool is written straight into the object table, so the
+	// fields the apiserver's create path would have stamped are stamped by the
+	// provisioning code instead. Without them the pool reports a zero creation
+	// time and cannot be named by an owner reference.
+	var creationTimestamp, uid string
+	if err := db.QueryRow(ctx,
+		`SELECT ipam_data_to_jsonb(data) -> 'metadata' ->> 'creationTimestamp',
+		        ipam_data_to_jsonb(data) -> 'metadata' ->> 'uid'
+		   FROM ipam_objects WHERE key = $1`, poolKey).Scan(&creationTimestamp, &uid); err != nil {
+		t.Fatalf("read provisioned pool metadata: %v", err)
+	}
+	if creationTimestamp == "" {
+		t.Error("provisioned pool has no creationTimestamp")
+	}
+	if uid == "" {
+		t.Error("provisioned pool has no uid")
+	}
+
 	// The carve against the root blocks EVERY address space, so it is recorded
 	// as a PoolCarve rather than a Claim.
 	var purpose string
