@@ -121,15 +121,13 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 		allErrs = append(allErrs, field.NotSupported(specPath.Child("ipFamily"), c.Spec.IPFamily,
 			[]string{string(ipam.IPv4), string(ipam.IPv6)}))
 	}
-	if p := c.Spec.PrefixLength; p != nil {
-		maxLen := int32(32)
-		if c.Spec.IPFamily == ipam.IPv6 {
-			maxLen = 128
-		}
-		if *p <= 0 || *p > maxLen {
-			allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), *p,
-				fmt.Sprintf("must be between 1 and %d", maxLen)))
-		}
+	// Only the bound that holds for every family. The family-specific one comes
+	// from the class, in EffectivePrefixLength: this runs before the class is
+	// resolved and cannot read it, and assuming IPv4 here rejected a /64 from
+	// an IPv6 class whenever the claim named the class instead of the family.
+	if p := c.Spec.PrefixLength; p != nil && (*p <= 0 || *p > 128) {
+		allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), *p,
+			"must be between 1 and 128"))
 	}
 	switch c.Spec.Target {
 	case "", ipam.TargetBlock:
