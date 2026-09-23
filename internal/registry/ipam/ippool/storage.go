@@ -23,6 +23,7 @@ import (
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
+	"go.miloapis.com/ipam/internal/registry/ipam/tableconvertor"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
@@ -88,7 +89,7 @@ func NewIPPoolStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGett
 		UpdateStrategy: strategy,
 		DeleteStrategy: strategy,
 
-		TableConvertor: rest.NewDefaultTableConvertor(v1alpha1.Resource("ippools")),
+		TableConvertor: tableconvertor.IPPools(),
 	}
 
 	if err := store.CompleteWithOptions(&generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: GetAttrs}); err != nil {

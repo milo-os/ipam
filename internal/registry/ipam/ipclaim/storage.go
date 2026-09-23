@@ -36,6 +36,7 @@ import (
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
+	"go.miloapis.com/ipam/internal/registry/ipam/tableconvertor"
 	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/tracing"
@@ -88,7 +89,7 @@ func newInnerStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGette
 		UpdateStrategy: strategy,
 		DeleteStrategy: strategy,
 
-		TableConvertor: rest.NewDefaultTableConvertor(v1alpha1.Resource("ipclaims")),
+		TableConvertor: tableconvertor.IPClaims(),
 	}
 
 	if err := store.CompleteWithOptions(&generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: GetAttrs}); err != nil {

@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/access"
+	"go.miloapis.com/ipam/internal/registry/ipam/tableconvertor"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -125,7 +126,7 @@ func NewClassStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGette
 		DeleteStrategy:      strategy,
 		ResetFieldsStrategy: strategy,
 
-		TableConvertor: rest.NewDefaultTableConvertor(v1alpha1.Resource("ipclasses")),
+		TableConvertor: tableconvertor.IPClasses(),
 	}
 
 	if err := store.CompleteWithOptions(&generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: GetAttrs}); err != nil {
