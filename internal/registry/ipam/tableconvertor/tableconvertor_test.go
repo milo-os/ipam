@@ -109,7 +109,7 @@ func TestDefaultColumnsAreTheIdentifyingOnes(t *testing.T) {
 		obj       runtime.Object
 		want      []string
 	}{
-		{"ippools", IPPools(), &ipam.IPPool{}, []string{"Name", "CIDR", "Family", "Classes", "Utilization", "Age"}},
+		{"ippools", IPPools(), &ipam.IPPool{}, []string{"Name", "CIDR", "Family", "Class", "Utilization", "Age"}},
 		{"ipclaims", IPClaims(), &ipam.IPClaim{}, []string{"Name", "Class", "Family", "Allocated", "Pool", "Phase", "Age"}},
 		{"ipallocations", IPAllocations(), &ipam.IPAllocation{}, []string{"Name", "Allocated", "Pool", "Class", "Purpose", "Phase", "Age"}},
 		{"ipclasses", IPClasses(), &ipam.IPClass{}, []string{"Name", "Family", "Parent", "Prefix", "Pool Per", "Phase", "Age"}},
@@ -186,22 +186,75 @@ func TestListCarriesPaginationState(t *testing.T) {
 	}
 }
 
-// A pool holding one /64 out of a /32 is not empty. Rounding it to 0% would
-// say the pool is untouched when it is not.
-func TestPercentDistinguishesEmptyFromNearlyEmpty(t *testing.T) {
+// status.utilizationPercent is rounded to four decimal places, so a real
+// allocation out of an IPv6 pool arrives here as a literal 0. Reading emptiness
+// off that number reports every fabric-identity and subnet pool in staging as
+// untouched when they are not; the capacity counts are exact and settle it.
+func TestUtilizationReadsEmptinessFromCapacity(t *testing.T) {
 	for _, tc := range []struct {
-		in   float64
+		name string
+		pool ipam.IPPool
 		want string
 	}{
-		{0, "0%"},
-		{0.0000001, "<0.1%"},
-		{0.04, "<0.1%"},
-		{12.34, "12.3%"},
-		{100, "100.0%"},
+		{
+			name: "never drawn on",
+			pool: ipam.IPPool{Status: ipam.IPPoolStatus{
+				Capacity: ipam.PoolCapacity{Allocated: "0", Total: "18446744073709551616"},
+			}},
+			want: "0%",
+		},
+		{
+			name: "drawn on, but rounds to zero: a /48 out of a /32",
+			pool: ipam.IPPool{Status: ipam.IPPoolStatus{
+				UtilizationPercent: 0,
+				Capacity:           ipam.PoolCapacity{Allocated: "1033017668127734890496", Total: "79228162514264337593543950336"},
+			}},
+			want: "<0.1%",
+		},
+		{
+			name: "measurable",
+			pool: ipam.IPPool{Status: ipam.IPPoolStatus{
+				UtilizationPercent: 12.34,
+				Capacity:           ipam.PoolCapacity{Allocated: "64", Total: "512"},
+			}},
+			want: "12.3%",
+		},
+		{
+			name: "full",
+			pool: ipam.IPPool{Status: ipam.IPPoolStatus{
+				UtilizationPercent: 100,
+				Capacity:           ipam.PoolCapacity{Allocated: "512", Total: "512"},
+			}},
+			want: "100.0%",
+		},
+		{
+			name: "no capacity reported at all",
+			pool: ipam.IPPool{Status: ipam.IPPoolStatus{}},
+			want: "0%",
+		},
 	} {
-		if got := percent(tc.in); got != tc.want {
-			t.Errorf("percent(%v) = %q, want %q", tc.in, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := poolUtilization(&tc.pool); got != tc.want {
+				t.Errorf("poolUtilization = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Exactly one of classNames and classRef is set on any given pool. Printing
+// only classNames showed "<none>" for every cascade-provisioned pool, which in
+// staging is nearly all of them.
+func TestClassColumnIsPopulatedOnBothKindsOfPool(t *testing.T) {
+	operator := &ipam.IPPool{Spec: ipam.IPPoolSpec{ClassNames: []string{"datum-fabric-identity"}}}
+	if got := poolClass(operator); got != "datum-fabric-identity" {
+		t.Errorf("operator-authored pool class = %q, want the class it offers itself to", got)
+	}
+	provisioned := &ipam.IPPool{Spec: ipam.IPPoolSpec{ClassRef: &ipam.LocalRef{Name: "datum-subnet-ipv6"}}}
+	if got := poolClass(provisioned); got != "datum-subnet-ipv6" {
+		t.Errorf("provisioned pool class = %q, want the class that carved it", got)
+	}
+	if got := poolClass(&ipam.IPPool{}); got != "<none>" {
+		t.Errorf("pool with neither = %q, want <none>", got)
 	}
 }
 
