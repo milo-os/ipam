@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/allocator"
+	"go.miloapis.com/ipam/internal/registry/ipam/tableconvertor"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -190,7 +191,7 @@ func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 		UpdateStrategy: strategy,
 		DeleteStrategy: strategy,
 
-		TableConvertor: rest.NewDefaultTableConvertor(v1alpha1.Resource("ipallocations")),
+		TableConvertor: tableconvertor.IPAllocations(),
 	}
 
 	if err := store.CompleteWithOptions(&generic.StoreOptions{RESTOptions: optsGetter, AttrFunc: GetAttrs}); err != nil {
