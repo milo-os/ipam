@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 )
@@ -76,6 +77,64 @@ func TestAScopeRefNeedsAKindAndAName(t *testing.T) {
 			}))
 			if len(errs) == 0 || errs[0].Field != "spec.scope.network" {
 				t.Fatalf("errors = %v, want an error on spec.scope.network", errs)
+			}
+		})
+	}
+}
+
+// Validation runs before the class is resolved, so it cannot know the family.
+// Assuming IPv4 rejected a /64 from an IPv6 class whenever the claim named the
+// class rather than the family — which is the form the class model encourages.
+// Only the bound that holds for every family belongs here; the family-specific
+// one is applied against the resolved class in EffectivePrefixLength.
+func TestValidatePrefixLengthDoesNotAssumeIPv4(t *testing.T) {
+	prefix := func(n int32) *int32 { return &n }
+
+	for _, tc := range []struct {
+		name    string
+		claim   *ipam.IPClaim
+		wantErr bool
+	}{
+		{
+			name: "IPv6-sized prefix on a claim that names only its class",
+			claim: &ipam.IPClaim{Spec: ipam.IPClaimSpec{
+				ClassName: "datum-subnet-ipv6", PrefixLength: prefix(64),
+			}},
+		},
+		{
+			name: "a /96 endpoint prefix, likewise",
+			claim: &ipam.IPClaim{Spec: ipam.IPClaimSpec{
+				ClassName: "datum-endpoint-ipv6", PrefixLength: prefix(96),
+			}},
+		},
+		{
+			name: "beyond any address family",
+			claim: &ipam.IPClaim{Spec: ipam.IPClaimSpec{
+				ClassName: "c", PrefixLength: prefix(129),
+			}},
+			wantErr: true,
+		},
+		{
+			name: "zero is not a prefix length",
+			claim: &ipam.IPClaim{Spec: ipam.IPClaimSpec{
+				ClassName: "c", PrefixLength: prefix(0),
+			}},
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateIPClaim(tc.claim)
+			var got *field.Error
+			for _, e := range errs {
+				if e.Field == "spec.prefixLength" {
+					got = e
+				}
+			}
+			if tc.wantErr && got == nil {
+				t.Errorf("no prefixLength error, want one")
+			}
+			if !tc.wantErr && got != nil {
+				t.Errorf("prefixLength rejected: %v", got)
 			}
 		})
 	}

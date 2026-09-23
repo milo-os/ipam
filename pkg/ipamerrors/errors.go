@@ -62,6 +62,11 @@ const (
 	// stated one.
 	ReasonPrefixLengthRejected Reason = "PrefixLengthRejected"
 
+	// ReasonFamilyMismatch reports that the claim stated an address family the
+	// class it names does not hand out. spec.ipFamily selects a default class
+	// when no class is named; it never overrides one that is.
+	ReasonFamilyMismatch Reason = "FamilyMismatch"
+
 	// ReasonScopeRolesMissing reports that the claim's scope did not carry
 	// roles the class requires. MissingScopeRoles names them.
 	ReasonScopeRolesMissing Reason = "ScopeRolesMissing"
@@ -225,6 +230,7 @@ var knownReasons = map[Reason]bool{
 	ReasonNoDefaultClass:       true,
 	ReasonNoOfferingPool:       true,
 	ReasonPrefixLengthRejected: true,
+	ReasonFamilyMismatch:       true,
 	ReasonScopeRolesMissing:    true,
 	ReasonAllocationRetained:   true,
 	ReasonClaimExists:          true,
