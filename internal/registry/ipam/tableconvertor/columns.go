@@ -2,6 +2,7 @@ package tableconvertor
 
 import (
 	"fmt"
+	"math/big"
 	"sort"
 	"strings"
 
@@ -36,17 +37,16 @@ func IPPools() rest.TableConvertor {
 		nameColumn,
 		{Name: "CIDR", Type: "string", Description: "Address range the pool holds."},
 		{Name: "Family", Type: "string", Description: "Address family of the pool."},
-		{Name: "Classes", Type: "string", Description: "Classes this pool offers itself to."},
+		{Name: "Class", Type: "string", Description: "Class this pool serves: the classes it offers itself to, or the class that provisioned it."},
 		{Name: "Utilization", Type: "string", Description: "Allocated share of the pool's address space."},
 		ageColumn,
 		{Name: "Parent", Type: "string", Priority: wide, Description: "Pool this one was carved from."},
-		{Name: "Class", Type: "string", Priority: wide, Description: "Class that provisioned this pool, if any."},
 		{Name: "Scope", Type: "string", Priority: wide, Description: "References this pool exists for."},
 		{Name: "Phase", Type: "string", Priority: wide, Description: "Current lifecycle phase."},
 	}, func(obj runtime.Object, name, age string) []interface{} {
 		p, ok := obj.(*ipam.IPPool)
 		if !ok {
-			return []interface{}{name, "", "", "", "", age, "", "", "", ""}
+			return []interface{}{name, "", "", "", "", age, "", "", ""}
 		}
 		// The carved range on a provisioned pool, the declared one on a root.
 		cidr := p.Status.AllocatedCIDR
@@ -61,11 +61,10 @@ func IPPools() rest.TableConvertor {
 			name,
 			orEmpty(cidr),
 			orEmpty(string(family)),
-			orEmpty(strings.Join(p.Spec.ClassNames, ",")),
-			percent(p.Status.UtilizationPercent),
+			poolClass(p),
+			poolUtilization(p),
 			age,
 			localRefName(p.Spec.ParentPoolRef),
-			localRefName(p.Spec.ClassRef),
 			formatScope(p.Spec.Scope),
 			orEmpty(string(p.Status.Phase)),
 		}
@@ -214,18 +213,39 @@ func formatScope(scope map[string]ipam.ScopeRef) string {
 	return strings.Join(cells, " ")
 }
 
-// percent renders utilization to one decimal place. A pool that has handed out
-// a /64 from a /32 is not empty, so a value that rounds to zero but is not zero
-// prints as "<0.1%" rather than claiming the pool is untouched.
-func percent(v float64) string {
-	switch {
-	case v <= 0:
-		return "0%"
-	case v < 0.05:
-		return "<0.1%"
-	default:
-		return fmt.Sprintf("%.1f%%", v)
+// poolClass names the class a pool serves. Exactly one of these is set on any
+// given pool: an operator-authored pool lists the classes it offers itself to,
+// and a cascade-provisioned pool names the class that carved it. Reading only
+// the first would print "<none>" for every provisioned pool, which is most of
+// them.
+func poolClass(p *ipam.IPPool) string {
+	if len(p.Spec.ClassNames) > 0 {
+		return strings.Join(p.Spec.ClassNames, ",")
 	}
+	return localRefName(p.Spec.ClassRef)
+}
+
+// poolUtilization renders the allocated share of a pool.
+//
+// status.utilizationPercent is rounded to four decimal places, and an IPv6 pool
+// is big enough that a real allocation rounds to zero: a /48 carved from a /32
+// is 0.0000%. Whether the pool has been drawn on at all is therefore read from
+// the capacity, which is exact, and the percentage is only used for how much.
+func poolUtilization(p *ipam.IPPool) string {
+	if !allocatedAny(p.Status.Capacity.Allocated) {
+		return "0%"
+	}
+	if p.Status.UtilizationPercent < 0.05 {
+		return "<0.1%"
+	}
+	return fmt.Sprintf("%.1f%%", p.Status.UtilizationPercent)
+}
+
+// allocatedAny reports whether a capacity count is a non-zero number. The counts
+// are decimal strings because an IPv6 pool overflows every integer type.
+func allocatedAny(s string) bool {
+	n, ok := new(big.Int).SetString(s, 10)
+	return ok && n.Sign() > 0
 }
 
 func orEmpty(s string) string {
