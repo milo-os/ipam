@@ -130,6 +130,32 @@ func TestCreateBindsAClaimThroughItsClass(t *testing.T) {
 	}
 }
 
+// The IPAllocation a claim materialises never passes through a create handler
+// of its own, so nothing else would stamp the metadata every stored object is
+// expected to carry.
+func TestCreateStampsSystemFieldsOnTheAllocation(t *testing.T) {
+	r, db := newPostgresREST(t)
+
+	if _, err := r.Create(claimCtx(testProject), newClassClaim(), nil, &metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	var creationTimestamp, uid string
+	if err := db.QueryRow(context.Background(),
+		`SELECT ipam_data_to_jsonb(data) -> 'metadata' ->> 'creationTimestamp',
+		        ipam_data_to_jsonb(data) -> 'metadata' ->> 'uid'
+		   FROM ipam_objects WHERE kind = 'IPAllocation'`,
+	).Scan(&creationTimestamp, &uid); err != nil {
+		t.Fatalf("read allocation metadata: %v", err)
+	}
+	if creationTimestamp == "" {
+		t.Error("allocation has no creationTimestamp")
+	}
+	if uid == "" {
+		t.Error("allocation has no uid")
+	}
+}
+
 // Server dry-run computes the real next CIDR and persists none of it.
 func TestCreateDryRunPersistsNothing(t *testing.T) {
 	r, db := newPostgresREST(t)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/klog/v2"
 
 	"go.miloapis.com/ipam/internal/allocation"
@@ -466,7 +467,7 @@ func newProvisionedPool(level CascadeLevel, sourcePoolName string, prefixLen int
 	if level.Tenancy.Consumer != "" {
 		labels[labelProvisionedFor] = level.Tenancy.Consumer
 	}
-	return &ipamv1alpha1.IPPool{
+	pool := &ipamv1alpha1.IPPool{
 		TypeMeta: metav1.TypeMeta{APIVersion: "ipam.miloapis.com/v1alpha1", Kind: "IPPool"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   level.PoolName,
@@ -487,6 +488,12 @@ func newProvisionedPool(level CascadeLevel, sourcePoolName string, prefixLen int
 			ScopeDigest:   level.ScopeDigest,
 		},
 	}
+	// A provisioned pool is written straight to the object table, so nothing
+	// has stamped the fields the apiserver's create path stamps for a pool the
+	// user POSTs. Without them the pool reports a zero creation timestamp and
+	// no UID, and an owner reference to it cannot be made.
+	rest.FillObjectMetaSystemFields(&pool.ObjectMeta)
+	return pool
 }
 
 func scopeToVersioned(s map[string]ipam.ScopeRef) map[string]ipamv1alpha1.ScopeRef {
