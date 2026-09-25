@@ -24,22 +24,30 @@ spec:
       unit: "1"
   quota:
     limits:
+      # A fabric identity is claimed per network and retained forever, because
+      # reissuing one would merge a new network into a dead one's routes. So a
+      # project's claim count only ever rises, and the platform project that
+      # holds the tenant address pools carries a claim for every network in the
+      # environment rather than its own. A limit sized for one project's own
+      # claims is reached in days there, and reaching it fails every address
+      # allocation for every tenant.
       - name: ipclaims-per-project
         metric: ipam.miloapis.com/ipclaims
         consumerType:
           apiGroup: resourcemanager.miloapis.com
           kind: Project
         unit: "1/{project}"
-        defaultLimit: 100
-        maxLimit: 10000
+        defaultLimit: 10000
+        maxLimit: 1000000
+      # Pools accrue the same way, one per network per location.
       - name: ippools-per-project
         metric: ipam.miloapis.com/ippools
         consumerType:
           apiGroup: resourcemanager.miloapis.com
           kind: Project
         unit: "1/{project}"
-        defaultLimit: 25
-        maxLimit: 1000
+        defaultLimit: 2500
+        maxLimit: 250000
     metricRules:
       - selector:
           apiGroup: ipam.miloapis.com
