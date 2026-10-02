@@ -9,8 +9,7 @@ spec:
   launchStage: Beta
   # Admin is the union of provider (pool CRUD + use) and consumer (claim CRUD),
   # both of which inherit viewer (reads). On top it adds full management of the
-  # system-created IPAllocation records and the status subresource on every
-  # resource type.
+  # system-created IPAllocation records. Status remains system-managed.
   inheritedRoles:
     - name: ipam.miloapis.com-provider
     - name: ipam.miloapis.com-consumer
@@ -19,7 +18,3 @@ spec:
     - ipam.miloapis.com/ipallocations.update
     - ipam.miloapis.com/ipallocations.patch
     - ipam.miloapis.com/ipallocations.delete
-    - ipam.miloapis.com/ipclasses.updateStatus
-    - ipam.miloapis.com/ippools.updateStatus
-    - ipam.miloapis.com/ipclaims.updateStatus
-    - ipam.miloapis.com/ipallocations.updateStatus

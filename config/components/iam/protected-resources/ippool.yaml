@@ -16,11 +16,16 @@ spec:
     - update
     - patch
     - delete
-    - updateStatus
     # "use" is the verb checked by the IPAM PoolAccessChecker (see
     # internal/access/sar.go) when a consumer claims from a shared pool.
     # Granting it on a pool implicitly authorises cross-project allocation.
     - use
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project
