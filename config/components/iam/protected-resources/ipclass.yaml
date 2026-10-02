@@ -16,11 +16,16 @@ spec:
     - update
     - patch
     - delete
-    - updateStatus
     # "use" is checked when an IPClass in another project is created with
     # spec.source naming this class (see internal/access/class.go). Granting it
     # admits that project's claims into this class's address space.
     - use
+  subresources:
+    - name: status
+      permissions:
+        - get
+        - update
+        - patch
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project
