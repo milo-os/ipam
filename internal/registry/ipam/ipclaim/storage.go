@@ -277,6 +277,25 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, fmt.Errorf("resolve class: %w", err)
 	}
 
+	// spec.ipFamily is a selector for the default class, never a second opinion
+	// about the class a claim names. Silently ignoring a disagreement let a
+	// claim ask for IPv4 from an IPv6 class and get IPv6 back with no error.
+	if claim.Spec.IPFamily != "" && string(claim.Spec.IPFamily) != string(class.Spec.IPFamily) {
+		_ = tx.Rollback(ctx)
+		metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
+		failSpan(tracing.ReasonPoolNotFound)
+		return nil, ipamerrors.New(ipamerrors.ReasonFamilyMismatch, fmt.Sprintf(
+			"spec.ipFamily is %s but class %q hands out %s",
+			claim.Spec.IPFamily, class.Name, class.Spec.IPFamily))
+	}
+
+	// Default the class the same way a PersistentVolumeClaim is defaulted to
+	// the cluster's StorageClass: the claim is persisted below, so the stored
+	// object and the create response both name the class this resolved to
+	// rather than leaving the choice implicit. spec.className is immutable, so
+	// what is written here is what the claim allocated under, for good.
+	claim.Spec.ClassName = class.Name
+
 	if claim.Spec.Target == ipam.TargetScopeRange {
 		// The chain is provisioned outside this transaction, level by level,
 		// exactly as it is for a block claim — so this one is released first.
