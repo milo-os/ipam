@@ -76,8 +76,12 @@ func servedResources(t *testing.T) []string {
 
 type protectedResource struct {
 	Spec struct {
-		Plural      string   `json:"plural"`
-		Permissions []string `json:"permissions"`
+		Plural       string   `json:"plural"`
+		Permissions  []string `json:"permissions"`
+		Subresources []struct {
+			Name        string   `json:"name"`
+			Permissions []string `json:"permissions"`
+		} `json:"subresources"`
 	} `json:"spec"`
 }
 
@@ -240,6 +244,11 @@ func TestEveryGrantedPermissionIsDeclared(t *testing.T) {
 		for _, verb := range pr.Spec.Permissions {
 			declared["ipam.miloapis.com/"+plural+"."+verb] = true
 		}
+		for _, sub := range pr.Spec.Subresources {
+			for _, verb := range sub.Permissions {
+				declared["ipam.miloapis.com/"+plural+"/"+sub.Name+"."+verb] = true
+			}
+		}
 	}
 
 	for name := range loadRoles(t) {
@@ -249,6 +258,19 @@ func TestEveryGrantedPermissionIsDeclared(t *testing.T) {
 			}
 			if !declared[perm] {
 				t.Errorf("role %q grants %q, which no ProtectedResource declares", name, perm)
+			}
+		}
+	}
+}
+
+// Status is written by the apiserver alone. A role that could update or patch
+// a subresource would let a caller overwrite the allocation the server reported.
+func TestRolesGrantNoSubresourceWrites(t *testing.T) {
+	for name, r := range loadRoles(t) {
+		for _, perm := range r.Spec.IncludedPermissions {
+			resource, verb, _ := strings.Cut(strings.TrimPrefix(perm, "ipam.miloapis.com/"), ".")
+			if strings.HasPrefix(perm, "ipam.miloapis.com/") && strings.Contains(resource, "/") && verb != "get" {
+				t.Errorf("role %q grants %q, a write to a server-owned subresource", name, perm)
 			}
 		}
 	}
