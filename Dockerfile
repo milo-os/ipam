@@ -1,6 +1,6 @@
 # Build stage. Debian-based so the race detector (which requires CGO + glibc)
 # can be enabled via --build-arg RACE=-race.
-FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS builder
 
 # Build arguments for version injection
 ARG VERSION=dev
@@ -57,7 +57,7 @@ RUN if [ -n "$RACE" ]; then \
 
 # Runtime stage. distroless/base ships glibc so it works for both the default
 # CGO_ENABLED=0 static build and the CGO_ENABLED=1 race build.
-FROM gcr.io/distroless/base-debian12:nonroot
+FROM gcr.io/distroless/base-debian13:nonroot
 
 WORKDIR /
 COPY --from=builder /workspace/ipam .
