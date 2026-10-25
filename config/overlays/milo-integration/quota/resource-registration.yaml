@@ -1,0 +1,35 @@
+# Registers the quotable IPAM resource type with milo's quota system.
+#
+# resourceType is the internal metric key the IPClaim ResourceClaims request
+# against (see claim-creation-policy.yaml) and that grants/buckets allocate from
+# (see grant-creation-policy.yaml). It mirrors the metric the service-catalog
+# ServiceConfiguration would emit (ipam.miloapis.com/ipclaims) — but THIS milo
+# build ships the raw quota.miloapis.com primitives, not the higher-level
+# services.miloapis.com catalog API, so we register directly.
+#
+# consumerType Project: quota is held and enforced per resourcemanager Project,
+# matching how the IPAM apiserver scopes IPClaim requests (project context ->
+# per-project control-plane).
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: ipclaims-per-project
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: milo-integration
+  annotations:
+    kubernetes.io/display-name: "IP Claims"
+    kubernetes.io/description: "Maximum number of IPClaim objects per project"
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+  type: Entity
+  resourceType: ipam.miloapis.com/ipclaims
+  description: "Maximum number of IPClaim objects per project"
+  baseUnit: ipclaim
+  displayUnit: ipclaims
+  unitConversionFactor: 1
+  claimingResources:
+    - apiGroup: ipam.miloapis.com
+      kind: IPClaim

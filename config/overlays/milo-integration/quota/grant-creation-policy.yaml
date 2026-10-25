@@ -1,0 +1,54 @@
+# Auto-grants every Project an IPClaim allowance when the Project is created.
+#
+# The GrantCreation controller (in milo-controller-manager) watches Projects;
+# when one is created it renders this template into a ResourceGrant placed in
+# that project's control-plane. The grant becoming Active pre-creates an
+# AllowanceBucket (limit = bucket amount) the IPClaim ResourceClaims draw from.
+#
+# Without this, a project has no allowance for ipam.miloapis.com/ipclaims and
+# every IPClaim CREATE is denied — exactly the staging blocker (ResourceClaims
+# never granted because the project had no allowance/grant for the metric).
+apiVersion: quota.miloapis.com/v1alpha1
+kind: GrantCreationPolicy
+metadata:
+  name: project-ipclaim-grant-policy
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: milo-integration
+spec:
+  disabled: false
+  trigger:
+    resource:
+      apiVersion: resourcemanager.miloapis.com/v1alpha1
+      kind: Project
+    # No constraints - grant to every project.
+  target:
+    # Route the grant (and the AllowanceBucket it pre-creates) INTO the project's
+    # own control-plane, not the core cluster. The IPAM quota admission plugin
+    # looks up the ResourceClaim/AllowanceBucket in the per-project control-plane
+    # when it enforces an IPClaim CREATE, so the grant must live there. Omitting
+    # parentContext writes the grant to the core cluster, where the project's
+    # claims never see it (the staging failure mode).
+    parentContext:
+      apiGroup: resourcemanager.miloapis.com
+      kind: Project
+      nameExpression: "trigger.metadata.name"
+    resourceGrantTemplate:
+      metadata:
+        name: "ipam-grant-{{.trigger.metadata.name}}"
+        namespace: "milo-system"
+        labels:
+          app.kubernetes.io/name: ipam
+          app.kubernetes.io/component: milo-integration
+          quota.miloapis.com/auto-created: "true"
+        annotations:
+          quota.miloapis.com/description: "Auto IPClaim quota for project {{.trigger.metadata.name}}"
+      spec:
+        consumerRef:
+          apiGroup: resourcemanager.miloapis.com
+          kind: Project
+          name: "{{.trigger.metadata.name}}"
+        allowances:
+          - resourceType: ipam.miloapis.com/ipclaims
+            buckets:
+              - amount: 100

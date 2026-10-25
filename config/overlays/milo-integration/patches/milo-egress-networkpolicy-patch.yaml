@@ -1,0 +1,22 @@
+# Allow the IPAM apiserver to reach the milo-apiserver (milo-system, :6443) for
+# delegated TokenReview / SubjectAccessReview, the quota admission plugin's
+# loopback + per-project control-plane clients, and the quota/APF informers that
+# gate readyz. The base NetworkPolicy is default-deny on egress, so without this
+# rule every milo call (and thus readyz) hangs.
+#
+# namespaceSelector-only (matching kubernetes.io/metadata.name) rather than a
+# podSelector, for the same reason the base policy documents: the kustomization
+# `labels:` transformer rewrites peer matchLabels, which would otherwise force
+# milo's pods to carry IPAM labels and match nothing.
+#
+# JSON6902 append preserves the base egress rules (DNS, postgres, kube-apiserver).
+- op: add
+  path: /spec/egress/-
+  value:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: milo-system
+    ports:
+      - port: 6443
+        protocol: TCP

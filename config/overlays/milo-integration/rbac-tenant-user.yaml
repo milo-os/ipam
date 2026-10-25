@@ -1,0 +1,46 @@
+# RBAC applied to the MILO control plane (NOT the IPAM cluster) authorizing the
+# impersonated tenant user that the demo / e2e driver uses to create
+# project-scoped IPPools and IPClaims.
+#
+# Why in Milo: with the milo-integration overlay, IPAM delegates authorization
+# to milo (--authorization-kubeconfig -> milo-apiserver), so every IPAM
+# SubjectAccessReview is answered by milo's RBAC, not the local kube-apiserver.
+# The impersonation itself (--as / --as-user-extra) is authorized by the LOCAL
+# kube-apiserver where the IPAM APIService is aggregated; the resulting user
+# (e2e-tenant-tester) must then be granted IPAM verbs HERE in milo.
+#
+# e2e-tenant-tester matches the impersonation identity in
+# test/e2e/.tenant-impersonation-*.kubeconfig and docs/milo-integration.md.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ipam-tenant-user
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: milo-integration
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources:
+      - ippools
+      - ippools/status
+      - ipclaims
+      - ipclaims/status
+      - ipallocations
+      - ipallocations/status
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipam-tenant-user-binding
+  labels:
+    app.kubernetes.io/name: ipam
+    app.kubernetes.io/component: milo-integration
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ipam-tenant-user
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-tester
