@@ -111,8 +111,8 @@ func (ipPoolStrategy) Validate(_ context.Context, obj runtime.Object) field.Erro
 }
 
 func (ipPoolStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string { return nil }
-func (ipPoolStrategy) AllowCreateOnUpdate() bool                                     { return false }
-func (ipPoolStrategy) AllowUnconditionalUpdate() bool                                { return true }
+func (ipPoolStrategy) AllowCreateOnUpdate(_ context.Context) bool                    { return false }
+func (ipPoolStrategy) AllowUnconditionalUpdate(_ context.Context) bool               { return true }
 func (ipPoolStrategy) Canonicalize(_ runtime.Object)                                 {}
 
 func (ipPoolStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
@@ -282,9 +282,9 @@ func (ipPoolStatusStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Obj
 	return nil
 }
 
-func (ipPoolStatusStrategy) AllowCreateOnUpdate() bool      { return false }
-func (ipPoolStatusStrategy) AllowUnconditionalUpdate() bool { return true }
-func (ipPoolStatusStrategy) Canonicalize(_ runtime.Object)  {}
+func (ipPoolStatusStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (ipPoolStatusStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
+func (ipPoolStatusStrategy) Canonicalize(_ runtime.Object)                   {}
 
 func (ipPoolStatusStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
 	return map[fieldpath.APIVersion]*fieldpath.Set{

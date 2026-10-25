@@ -137,9 +137,9 @@ func sharedPoolWarning(c *ipam.IPClass) []string {
 		scope.ReservedRoleProject, strings.Join(roles, ", "), scope.ReservedRoleProject)}
 }
 
-func (ipClassStrategy) AllowCreateOnUpdate() bool      { return false }
-func (ipClassStrategy) AllowUnconditionalUpdate() bool { return true }
-func (ipClassStrategy) Canonicalize(_ runtime.Object)  {}
+func (ipClassStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (ipClassStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
+func (ipClassStrategy) Canonicalize(_ runtime.Object)                   {}
 
 // ValidateUpdate rejects edits to the fields an existing allocation's identity
 // was derived from. An allocation records the address it holds, not the policy
@@ -327,9 +327,9 @@ func (ipClassStatusStrategy) ValidateUpdate(_ context.Context, _, _ runtime.Obje
 func (ipClassStatusStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string {
 	return nil
 }
-func (ipClassStatusStrategy) AllowCreateOnUpdate() bool      { return false }
-func (ipClassStatusStrategy) AllowUnconditionalUpdate() bool { return false }
-func (ipClassStatusStrategy) Canonicalize(_ runtime.Object)  {}
+func (ipClassStatusStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (ipClassStatusStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return false }
+func (ipClassStatusStrategy) Canonicalize(_ runtime.Object)                   {}
 
 func (ipClassStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
 	return map[fieldpath.APIVersion]*fieldpath.Set{
