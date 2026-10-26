@@ -9,13 +9,13 @@ import (
 // Interface provides access to all the informers in this group version.
 type Interface interface {
 	// IPAllocations returns a IPAllocationInformer.
-	IPAllocations() IPAllocationInformer
+	IPAllocations() TypedIPAllocationInformer
 	// IPClaims returns a IPClaimInformer.
-	IPClaims() IPClaimInformer
+	IPClaims() TypedIPClaimInformer
 	// IPClasses returns a IPClassInformer.
-	IPClasses() IPClassInformer
+	IPClasses() TypedIPClassInformer
 	// IPPools returns a IPPoolInformer.
-	IPPools() IPPoolInformer
+	IPPools() TypedIPPoolInformer
 }
 
 type version struct {
@@ -29,22 +29,22 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
-// IPAllocations returns a IPAllocationInformer.
-func (v *version) IPAllocations() IPAllocationInformer {
+// IPAllocations returns a TypedIPAllocationInformer.
+func (v *version) IPAllocations() TypedIPAllocationInformer {
 	return &iPAllocationInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// IPClaims returns a IPClaimInformer.
-func (v *version) IPClaims() IPClaimInformer {
+// IPClaims returns a TypedIPClaimInformer.
+func (v *version) IPClaims() TypedIPClaimInformer {
 	return &iPClaimInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
-// IPClasses returns a IPClassInformer.
-func (v *version) IPClasses() IPClassInformer {
+// IPClasses returns a TypedIPClassInformer.
+func (v *version) IPClasses() TypedIPClassInformer {
 	return &iPClassInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }
 
-// IPPools returns a IPPoolInformer.
-func (v *version) IPPools() IPPoolInformer {
+// IPPools returns a TypedIPPoolInformer.
+func (v *version) IPPools() TypedIPPoolInformer {
 	return &iPPoolInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
 }

@@ -21,6 +21,14 @@ func (a *recordingAuthorizer) Authorize(_ context.Context, attrs authorizer.Attr
 	return a.decision, "", nil
 }
 
+func (a *recordingAuthorizer) ConditionsAwareAuthorize(ctx context.Context, attrs authorizer.Attributes) authorizer.ConditionsAwareDecision {
+	return authorizer.ConditionsAwareDecisionFromParts(a.Authorize(ctx, attrs))
+}
+
+func (a *recordingAuthorizer) EvaluateConditions(_ context.Context, _ authorizer.ConditionsAwareDecision, _ authorizer.ConditionsData) (authorizer.Decision, string, error) {
+	return authorizer.DecisionDeny, "", authorizer.ErrorConditionEvaluationNotSupported
+}
+
 func callerCtx(project string) context.Context {
 	return genericapirequest.WithUser(context.Background(), &user.DefaultInfo{
 		Name:   "someone",

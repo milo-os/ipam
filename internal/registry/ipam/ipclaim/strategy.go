@@ -71,9 +71,9 @@ func (ipClaimStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []s
 	return nil
 }
 
-func (ipClaimStrategy) AllowCreateOnUpdate() bool      { return false }
-func (ipClaimStrategy) AllowUnconditionalUpdate() bool { return true }
-func (ipClaimStrategy) Canonicalize(_ runtime.Object)  {}
+func (ipClaimStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (ipClaimStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
+func (ipClaimStrategy) Canonicalize(_ runtime.Object)                   {}
 
 func (ipClaimStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
 	n := obj.(*ipam.IPClaim)
@@ -224,9 +224,9 @@ func (ipClaimStatusStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Ob
 	return nil
 }
 
-func (ipClaimStatusStrategy) AllowCreateOnUpdate() bool      { return false }
-func (ipClaimStatusStrategy) AllowUnconditionalUpdate() bool { return true }
-func (ipClaimStatusStrategy) Canonicalize(_ runtime.Object)  {}
+func (ipClaimStatusStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (ipClaimStatusStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
+func (ipClaimStatusStrategy) Canonicalize(_ runtime.Object)                   {}
 
 func (ipClaimStatusStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
 	return map[fieldpath.APIVersion]*fieldpath.Set{
