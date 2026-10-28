@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/fieldindex"
+	"go.miloapis.com/ipam/internal/registry/ipam/ipamvalidation"
 	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 )
@@ -83,6 +84,9 @@ func (ipClaimStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	if n.Spec.IPFamily != o.Spec.IPFamily {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "ipFamily"), "ipFamily is immutable"))
 	}
+	if n.Spec.AddressScope != o.Spec.AddressScope {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "addressScope"), "addressScope is immutable"))
+	}
 	if !equality.Semantic.DeepEqual(n.Spec.PrefixLength, o.Spec.PrefixLength) {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "prefixLength"), "prefixLength is immutable"))
 	}
@@ -121,6 +125,7 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 		allErrs = append(allErrs, field.NotSupported(specPath.Child("ipFamily"), c.Spec.IPFamily,
 			[]string{string(ipam.IPv4), string(ipam.IPv6)}))
 	}
+	allErrs = append(allErrs, ipamvalidation.AddressScope(c.Spec.AddressScope, specPath.Child("addressScope"))...)
 	// Only the bound that holds for every family. The family-specific one comes
 	// from the class, in EffectivePrefixLength: this runs before the class is
 	// resolved and cannot read it, and assuming IPv4 here rejected a /64 from

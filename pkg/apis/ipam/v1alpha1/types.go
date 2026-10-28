@@ -11,6 +11,15 @@ const (
 	IPv6 IPFamily = "IPv6"
 )
 
+// AddressScope says whether addresses are publicly routable or private.
+// +kubebuilder:validation:Enum=Public;Private
+type AddressScope string
+
+const (
+	AddressScopePublic  AddressScope = "Public"
+	AddressScopePrivate AddressScope = "Private"
+)
+
 // PoolSelectionStrategy chooses WHICH POOL serves a claim, when several pools
 // back one class. It is set on IPClass.
 //
@@ -315,6 +324,12 @@ type IPClassSpec struct {
 	// IPFamily is the single address family this class hands out. Required and
 	// immutable. Dual-stack is two classes, never one.
 	IPFamily IPFamily `json:"ipFamily"`
+
+	// AddressScope says whether this class hands out publicly routable or
+	// private addresses. Empty states neither. May be set once on a class that
+	// has none; immutable after that.
+	// +optional
+	AddressScope AddressScope `json:"addressScope,omitempty"`
 
 	// ParentClassName is the class whose allocations this one carves from,
 	// resolved in this class's own project. Empty means allocations come from
@@ -845,6 +860,11 @@ type IPClaimSpec struct {
 	// class already fixes its family.
 	// +optional
 	IPFamily IPFamily `json:"ipFamily,omitempty"`
+
+	// AddressScope is copied from the class on create. It must agree, if set,
+	// with the class the claim resolves to. Immutable.
+	// +optional
+	AddressScope AddressScope `json:"addressScope,omitempty"`
 
 	// Address names a specific address to bind. Omitted, the allocator chooses.
 	// +optional

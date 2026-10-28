@@ -196,6 +196,7 @@ func convert_v1alpha1_IPClass_To_ipam(in *IPClass, out *ipam.IPClass) error {
 	out.Spec = ipam.IPClassSpec{
 		Source:               toIpamClassSource(in.Spec.Source),
 		IPFamily:             ipam.IPFamily(in.Spec.IPFamily),
+		AddressScope:         ipam.AddressScope(in.Spec.AddressScope),
 		ParentClassName:      in.Spec.ParentClassName,
 		PoolPer:              copyStrings(in.Spec.PoolPer),
 		UniqueWithin:         copyStrings(in.Spec.UniqueWithin),
@@ -221,6 +222,7 @@ func convert_ipam_IPClass_To_v1alpha1(in *ipam.IPClass, out *IPClass) error {
 	out.Spec = IPClassSpec{
 		Source:               toV1ClassSource(in.Spec.Source),
 		IPFamily:             IPFamily(in.Spec.IPFamily),
+		AddressScope:         AddressScope(in.Spec.AddressScope),
 		ParentClassName:      in.Spec.ParentClassName,
 		PoolPer:              copyStrings(in.Spec.PoolPer),
 		UniqueWithin:         copyStrings(in.Spec.UniqueWithin),
@@ -440,6 +442,7 @@ func convert_v1alpha1_IPClaim_To_ipam(in *IPClaim, out *ipam.IPClaim) error {
 	out.Spec = ipam.IPClaimSpec{
 		ClassName:     in.Spec.ClassName,
 		IPFamily:      ipam.IPFamily(in.Spec.IPFamily),
+		AddressScope:  ipam.AddressScope(in.Spec.AddressScope),
 		Address:       in.Spec.Address,
 		PrefixLength:  copyInt32Ptr(in.Spec.PrefixLength),
 		Scope:         toIpamScope(in.Spec.Scope),
@@ -463,6 +466,7 @@ func convert_ipam_IPClaim_To_v1alpha1(in *ipam.IPClaim, out *IPClaim) error {
 	out.Spec = IPClaimSpec{
 		ClassName:     in.Spec.ClassName,
 		IPFamily:      IPFamily(in.Spec.IPFamily),
+		AddressScope:  AddressScope(in.Spec.AddressScope),
 		Address:       in.Spec.Address,
 		PrefixLength:  copyInt32Ptr(in.Spec.PrefixLength),
 		Scope:         toV1Scope(in.Spec.Scope),

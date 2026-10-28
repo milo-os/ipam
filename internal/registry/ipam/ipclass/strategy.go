@@ -160,6 +160,9 @@ func (ipClassStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	if n.Spec.IPFamily != o.Spec.IPFamily {
 		allErrs = append(allErrs, field.Forbidden(specPath.Child("ipFamily"), "spec.ipFamily is immutable"))
 	}
+	if o.Spec.AddressScope != "" && n.Spec.AddressScope != o.Spec.AddressScope {
+		allErrs = append(allErrs, field.Forbidden(specPath.Child("addressScope"), "spec.addressScope is immutable once set"))
+	}
 	if n.Spec.ParentClassName != o.Spec.ParentClassName {
 		allErrs = append(allErrs, field.Forbidden(specPath.Child("parentClassName"), "spec.parentClassName is immutable"))
 	}
@@ -212,6 +215,7 @@ func validateReference(c *ipam.IPClass) field.ErrorList {
 		set  bool
 	}{
 		{"ipFamily", c.Spec.IPFamily != ""},
+		{"addressScope", c.Spec.AddressScope != ""},
 		{"parentClassName", c.Spec.ParentClassName != ""},
 		{"poolPer", len(c.Spec.PoolPer) > 0},
 		{"uniqueWithin", len(c.Spec.UniqueWithin) > 0},
@@ -246,6 +250,7 @@ func validateDefinition(c *ipam.IPClass) field.ErrorList {
 		allErrs = append(allErrs, field.NotSupported(specPath.Child("ipFamily"), c.Spec.IPFamily,
 			[]string{string(ipam.IPv4), string(ipam.IPv6)}))
 	}
+	allErrs = append(allErrs, ipamvalidation.AddressScope(c.Spec.AddressScope, specPath.Child("addressScope"))...)
 
 	if c.Spec.ParentClassName == c.Name && c.Name != "" {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("parentClassName"), c.Spec.ParentClassName,

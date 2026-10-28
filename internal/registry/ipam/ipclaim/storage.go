@@ -263,6 +263,13 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 			"spec.ipFamily is %s but class %q hands out %s",
 			claim.Spec.IPFamily, class.LocalName, class.Spec.IPFamily))
 	}
+	if claim.Spec.AddressScope != "" && string(claim.Spec.AddressScope) != string(class.Spec.AddressScope) {
+		metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
+		failSpan(tracing.ReasonPoolNotFound)
+		return nil, ipamerrors.New(ipamerrors.ReasonAddressScopeMismatch, fmt.Sprintf(
+			"spec.addressScope is %s but class %q has addressScope %q",
+			claim.Spec.AddressScope, class.Name, class.Spec.AddressScope))
+	}
 
 	// Default the class the same way a PersistentVolumeClaim is defaulted to
 	// the cluster's StorageClass: the claim is persisted below, so the stored
@@ -271,6 +278,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// what is written here is what the claim allocated under, for good.
 	claim.Spec.ClassName = class.LocalName
 	claim.Spec.IPFamily = ipam.IPFamily(class.Spec.IPFamily)
+	claim.Spec.AddressScope = ipam.AddressScope(class.Spec.AddressScope)
 	ipFamily = string(claim.Spec.IPFamily)
 	span.SetAttributes(attribute.String(tracing.AttrClaimIPFamily, ipFamily))
 

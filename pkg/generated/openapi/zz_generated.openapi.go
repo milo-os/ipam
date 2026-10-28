@@ -502,6 +502,13 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) com
 							Format:      "",
 						},
 					},
+					"addressScope": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AddressScope is copied from the class on create. It must agree, if set, with the class the claim resolves to. Immutable.",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Address names a specific address to bind. Omitted, the allocator chooses.",
@@ -732,6 +739,13 @@ func schema_pkg_apis_ipam_v1alpha1_IPClassSpec(ref common.ReferenceCallback) com
 						SchemaProps: spec.SchemaProps{
 							Description: "IPFamily is the single address family this class hands out. Required and immutable. Dual-stack is two classes, never one.",
 							Default:     "",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"addressScope": {
+						SchemaProps: spec.SchemaProps{
+							Description: "AddressScope says whether this class hands out publicly routable or private addresses. Empty states neither. May be set once on a class that has none; immutable after that.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
