@@ -65,9 +65,9 @@ func (ipAllocationStrategy) Validate(_ context.Context, obj runtime.Object) fiel
 func (ipAllocationStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string {
 	return nil
 }
-func (ipAllocationStrategy) AllowCreateOnUpdate() bool      { return false }
-func (ipAllocationStrategy) AllowUnconditionalUpdate() bool { return true }
-func (ipAllocationStrategy) Canonicalize(_ runtime.Object)  {}
+func (ipAllocationStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (ipAllocationStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
+func (ipAllocationStrategy) Canonicalize(_ runtime.Object)                   {}
 
 func (ipAllocationStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
 	n := obj.(*ipam.IPAllocation)
@@ -161,9 +161,9 @@ func (ipAllocationStatusStrategy) WarningsOnUpdate(_ context.Context, _, _ runti
 	return nil
 }
 
-func (ipAllocationStatusStrategy) AllowCreateOnUpdate() bool      { return false }
-func (ipAllocationStatusStrategy) AllowUnconditionalUpdate() bool { return true }
-func (ipAllocationStatusStrategy) Canonicalize(_ runtime.Object)  {}
+func (ipAllocationStatusStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (ipAllocationStatusStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
+func (ipAllocationStatusStrategy) Canonicalize(_ runtime.Object)                   {}
 
 func (ipAllocationStatusStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
 	return map[fieldpath.APIVersion]*fieldpath.Set{

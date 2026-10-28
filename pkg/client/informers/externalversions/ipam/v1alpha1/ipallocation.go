@@ -12,16 +12,45 @@ import (
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/client/listers/ipam/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
 )
 
 // IPAllocationInformer provides access to a shared informer and lister for
-// IPAllocations.
+// IPAllocations. Prefer using the type-safe variant (see [TypedIPAllocationInformer]).
 type IPAllocationInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() ipamv1alpha1.IPAllocationLister
 }
+
+// TypedIPAllocationInformer provides access to a shared informer and lister for
+// IPAllocations, including the type-safe TypedInformer variant.
+// It is a superset of IPAllocationInformer.
+type TypedIPAllocationInformer interface {
+	Informer() cache.SharedIndexInformer
+	TypedInformer() IPAllocationIndexInformer
+	Lister() ipamv1alpha1.IPAllocationLister
+}
+
+// IPAllocationIndexInformer is a wrapper around the underlying [cache.SharedIndexInformer]
+// with type-safe variants of several methods.
+type IPAllocationIndexInformer cache.TypedSharedIndexInformer[*apisipamv1alpha1.IPAllocation]
+
+// IPAllocationHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerFuncs] for IPAllocation.
+type IPAllocationHandlerFuncs = cache.TypedResourceEventHandlerFuncs[*apisipamv1alpha1.IPAllocation]
+
+// IPAllocationDetailedHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerDetailedFuncs] for IPAllocation.
+type IPAllocationDetailedHandlerFuncs = cache.TypedResourceEventHandlerDetailedFuncs[*apisipamv1alpha1.IPAllocation]
+
+// IPAllocationFilteringHandler is a specialization of [cache.TypedFilteringResourceEventHandler] for IPAllocation.
+type IPAllocationFilteringHandler = cache.TypedFilteringResourceEventHandler[*apisipamv1alpha1.IPAllocation]
+
+// IPAllocationIndexers is a specialization of [cache.TypedIndexers] for IPAllocation.
+type IPAllocationIndexers = cache.TypedIndexers[*apisipamv1alpha1.IPAllocation]
+
+// DeletedIPAllocation is a specialization of [cache.DeletedObject] for IPAllocation.
+type DeletedIPAllocation = cache.DeletedObject[*apisipamv1alpha1.IPAllocation]
 
 type iPAllocationInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
@@ -32,55 +61,132 @@ type iPAllocationInformer struct {
 // NewIPAllocationInformer constructs a new informer for IPAllocation type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedIPAllocationInformer]).
 func NewIPAllocationInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredIPAllocationInformer(client, namespace, resyncPeriod, indexers, nil)
+	return NewIPAllocationInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers})
+}
+
+// NewTypedIPAllocationInformer constructs a new informer for IPAllocation type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedIPAllocationInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers IPAllocationIndexers) IPAllocationIndexInformer {
+	return NewTypedIPAllocationInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers)})
 }
 
 // NewFilteredIPAllocationInformer constructs a new informer for IPAllocation type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedFilteredIPAllocationInformer]).
 func NewFilteredIPAllocationInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
-	return cache.NewSharedIndexInformer(
+	return NewTypedIPAllocationInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers, TweakListOptions: tweakListOptions})
+}
+
+// NewTypedFilteredIPAllocationInformer constructs a new informer for IPAllocation type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedFilteredIPAllocationInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers IPAllocationIndexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) IPAllocationIndexInformer {
+	return NewTypedIPAllocationInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers), TweakListOptions: tweakListOptions})
+}
+
+// NewIPAllocationInformerWithOptions constructs a new informer for IPAllocation type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedIPAllocationInformerWithOptions]).
+func NewIPAllocationInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) cache.SharedIndexInformer {
+	return NewTypedIPAllocationInformerWithOptions(client, namespace, options)
+}
+
+// NewTypedIPAllocationInformerWithOptions constructs a new informer for IPAllocation type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedIPAllocationInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) IPAllocationIndexInformer {
+	gvr := schema.GroupVersionResource{Group: "ipam.miloapis.com", Version: "v1alpha1", Resource: "ipallocations"}
+	identifier := options.InformerName.WithResource(gvr)
+	tweakListOptions := options.TweakListOptions
+	return cache.NewTypedSharedIndexInformer[*apisipamv1alpha1.IPAllocation](cache.NewSharedIndexInformerWithOptions(
 		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
-			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+			ListFunc: func(opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.IpamV1alpha1().IPAllocations(namespace).List(context.Background(), options)
+				return client.IpamV1alpha1().IPAllocations(namespace).List(context.Background(), opts)
 			},
-			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+			WatchFunc: func(opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.IpamV1alpha1().IPAllocations(namespace).Watch(context.Background(), options)
+				return client.IpamV1alpha1().IPAllocations(namespace).Watch(context.Background(), opts)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.IpamV1alpha1().IPAllocations(namespace).List(ctx, options)
+				return client.IpamV1alpha1().IPAllocations(namespace).List(ctx, opts)
 			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.IpamV1alpha1().IPAllocations(namespace).Watch(ctx, options)
+				return client.IpamV1alpha1().IPAllocations(namespace).Watch(ctx, opts)
 			},
 		}, client),
 		&apisipamv1alpha1.IPAllocation{},
-		resyncPeriod,
-		indexers,
-	)
+		cache.SharedIndexInformerOptions{
+			ResyncPeriod: options.ResyncPeriod,
+			Indexers:     options.Indexers,
+			Identifier:   identifier,
+		},
+	))
 }
 
 func (f *iPAllocationInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredIPAllocationInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+	return NewTypedIPAllocationInformerWithOptions(client, f.namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, InformerName: f.factory.InformerName(), TweakListOptions: f.tweakListOptions})
 }
 
 func (f *iPAllocationInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apisipamv1alpha1.IPAllocation{}, f.defaultInformer)
+	return f.TypedInformer()
+}
+
+func (f *iPAllocationInformer) TypedInformer() IPAllocationIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apisipamv1alpha1.IPAllocation](f.factory.InformerFor(&apisipamv1alpha1.IPAllocation{}, f.defaultInformer))
 }
 
 func (f *iPAllocationInformer) Lister() ipamv1alpha1.IPAllocationLister {
 	return ipamv1alpha1.NewIPAllocationLister(f.Informer().GetIndexer())
+}
+
+// ToTypedIPAllocationInformer converts an untyped informer into a TypedIPAllocationInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *IPAllocation. If that is not the case, calling type-safe methods of the returned
+// TypedIPAllocationInformer leads to runtime panics. A safer alternative is to pass
+// around a TypedIPAllocationInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToTypedIPAllocationInformer(informer IPAllocationInformer) TypedIPAllocationInformer {
+	if informer, ok := informer.(TypedIPAllocationInformer); ok {
+		return informer
+	}
+	return &iPAllocationTypedInformerAdapter{informer}
+}
+
+type iPAllocationTypedInformerAdapter struct {
+	IPAllocationInformer
+}
+
+func (a *iPAllocationTypedInformerAdapter) TypedInformer() IPAllocationIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apisipamv1alpha1.IPAllocation](a.Informer())
+}
+
+// ToIPAllocationIndexInformer converts an untyped informer into a IPAllocationIndexInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *IPAllocation. If that is not the case, calling type-safe methods of the returned
+// IPAllocationIndexInformer leads to runtime panics. A safer alternative is to pass
+// around a IPAllocationIndexInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToIPAllocationIndexInformer(informer cache.SharedIndexInformer) IPAllocationIndexInformer {
+	if informer, ok := informer.(IPAllocationIndexInformer); ok {
+		return informer
+	}
+	return cache.NewTypedSharedIndexInformer[*apisipamv1alpha1.IPAllocation](informer)
 }
