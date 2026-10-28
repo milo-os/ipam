@@ -12,16 +12,45 @@ import (
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/client/listers/ipam/v1alpha1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+	schema "k8s.io/apimachinery/pkg/runtime/schema"
 	watch "k8s.io/apimachinery/pkg/watch"
 	cache "k8s.io/client-go/tools/cache"
 )
 
 // IPClaimInformer provides access to a shared informer and lister for
-// IPClaims.
+// IPClaims. Prefer using the type-safe variant (see [TypedIPClaimInformer]).
 type IPClaimInformer interface {
 	Informer() cache.SharedIndexInformer
 	Lister() ipamv1alpha1.IPClaimLister
 }
+
+// TypedIPClaimInformer provides access to a shared informer and lister for
+// IPClaims, including the type-safe TypedInformer variant.
+// It is a superset of IPClaimInformer.
+type TypedIPClaimInformer interface {
+	Informer() cache.SharedIndexInformer
+	TypedInformer() IPClaimIndexInformer
+	Lister() ipamv1alpha1.IPClaimLister
+}
+
+// IPClaimIndexInformer is a wrapper around the underlying [cache.SharedIndexInformer]
+// with type-safe variants of several methods.
+type IPClaimIndexInformer cache.TypedSharedIndexInformer[*apisipamv1alpha1.IPClaim]
+
+// IPClaimHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerFuncs] for IPClaim.
+type IPClaimHandlerFuncs = cache.TypedResourceEventHandlerFuncs[*apisipamv1alpha1.IPClaim]
+
+// IPClaimDetailedHandlerFuncs is a specialization of [cache.TypedResourceEventHandlerDetailedFuncs] for IPClaim.
+type IPClaimDetailedHandlerFuncs = cache.TypedResourceEventHandlerDetailedFuncs[*apisipamv1alpha1.IPClaim]
+
+// IPClaimFilteringHandler is a specialization of [cache.TypedFilteringResourceEventHandler] for IPClaim.
+type IPClaimFilteringHandler = cache.TypedFilteringResourceEventHandler[*apisipamv1alpha1.IPClaim]
+
+// IPClaimIndexers is a specialization of [cache.TypedIndexers] for IPClaim.
+type IPClaimIndexers = cache.TypedIndexers[*apisipamv1alpha1.IPClaim]
+
+// DeletedIPClaim is a specialization of [cache.DeletedObject] for IPClaim.
+type DeletedIPClaim = cache.DeletedObject[*apisipamv1alpha1.IPClaim]
 
 type iPClaimInformer struct {
 	factory          internalinterfaces.SharedInformerFactory
@@ -32,55 +61,132 @@ type iPClaimInformer struct {
 // NewIPClaimInformer constructs a new informer for IPClaim type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedIPClaimInformer]).
 func NewIPClaimInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers) cache.SharedIndexInformer {
-	return NewFilteredIPClaimInformer(client, namespace, resyncPeriod, indexers, nil)
+	return NewIPClaimInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers})
+}
+
+// NewTypedIPClaimInformer constructs a new informer for IPClaim type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedIPClaimInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers IPClaimIndexers) IPClaimIndexInformer {
+	return NewTypedIPClaimInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers)})
 }
 
 // NewFilteredIPClaimInformer constructs a new informer for IPClaim type.
 // Always prefer using an informer factory to get a shared informer instead of getting an independent
 // one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedFilteredIPClaimInformer]).
 func NewFilteredIPClaimInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers cache.Indexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) cache.SharedIndexInformer {
-	return cache.NewSharedIndexInformer(
+	return NewTypedIPClaimInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: indexers, TweakListOptions: tweakListOptions})
+}
+
+// NewTypedFilteredIPClaimInformer constructs a new informer for IPClaim type.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedFilteredIPClaimInformer(client versioned.Interface, namespace string, resyncPeriod time.Duration, indexers IPClaimIndexers, tweakListOptions internalinterfaces.TweakListOptionsFunc) IPClaimIndexInformer {
+	return NewTypedIPClaimInformerWithOptions(client, namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.TypedIndexersToIndexers(indexers), TweakListOptions: tweakListOptions})
+}
+
+// NewIPClaimInformerWithOptions constructs a new informer for IPClaim type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+// If you really need an independent one, prefer using the type-safe variant (see [NewTypedIPClaimInformerWithOptions]).
+func NewIPClaimInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) cache.SharedIndexInformer {
+	return NewTypedIPClaimInformerWithOptions(client, namespace, options)
+}
+
+// NewTypedIPClaimInformerWithOptions constructs a new informer for IPClaim type with additional options.
+// Always prefer using an informer factory to get a shared informer instead of getting an independent
+// one. This reduces memory footprint and number of connections to the server.
+func NewTypedIPClaimInformerWithOptions(client versioned.Interface, namespace string, options internalinterfaces.InformerOptions) IPClaimIndexInformer {
+	gvr := schema.GroupVersionResource{Group: "ipam.miloapis.com", Version: "v1alpha1", Resource: "ipclaims"}
+	identifier := options.InformerName.WithResource(gvr)
+	tweakListOptions := options.TweakListOptions
+	return cache.NewTypedSharedIndexInformer[*apisipamv1alpha1.IPClaim](cache.NewSharedIndexInformerWithOptions(
 		cache.ToListWatcherWithWatchListSemantics(&cache.ListWatch{
-			ListFunc: func(options v1.ListOptions) (runtime.Object, error) {
+			ListFunc: func(opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.IpamV1alpha1().IPClaims(namespace).List(context.Background(), options)
+				return client.IpamV1alpha1().IPClaims(namespace).List(context.Background(), opts)
 			},
-			WatchFunc: func(options v1.ListOptions) (watch.Interface, error) {
+			WatchFunc: func(opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.IpamV1alpha1().IPClaims(namespace).Watch(context.Background(), options)
+				return client.IpamV1alpha1().IPClaims(namespace).Watch(context.Background(), opts)
 			},
-			ListWithContextFunc: func(ctx context.Context, options v1.ListOptions) (runtime.Object, error) {
+			ListWithContextFunc: func(ctx context.Context, opts v1.ListOptions) (runtime.Object, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.IpamV1alpha1().IPClaims(namespace).List(ctx, options)
+				return client.IpamV1alpha1().IPClaims(namespace).List(ctx, opts)
 			},
-			WatchFuncWithContext: func(ctx context.Context, options v1.ListOptions) (watch.Interface, error) {
+			WatchFuncWithContext: func(ctx context.Context, opts v1.ListOptions) (watch.Interface, error) {
 				if tweakListOptions != nil {
-					tweakListOptions(&options)
+					tweakListOptions(&opts)
 				}
-				return client.IpamV1alpha1().IPClaims(namespace).Watch(ctx, options)
+				return client.IpamV1alpha1().IPClaims(namespace).Watch(ctx, opts)
 			},
 		}, client),
 		&apisipamv1alpha1.IPClaim{},
-		resyncPeriod,
-		indexers,
-	)
+		cache.SharedIndexInformerOptions{
+			ResyncPeriod: options.ResyncPeriod,
+			Indexers:     options.Indexers,
+			Identifier:   identifier,
+		},
+	))
 }
 
 func (f *iPClaimInformer) defaultInformer(client versioned.Interface, resyncPeriod time.Duration) cache.SharedIndexInformer {
-	return NewFilteredIPClaimInformer(client, f.namespace, resyncPeriod, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, f.tweakListOptions)
+	return NewTypedIPClaimInformerWithOptions(client, f.namespace, internalinterfaces.InformerOptions{ResyncPeriod: resyncPeriod, Indexers: cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc}, InformerName: f.factory.InformerName(), TweakListOptions: f.tweakListOptions})
 }
 
 func (f *iPClaimInformer) Informer() cache.SharedIndexInformer {
-	return f.factory.InformerFor(&apisipamv1alpha1.IPClaim{}, f.defaultInformer)
+	return f.TypedInformer()
+}
+
+func (f *iPClaimInformer) TypedInformer() IPClaimIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apisipamv1alpha1.IPClaim](f.factory.InformerFor(&apisipamv1alpha1.IPClaim{}, f.defaultInformer))
 }
 
 func (f *iPClaimInformer) Lister() ipamv1alpha1.IPClaimLister {
 	return ipamv1alpha1.NewIPClaimLister(f.Informer().GetIndexer())
+}
+
+// ToTypedIPClaimInformer converts an untyped informer into a TypedIPClaimInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *IPClaim. If that is not the case, calling type-safe methods of the returned
+// TypedIPClaimInformer leads to runtime panics. A safer alternative is to pass
+// around a TypedIPClaimInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToTypedIPClaimInformer(informer IPClaimInformer) TypedIPClaimInformer {
+	if informer, ok := informer.(TypedIPClaimInformer); ok {
+		return informer
+	}
+	return &iPClaimTypedInformerAdapter{informer}
+}
+
+type iPClaimTypedInformerAdapter struct {
+	IPClaimInformer
+}
+
+func (a *iPClaimTypedInformerAdapter) TypedInformer() IPClaimIndexInformer {
+	return cache.NewTypedSharedIndexInformer[*apisipamv1alpha1.IPClaim](a.Informer())
+}
+
+// ToIPClaimIndexInformer converts an untyped informer into a IPClaimIndexInformer.
+//
+// WARNING: this conversion is only safe if the informer handles objects of type
+// *IPClaim. If that is not the case, calling type-safe methods of the returned
+// IPClaimIndexInformer leads to runtime panics. A safer alternative is to pass
+// around a IPClaimIndexInformer instances that was obtained from a
+// SharedInformerFactory.
+func ToIPClaimIndexInformer(informer cache.SharedIndexInformer) IPClaimIndexInformer {
+	if informer, ok := informer.(IPClaimIndexInformer); ok {
+		return informer
+	}
+	return cache.NewTypedSharedIndexInformer[*apisipamv1alpha1.IPClaim](informer)
 }
