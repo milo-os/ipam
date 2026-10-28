@@ -429,3 +429,49 @@ func TestCreateDefaultsTheReferenceNameIntoSpec(t *testing.T) {
 		t.Errorf("stored spec.className = %q, want shared", got)
 	}
 }
+
+func TestCreateFillsTheClassAndFamilyBeforeAdmission(t *testing.T) {
+	r, _ := newPostgresREST(t)
+	claim := newClassClaim()
+	claim.Spec.IPFamily = ""
+
+	var admitted ipam.IPClaimSpec
+	validate := func(_ context.Context, obj runtime.Object) error {
+		admitted = obj.(*ipam.IPClaim).Spec
+		return nil
+	}
+
+	obj, err := r.Create(claimCtx(testProject), claim, validate, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if admitted.IPFamily != ipam.IPv4 || admitted.ClassName != "standard" {
+		t.Errorf("admission saw className %q ipFamily %q, want standard and IPv4", admitted.ClassName, admitted.IPFamily)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.IPFamily; got != ipam.IPv4 {
+		t.Errorf("stored ipFamily = %q, want %q", got, ipam.IPv4)
+	}
+}
+
+func TestCreateRefusesAFamilyMismatchBeforeAdmission(t *testing.T) {
+	r, db := newPostgresREST(t)
+	claim := newClassClaim()
+	claim.Spec.IPFamily = ipam.IPv6
+
+	admitted := false
+	validate := func(context.Context, runtime.Object) error {
+		admitted = true
+		return nil
+	}
+
+	_, err := r.Create(claimCtx(testProject), claim, validate, &metav1.CreateOptions{})
+	if !apierrors.IsBadRequest(err) {
+		t.Fatalf("Create returned %v, want a bad request", err)
+	}
+	if admitted {
+		t.Error("a mismatched claim reached admission")
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_objects WHERE kind = 'IPClaim'`); n != 0 {
+		t.Errorf("refused claim left %d rows, want 0", n)
+	}
+}
