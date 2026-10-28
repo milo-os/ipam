@@ -15,6 +15,13 @@ spec:
         outstanding allocation request or reservation against an IPAM pool.
       kind: Gauge
       unit: "1"
+    - name: ipam.miloapis.com/public-ipv4claims
+      displayName: Public IPv4 Claims
+      description: >-
+        Number of public IPv4 IPClaim objects a project holds. Each counts once
+        against this metric in addition to the IP Claims metric.
+      kind: Gauge
+      unit: "1"
     - name: ipam.miloapis.com/ippools
       displayName: IP Pools
       description: >-
@@ -32,6 +39,14 @@ spec:
         unit: "1/{project}"
         defaultLimit: 100
         maxLimit: 10000
+      - name: public-ipv4claims-per-project
+        metric: ipam.miloapis.com/public-ipv4claims
+        consumerType:
+          apiGroup: resourcemanager.miloapis.com
+          kind: Project
+        unit: "1/{project}"
+        defaultLimit: 2
+        maxLimit: 256
       - name: ippools-per-project
         metric: ipam.miloapis.com/ippools
         consumerType:
@@ -46,6 +61,9 @@ spec:
           kind: IPClaim
         metricCosts:
           ipam.miloapis.com/ipclaims: 1
+          ipam.miloapis.com/public-ipv4claims: 1
+        metricCostConditions:
+          ipam.miloapis.com/public-ipv4claims: "has(trigger.spec.ipFamily) && trigger.spec.ipFamily == 'IPv4' && has(trigger.spec.addressScope) && trigger.spec.addressScope == 'Public'"
       - selector:
           apiGroup: ipam.miloapis.com
           kind: IPPool
