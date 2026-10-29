@@ -286,7 +286,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		failSpan(tracing.ReasonPoolNotFound)
 		return nil, ipamerrors.New(ipamerrors.ReasonFamilyMismatch, fmt.Sprintf(
 			"spec.ipFamily is %s but class %q hands out %s",
-			claim.Spec.IPFamily, class.Name, class.Spec.IPFamily))
+			claim.Spec.IPFamily, class.LocalName, class.Spec.IPFamily))
 	}
 
 	// Default the class the same way a PersistentVolumeClaim is defaulted to
@@ -294,7 +294,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// object and the create response both name the class this resolved to
 	// rather than leaving the choice implicit. spec.className is immutable, so
 	// what is written here is what the claim allocated under, for good.
-	claim.Spec.ClassName = class.Name
+	claim.Spec.ClassName = class.LocalName
 
 	if claim.Spec.Target == ipam.TargetScopeRange {
 		// The chain is provisioned outside this transaction, level by level,

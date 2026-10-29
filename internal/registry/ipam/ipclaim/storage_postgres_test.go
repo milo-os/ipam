@@ -347,3 +347,85 @@ func TestCreateAcceptsAFamilyThatAgreesWithTheClass(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 }
+
+// seedReference adds a class named name to project that points at the seeded
+// "standard" definition in testProject, optionally as the project's default.
+func seedReference(t *testing.T, db *pgxpool.Pool, project, name string, isDefault bool) {
+	t.Helper()
+	class := &ipamv1alpha1.IPClass{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "ipam.miloapis.com/v1alpha1", Kind: "IPClass"},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: ipamv1alpha1.IPClassSpec{
+			Source: &ipamv1alpha1.ClassSourceRef{Project: testProject, Name: "standard"},
+		},
+	}
+	if isDefault {
+		class.Annotations = map[string]string{ipamv1alpha1.IsDefaultClassAnnotation: "true"}
+	}
+	data, err := json.Marshal(class)
+	if err != nil {
+		t.Fatalf("marshal reference: %v", err)
+	}
+	if _, err := db.Exec(context.Background(),
+		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ($1,'IPClass',$2,$3)`,
+		tenant.Identity{Name: project}.ResourceKey("ipclasses", name), name, data); err != nil {
+		t.Fatalf("seed reference in %s: %v", project, err)
+	}
+}
+
+func storedClassName(t *testing.T, db *pgxpool.Pool, claim string) string {
+	t.Helper()
+	var stored string
+	if err := db.QueryRow(context.Background(),
+		`SELECT ipam_data_to_jsonb(data)->'spec'->>'className' FROM ipam_objects
+		  WHERE kind='IPClaim' AND name=$1`, claim).Scan(&stored); err != nil {
+		t.Fatalf("read stored claim: %v", err)
+	}
+	return stored
+}
+
+// A claim that reaches a class through a reference keeps the reference's name.
+// The definition's name belongs to the source project: in the claim's own
+// project it names nothing, or another class, and spec.className is immutable.
+func TestCreateKeepsTheReferenceNameAClaimNamed(t *testing.T) {
+	r, db := newPostgresREST(t)
+	const consumer = "consumer-project"
+	seedReference(t, db, consumer, "shared", false)
+
+	claim := &ipam.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "through-reference", Namespace: "default"},
+		Spec:       ipam.IPClaimSpec{ClassName: "shared"},
+	}
+	obj, err := r.Create(claimCtx(consumer), claim, nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.ClassName; got != "shared" {
+		t.Errorf("returned spec.className = %q, want shared", got)
+	}
+	if got := storedClassName(t, db, "through-reference"); got != "shared" {
+		t.Errorf("stored spec.className = %q, want shared", got)
+	}
+}
+
+// The same when the reference is the consumer project's default for the family.
+func TestCreateDefaultsTheReferenceNameIntoSpec(t *testing.T) {
+	r, db := newPostgresREST(t)
+	const consumer = "consumer-project"
+	seedReference(t, db, consumer, "shared", true)
+
+	claim := &ipam.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "default-reference", Namespace: "default"},
+		Spec:       ipam.IPClaimSpec{IPFamily: ipam.IPv4},
+	}
+	obj, err := r.Create(claimCtx(consumer), claim, nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.ClassName; got != "shared" {
+		t.Errorf("returned spec.className = %q, want shared", got)
+	}
+	if got := storedClassName(t, db, "default-reference"); got != "shared" {
+		t.Errorf("stored spec.className = %q, want shared", got)
+	}
+}
