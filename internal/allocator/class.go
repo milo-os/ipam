@@ -51,6 +51,11 @@ type ResolvedClass struct {
 	// the consumer here would merge two same-named classes in two defining
 	// projects onto one ipam_pool_identity row.
 	Project string
+
+	// LocalName is the name the caller looked up in its own project. It differs
+	// from the definition's Name when that lookup went through a reference, and
+	// it is the only name that resolves again from the caller's project.
+	LocalName string
 }
 
 func classStorageKey(project, name string) string {
@@ -105,7 +110,7 @@ func resolveClassIn(ctx context.Context, tx pgx.Tx, project, name string) (*Reso
 		return nil, err
 	}
 	if class.Spec.Source == nil {
-		return &ResolvedClass{IPClass: class, Project: project}, nil
+		return &ResolvedClass{IPClass: class, Project: project, LocalName: name}, nil
 	}
 
 	src := *class.Spec.Source
@@ -117,7 +122,7 @@ func resolveClassIn(ctx context.Context, tx pgx.Tx, project, name string) (*Reso
 		return nil, fmt.Errorf("%w: %q in project %q names %q in project %q",
 			ErrChainedReference, name, project, src.Name, src.Project)
 	}
-	return &ResolvedClass{IPClass: target, Project: src.Project}, nil
+	return &ResolvedClass{IPClass: target, Project: src.Project, LocalName: name}, nil
 }
 
 // LoadClass reads the class a caller named, from the caller's own project.

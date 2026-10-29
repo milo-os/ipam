@@ -266,3 +266,166 @@ func TestCreatingTheSameClaimNameTwiceConflicts(t *testing.T) {
 		t.Errorf("conflict message does not name the claim: %v", err)
 	}
 }
+
+// markClassDefault annotates the seeded class as the default for its family, so
+// a claim naming only a family resolves to it.
+func markClassDefault(t *testing.T, db *pgxpool.Pool) {
+	t.Helper()
+	key := tenant.Identity{Name: testProject}.ResourceKey("ipclasses", "standard")
+	if _, err := db.Exec(context.Background(),
+		`UPDATE ipam_objects
+		    SET data = convert_to(jsonb_set(ipam_data_to_jsonb(data), '{metadata,annotations}', $2::jsonb)::text, 'UTF8')
+		  WHERE key = $1`,
+		key, `{"`+ipamv1alpha1.IsDefaultClassAnnotation+`":"true"}`); err != nil {
+		t.Fatalf("mark class default: %v", err)
+	}
+}
+
+// A claim that names only a family is resolved against the default class, and
+// the class it resolved to is written into the claim. Leaving it implicit meant
+// the object never recorded what it allocated under: the default for a family
+// can be repointed, so the answer is not recoverable afterwards.
+func TestCreateDefaultsTheResolvedClassIntoSpec(t *testing.T) {
+	r, db := newPostgresREST(t)
+	markClassDefault(t, db)
+
+	claim := &ipam.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "family-only", Namespace: "default"},
+		Spec:       ipam.IPClaimSpec{IPFamily: ipam.IPv4},
+	}
+	obj, err := r.Create(claimCtx(testProject), claim, nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.ClassName; got != "standard" {
+		t.Errorf("returned spec.className = %q, want the class it resolved to", got)
+	}
+
+	var stored string
+	if err := db.QueryRow(context.Background(),
+		`SELECT ipam_data_to_jsonb(data)->'spec'->>'className' FROM ipam_objects
+		  WHERE kind='IPClaim' AND name='family-only'`).Scan(&stored); err != nil {
+		t.Fatalf("read stored claim: %v", err)
+	}
+	if stored != "standard" {
+		t.Errorf("stored spec.className = %q, want standard: the choice must outlive the request", stored)
+	}
+}
+
+// A claim may state a family as a selector, but not as a second opinion about a
+// class it names. This used to be ignored: the claim asked for IPv4, the IPv6
+// class answered, and nothing said so.
+func TestCreateRefusesAFamilyTheClassDoesNotHandOut(t *testing.T) {
+	r, _ := newPostgresREST(t)
+
+	claim := &ipam.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "mismatched", Namespace: "default"},
+		Spec:       ipam.IPClaimSpec{ClassName: "standard", IPFamily: ipam.IPv6},
+	}
+	_, err := r.Create(claimCtx(testProject), claim, nil, &metav1.CreateOptions{})
+	if err == nil {
+		t.Fatal("Create succeeded; a claim asking for IPv6 from an IPv4 class must be refused")
+	}
+	if !apierrors.IsBadRequest(err) {
+		t.Errorf("error = %v, want a bad request", err)
+	}
+	if !strings.Contains(err.Error(), "IPv6") || !strings.Contains(err.Error(), "standard") {
+		t.Errorf("error %q should name both the family asked for and the class", err)
+	}
+}
+
+// Agreeing is fine, and has to stay fine: the fabric-identity controller sets
+// both fields on every claim it files.
+func TestCreateAcceptsAFamilyThatAgreesWithTheClass(t *testing.T) {
+	r, _ := newPostgresREST(t)
+
+	claim := &ipam.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "agreeing", Namespace: "default"},
+		Spec:       ipam.IPClaimSpec{ClassName: "standard", IPFamily: ipam.IPv4},
+	}
+	if _, err := r.Create(claimCtx(testProject), claim, nil, &metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+}
+
+// seedReference adds a class named name to project that points at the seeded
+// "standard" definition in testProject, optionally as the project's default.
+func seedReference(t *testing.T, db *pgxpool.Pool, project, name string, isDefault bool) {
+	t.Helper()
+	class := &ipamv1alpha1.IPClass{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "ipam.miloapis.com/v1alpha1", Kind: "IPClass"},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: ipamv1alpha1.IPClassSpec{
+			Source: &ipamv1alpha1.ClassSourceRef{Project: testProject, Name: "standard"},
+		},
+	}
+	if isDefault {
+		class.Annotations = map[string]string{ipamv1alpha1.IsDefaultClassAnnotation: "true"}
+	}
+	data, err := json.Marshal(class)
+	if err != nil {
+		t.Fatalf("marshal reference: %v", err)
+	}
+	if _, err := db.Exec(context.Background(),
+		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ($1,'IPClass',$2,$3)`,
+		tenant.Identity{Name: project}.ResourceKey("ipclasses", name), name, data); err != nil {
+		t.Fatalf("seed reference in %s: %v", project, err)
+	}
+}
+
+func storedClassName(t *testing.T, db *pgxpool.Pool, claim string) string {
+	t.Helper()
+	var stored string
+	if err := db.QueryRow(context.Background(),
+		`SELECT ipam_data_to_jsonb(data)->'spec'->>'className' FROM ipam_objects
+		  WHERE kind='IPClaim' AND name=$1`, claim).Scan(&stored); err != nil {
+		t.Fatalf("read stored claim: %v", err)
+	}
+	return stored
+}
+
+// A claim that reaches a class through a reference keeps the reference's name.
+// The definition's name belongs to the source project: in the claim's own
+// project it names nothing, or another class, and spec.className is immutable.
+func TestCreateKeepsTheReferenceNameAClaimNamed(t *testing.T) {
+	r, db := newPostgresREST(t)
+	const consumer = "consumer-project"
+	seedReference(t, db, consumer, "shared", false)
+
+	claim := &ipam.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "through-reference", Namespace: "default"},
+		Spec:       ipam.IPClaimSpec{ClassName: "shared"},
+	}
+	obj, err := r.Create(claimCtx(consumer), claim, nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.ClassName; got != "shared" {
+		t.Errorf("returned spec.className = %q, want shared", got)
+	}
+	if got := storedClassName(t, db, "through-reference"); got != "shared" {
+		t.Errorf("stored spec.className = %q, want shared", got)
+	}
+}
+
+// The same when the reference is the consumer project's default for the family.
+func TestCreateDefaultsTheReferenceNameIntoSpec(t *testing.T) {
+	r, db := newPostgresREST(t)
+	const consumer = "consumer-project"
+	seedReference(t, db, consumer, "shared", true)
+
+	claim := &ipam.IPClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "default-reference", Namespace: "default"},
+		Spec:       ipam.IPClaimSpec{IPFamily: ipam.IPv4},
+	}
+	obj, err := r.Create(claimCtx(consumer), claim, nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.ClassName; got != "shared" {
+		t.Errorf("returned spec.className = %q, want shared", got)
+	}
+	if got := storedClassName(t, db, "default-reference"); got != "shared" {
+		t.Errorf("stored spec.className = %q, want shared", got)
+	}
+}
