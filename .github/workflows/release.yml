@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   validate-kustomize:
-    uses: datum-cloud/actions/.github/workflows/validate-kustomize.yaml@v1.14.0
+    uses: datum-cloud/actions/.github/workflows/validate-kustomize.yaml@v1.24.0
 
   publish-container-image:
     needs:
@@ -25,7 +25,7 @@ jobs:
       contents: read
       packages: write
       attestations: write
-    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.14.0
+    uses: datum-cloud/actions/.github/workflows/publish-docker.yaml@v1.24.0
     with:
       image-name: ipam
       registry-organization: milo-os
@@ -40,7 +40,7 @@ jobs:
       id-token: write
       contents: read
       packages: write
-    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.14.0
+    uses: datum-cloud/actions/.github/workflows/publish-kustomize-bundle.yaml@v1.24.0
     with:
       bundle-name: ghcr.io/milo-os/ipam-kustomize
       bundle-path: config
@@ -116,7 +116,7 @@ jobs:
           repositories: cli-plugins
 
       - name: Open the catalog PR
-        uses: datum-cloud/actions/update-plugin-index@v1.18.0
+        uses: datum-cloud/actions/update-plugin-index@v1.24.0
         with:
           index-repo: milo-os/cli-plugins
           plugin-name: ipam
