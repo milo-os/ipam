@@ -13,7 +13,8 @@ and order-insensitive within an overlay (with a few documented exceptions).
 | `postgres-migrations`    | Job + ConfigMap that applies `migrations/*.sql`                          |
 | `observability`          | `ServiceMonitor` + `GrafanaDashboard` resources                          |
 | `k6-performance-tests`   | k6 SA/RBAC + `TestRun` resources for the perf suite                      |
-| `service-catalog`        | `Service` + `ServiceConfiguration` registering IPAM (incl. IPClaim, public IPv4 IPClaim, and IPPool quota) on the Milo control plane |
+| `service-catalog`        | `Service` + `ServiceConfiguration` registering IPAM (incl. IPClaim quota) on the Milo control plane |
+| `service-catalog-public-ipv4` | `service-catalog` plus a per-project public IPv4 IPClaim limit; needs a Milo and service catalog that honour metric cost conditions |
 
 Order matters when:
 - `cert-manager-ca` must precede the deployment so its CSI volume can mount.
