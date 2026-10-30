@@ -10,6 +10,14 @@ const (
 	IPv6 IPFamily = "IPv6"
 )
 
+// AddressScope says whether addresses are publicly routable or private.
+type AddressScope string
+
+const (
+	AddressScopePublic  AddressScope = "Public"
+	AddressScopePrivate AddressScope = "Private"
+)
+
 // Strategy selects how a free sub-block is chosen.
 // PoolSelectionStrategy chooses WHICH POOL serves a claim (set on IPClass).
 // AllocationStrategy chooses which free block is taken from inside it (set on
@@ -214,6 +222,11 @@ type IPClassSpec struct {
 	// IPFamily is the single address family this class hands out. Required and
 	// immutable. Dual-stack is two classes, never one.
 	IPFamily IPFamily
+
+	// AddressScope says whether this class hands out publicly routable or
+	// private addresses. Empty states neither. May be set once on a class that
+	// has none; immutable after that.
+	AddressScope AddressScope
 
 	// ParentClassName is the class whose allocations this one carves from.
 	// Empty means allocations come from the pools offering this class directly.
@@ -503,6 +516,10 @@ type IPClaimSpec struct {
 	// IPFamily selects the default class when ClassName is empty. It is
 	// ignored — and must agree, if set — when ClassName names a class.
 	IPFamily IPFamily
+
+	// AddressScope is copied from the class on create. It must agree, if set,
+	// with the class the claim resolves to. Immutable.
+	AddressScope AddressScope
 
 	// Address names a specific address to bind. Omitted, the allocator chooses.
 	Address string

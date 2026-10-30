@@ -22,6 +22,7 @@ IPv6 are never mixed.
 
 ```go
 IPFamily        = IPv4 | IPv6
+AddressScope    = Public | Private
 Strategy        = FirstFit | BestFit | LeastUtilized
 ReclaimPolicy   = Delete | Retain
 ClaimPhase      = Pending | Bound | Releasing | Error
@@ -69,6 +70,7 @@ The claim's CREATE response body contains the allocated CIDR.
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `spec.ipFamily` | IPFamily | yes | Address family to allocate. |
+| `spec.addressScope` | AddressScope | no | Copied from the claim's class on create; if set, must agree with the class. Immutable. |
 | `spec.prefixLength` | int (0–128) | yes | Requested sub-prefix size; must be valid for the family and within the pool's min/max. |
 | `spec.poolRef` | NamespacedRef | one of | Pin to a specific pool (optionally in another project via `projectRef`). |
 | `spec.poolSelector` | PoolSelector | one of | Pick a pool by labels (optionally scoped by `projectRef`). |

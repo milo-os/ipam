@@ -429,3 +429,141 @@ func TestCreateDefaultsTheReferenceNameIntoSpec(t *testing.T) {
 		t.Errorf("stored spec.className = %q, want shared", got)
 	}
 }
+
+func TestCreateFillsTheClassAndFamilyBeforeAdmission(t *testing.T) {
+	r, _ := newPostgresREST(t)
+	claim := newClassClaim()
+	claim.Spec.IPFamily = ""
+
+	var admitted ipam.IPClaimSpec
+	validate := func(_ context.Context, obj runtime.Object) error {
+		admitted = obj.(*ipam.IPClaim).Spec
+		return nil
+	}
+
+	obj, err := r.Create(claimCtx(testProject), claim, validate, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if admitted.IPFamily != ipam.IPv4 || admitted.ClassName != "standard" {
+		t.Errorf("admission saw className %q ipFamily %q, want standard and IPv4", admitted.ClassName, admitted.IPFamily)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.IPFamily; got != ipam.IPv4 {
+		t.Errorf("stored ipFamily = %q, want %q", got, ipam.IPv4)
+	}
+}
+
+func TestCreateRefusesAFamilyMismatchBeforeAdmission(t *testing.T) {
+	r, db := newPostgresREST(t)
+	claim := newClassClaim()
+	claim.Spec.IPFamily = ipam.IPv6
+
+	admitted := false
+	validate := func(context.Context, runtime.Object) error {
+		admitted = true
+		return nil
+	}
+
+	_, err := r.Create(claimCtx(testProject), claim, validate, &metav1.CreateOptions{})
+	if !apierrors.IsBadRequest(err) {
+		t.Fatalf("Create returned %v, want a bad request", err)
+	}
+	if admitted {
+		t.Error("a mismatched claim reached admission")
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_objects WHERE kind = 'IPClaim'`); n != 0 {
+		t.Errorf("refused claim left %d rows, want 0", n)
+	}
+}
+
+func markStandardClassScope(t *testing.T, db *pgxpool.Pool, s ipamv1alpha1.AddressScope) {
+	t.Helper()
+	class := &ipamv1alpha1.IPClass{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "ipam.miloapis.com/v1alpha1", Kind: "IPClass"},
+		ObjectMeta: metav1.ObjectMeta{Name: "standard"},
+		Spec: ipamv1alpha1.IPClassSpec{
+			IPFamily: ipamv1alpha1.IPv4, AddressScope: s, DefaultPrefixLength: 24,
+		},
+	}
+	data, err := json.Marshal(class)
+	if err != nil {
+		t.Fatalf("marshal class: %v", err)
+	}
+	if _, err := db.Exec(context.Background(),
+		`UPDATE ipam_objects SET data = $2 WHERE key = $1`,
+		tenant.Identity{Name: testProject}.ResourceKey("ipclasses", "standard"), data); err != nil {
+		t.Fatalf("update class: %v", err)
+	}
+}
+
+func TestCreateCopiesTheAddressScopeFromTheClassBeforeAdmission(t *testing.T) {
+	r, db := newPostgresREST(t)
+	markStandardClassScope(t, db, ipamv1alpha1.AddressScopePublic)
+	claim := newClassClaim()
+	claim.Spec.IPFamily = ""
+
+	var admitted ipam.AddressScope
+	validate := func(_ context.Context, obj runtime.Object) error {
+		admitted = obj.(*ipam.IPClaim).Spec.AddressScope
+		return nil
+	}
+
+	obj, err := r.Create(claimCtx(testProject), claim, validate, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if admitted != ipam.AddressScopePublic {
+		t.Errorf("admission saw addressScope %q, want %q", admitted, ipam.AddressScopePublic)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.AddressScope; got != ipam.AddressScopePublic {
+		t.Errorf("stored addressScope = %q, want %q", got, ipam.AddressScopePublic)
+	}
+}
+
+func TestCreateRefusesAnAddressScopeThatContradictsTheClass(t *testing.T) {
+	r, db := newPostgresREST(t)
+	markStandardClassScope(t, db, ipamv1alpha1.AddressScopePrivate)
+	claim := newClassClaim()
+	claim.Spec.AddressScope = ipam.AddressScopePublic
+
+	admitted := false
+	validate := func(context.Context, runtime.Object) error {
+		admitted = true
+		return nil
+	}
+
+	_, err := r.Create(claimCtx(testProject), claim, validate, &metav1.CreateOptions{})
+	if !apierrors.IsBadRequest(err) {
+		t.Fatalf("Create returned %v, want a bad request", err)
+	}
+	if !strings.Contains(err.Error(), "Public") || !strings.Contains(err.Error(), "standard") {
+		t.Errorf("error %q should name both the scope asked for and the class", err)
+	}
+	if admitted {
+		t.Error("a contradicted claim reached admission")
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_objects WHERE kind = 'IPClaim'`); n != 0 {
+		t.Errorf("refused claim left %d rows, want 0", n)
+	}
+}
+
+func TestCreateLeavesTheAddressScopeEmptyWhenTheClassStatesNone(t *testing.T) {
+	r, _ := newPostgresREST(t)
+
+	var admitted ipam.AddressScope = "unset"
+	validate := func(_ context.Context, obj runtime.Object) error {
+		admitted = obj.(*ipam.IPClaim).Spec.AddressScope
+		return nil
+	}
+
+	obj, err := r.Create(claimCtx(testProject), newClassClaim(), validate, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if admitted != "" {
+		t.Errorf("admission saw addressScope %q, want empty", admitted)
+	}
+	if got := obj.(*ipam.IPClaim).Spec.AddressScope; got != "" {
+		t.Errorf("stored addressScope = %q, want empty", got)
+	}
+}

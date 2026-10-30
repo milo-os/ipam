@@ -218,33 +218,9 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 		return nil, err
 	}
-	if createValidation != nil {
-		if err := createValidation(ctx, claim.DeepCopyObject()); err != nil {
-			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-			return nil, err
-		}
-	}
-
-	// Before any capacity is reserved: a namespace that is gone, or going,
-	// never releases what is bound into it.
-	if err := r.checkNamespaceLiveness(ctx, project, claim.Namespace); err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "namespace_not_live", ipFamily, project, org)
-		failSpan(tracing.ReasonNamespaceNotLive)
-		return nil, err
-	}
-
 	if claim.Spec.ClassName == "" && claim.Spec.IPFamily == "" {
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 		return nil, apierrors.NewBadRequest("spec.className or spec.ipFamily is required")
-	}
-
-	// Overwrite any client-supplied ownerRef. The requestheader CA guarantees
-	// the Extra headers carrying the tenant identity, so that identity is the
-	// source of truth for who this claim is for.
-	claim.Spec.OwnerRef = &ipam.ObjectRef{
-		APIGroup: id.APIGroup,
-		Kind:     id.Kind,
-		Name:     id.Name,
 	}
 
 	tx, err := r.db.Begin(ctx)
@@ -259,8 +235,8 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// then finds the pool that project offers. Cross-project sharing is the
 	// reference, so there is no separate cross-project path here.
 	class, err := allocator.ResolveClass(ctx, tx, claim.Spec.ClassName, v1alpha1.IPFamily(claim.Spec.IPFamily))
+	_ = tx.Rollback(ctx)
 	if err != nil {
-		_ = tx.Rollback(ctx)
 		metrics.RecordAllocationFailure("ipclaim", "class_not_found", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
 		switch {
@@ -281,12 +257,18 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// about the class a claim names. Silently ignoring a disagreement let a
 	// claim ask for IPv4 from an IPv6 class and get IPv6 back with no error.
 	if claim.Spec.IPFamily != "" && string(claim.Spec.IPFamily) != string(class.Spec.IPFamily) {
-		_ = tx.Rollback(ctx)
 		metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
 		return nil, ipamerrors.New(ipamerrors.ReasonFamilyMismatch, fmt.Sprintf(
 			"spec.ipFamily is %s but class %q hands out %s",
 			claim.Spec.IPFamily, class.LocalName, class.Spec.IPFamily))
+	}
+	if claim.Spec.AddressScope != "" && string(claim.Spec.AddressScope) != string(class.Spec.AddressScope) {
+		metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
+		failSpan(tracing.ReasonPoolNotFound)
+		return nil, ipamerrors.New(ipamerrors.ReasonAddressScopeMismatch, fmt.Sprintf(
+			"spec.addressScope is %s but class %q has addressScope %q",
+			claim.Spec.AddressScope, class.Name, class.Spec.AddressScope))
 	}
 
 	// Default the class the same way a PersistentVolumeClaim is defaulted to
@@ -295,11 +277,38 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// rather than leaving the choice implicit. spec.className is immutable, so
 	// what is written here is what the claim allocated under, for good.
 	claim.Spec.ClassName = class.LocalName
+	claim.Spec.IPFamily = ipam.IPFamily(class.Spec.IPFamily)
+	claim.Spec.AddressScope = ipam.AddressScope(class.Spec.AddressScope)
+	ipFamily = string(claim.Spec.IPFamily)
+	span.SetAttributes(attribute.String(tracing.AttrClaimIPFamily, ipFamily))
+
+	if createValidation != nil {
+		if err := createValidation(ctx, claim.DeepCopyObject()); err != nil {
+			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
+			return nil, err
+		}
+	}
+
+	// Before any capacity is reserved: a namespace that is gone, or going,
+	// never releases what is bound into it.
+	if err := r.checkNamespaceLiveness(ctx, project, claim.Namespace); err != nil {
+		metrics.RecordAllocationFailure("ipclaim", "namespace_not_live", ipFamily, project, org)
+		failSpan(tracing.ReasonNamespaceNotLive)
+		return nil, err
+	}
+
+	// Overwrite any client-supplied ownerRef. The requestheader CA guarantees
+	// the Extra headers carrying the tenant identity, so that identity is the
+	// source of truth for who this claim is for.
+	claim.Spec.OwnerRef = &ipam.ObjectRef{
+		APIGroup: id.APIGroup,
+		Kind:     id.Kind,
+		Name:     id.Name,
+	}
 
 	if claim.Spec.Target == ipam.TargetScopeRange {
-		// The chain is provisioned outside this transaction, level by level,
-		// exactly as it is for a block claim — so this one is released first.
-		_ = tx.Rollback(ctx)
+		// The chain is provisioned outside any transaction, level by level,
+		// exactly as it is for a block claim.
 		obj, outcome, err := r.createScopeRange(ctx, span, claim, class, id, dryRun)
 		result = outcome
 		if err != nil {
@@ -312,7 +321,6 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 
 	prefixLen, err := allocator.EffectivePrefixLength(class.IPClass, claim.Spec.PrefixLength)
 	if err != nil {
-		_ = tx.Rollback(ctx)
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 		return nil, ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error())
 	}
@@ -326,7 +334,6 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// nothing to explain it.
 	uniqueScope, scopeDigest, err := scope.ProjectAddressSpaceDigest(id.Name, claim.Spec.Scope, class.Spec.UniqueWithin, "uniqueWithin")
 	if err != nil {
-		_ = tx.Rollback(ctx)
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 		var missing *scope.MissingRoleError
 		if errors.As(err, &missing) {
@@ -338,9 +345,8 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// Resolving the pool provisions any missing level of the class's chain, and
 	// each level commits on its own — so it runs BEFORE the allocation
 	// transaction opens, not inside it. A pool is durable infrastructure that
-	// outlives the claim that caused it; holding this transaction across the
+	// outlives the claim that caused it; holding a transaction across the
 	// chain would make a herd of first claims serialise behind the slowest.
-	_ = tx.Rollback(ctx)
 	poolKey, err := allocator.ResolvePool(ctx, r.db, class, claim.Spec.Scope)
 	if err != nil {
 		metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)

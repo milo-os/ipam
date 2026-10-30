@@ -1,0 +1,47 @@
+# The service catalog registration plus a per-project public IPv4 claim limit.
+#
+# The limit charges only IPv4 claims from a public class, through a metric cost
+# condition. A Milo older than milo-os/milo#940 drops that condition and charges
+# every IPClaim, so an environment selects this path in place of
+# ../service-catalog only once its Milo and service catalog carry conditions.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+components:
+  - ../service-catalog
+
+patches:
+  - target:
+      group: services.miloapis.com
+      version: v1alpha1
+      kind: ServiceConfiguration
+      name: ipam-miloapis-com
+    patch: |-
+      - op: add
+        path: /spec/metrics/-
+        value:
+          name: ipam.miloapis.com/public-ipv4claims
+          displayName: Public IPv4 Claims
+          description: >-
+            Number of public IPv4 IPClaim objects a project holds. Each counts
+            once against this metric in addition to the IP Claims metric.
+          kind: Gauge
+          unit: "1"
+      - op: add
+        path: /spec/quota/limits/-
+        value:
+          name: public-ipv4claims-per-project
+          metric: ipam.miloapis.com/public-ipv4claims
+          consumerType:
+            apiGroup: resourcemanager.miloapis.com
+            kind: Project
+          unit: "1/{project}"
+          defaultLimit: 2
+          maxLimit: 256
+      - op: add
+        path: /spec/quota/metricRules/0/metricCosts/ipam.miloapis.com~1public-ipv4claims
+        value: 1
+      - op: add
+        path: /spec/quota/metricRules/0/metricCostConditions
+        value:
+          ipam.miloapis.com/public-ipv4claims: "has(trigger.spec.ipFamily) && trigger.spec.ipFamily == 'IPv4' && has(trigger.spec.addressScope) && trigger.spec.addressScope == 'Public'"

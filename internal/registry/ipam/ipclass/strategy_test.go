@@ -42,6 +42,7 @@ func TestAReferenceStatesNoPolicyOfItsOwn(t *testing.T) {
 		mutate func(*ipam.IPClass)
 	}{
 		{"ipFamily", func(c *ipam.IPClass) { c.Spec.IPFamily = ipam.IPv6 }},
+		{"addressScope", func(c *ipam.IPClass) { c.Spec.AddressScope = ipam.AddressScopePublic }},
 		{"parentClassName", func(c *ipam.IPClass) { c.Spec.ParentClassName = "backbone" }},
 		{"poolPer", func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"location"} }},
 		{"uniqueWithin", func(c *ipam.IPClass) { c.Spec.UniqueWithin = []string{"network"} }},
@@ -371,5 +372,59 @@ func TestTheSharedPoolWarningIsNotRepeatedOnUpdate(t *testing.T) {
 	c := definition("public-ipv4-location", func(c *ipam.IPClass) { c.Spec.PoolPer = []string{"location"} })
 	if w := (ipClassStrategy{}).WarningsOnUpdate(context.Background(), c, c); len(w) != 0 {
 		t.Errorf("update warned: %v", w)
+	}
+}
+
+func TestAClassAddressScopeMustBeKnown(t *testing.T) {
+	for _, tc := range []struct {
+		scope ipam.AddressScope
+		valid bool
+	}{
+		{"", true},
+		{ipam.AddressScopePublic, true},
+		{ipam.AddressScopePrivate, true},
+		{"Internet", false},
+	} {
+		t.Run(string(tc.scope), func(t *testing.T) {
+			errs := validateIPClass(definition("standard", func(c *ipam.IPClass) { c.Spec.AddressScope = tc.scope }))
+			if tc.valid && len(errs) != 0 {
+				t.Fatalf("addressScope %q rejected: %v", tc.scope, errs)
+			}
+			if !tc.valid && (len(errs) == 0 || errs[0].Field != "spec.addressScope") {
+				t.Fatalf("errors = %v, want one on spec.addressScope", errs)
+			}
+		})
+	}
+}
+
+func TestAClassAddressScopeCanBeSetOnceOnly(t *testing.T) {
+	strategy := ipClassStrategy{}
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name     string
+		from, to ipam.AddressScope
+		allowed  bool
+	}{
+		{"unset to Public", "", ipam.AddressScopePublic, true},
+		{"unset to Private", "", ipam.AddressScopePrivate, true},
+		{"Public to Private", ipam.AddressScopePublic, ipam.AddressScopePrivate, false},
+		{"Public to unset", ipam.AddressScopePublic, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := definition("standard", func(c *ipam.IPClass) { c.Spec.AddressScope = tc.from })
+			updated := old.DeepCopy()
+			updated.Spec.AddressScope = tc.to
+
+			var forbidden bool
+			for _, e := range strategy.ValidateUpdate(ctx, updated, old) {
+				if e.Field == "spec.addressScope" {
+					forbidden = true
+				}
+			}
+			if forbidden == tc.allowed {
+				t.Fatalf("%s: forbidden = %v, want allowed = %v", tc.name, forbidden, tc.allowed)
+			}
+		})
 	}
 }

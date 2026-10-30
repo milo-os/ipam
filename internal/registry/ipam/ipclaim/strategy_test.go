@@ -1,6 +1,7 @@
 package ipclaim
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -138,4 +139,40 @@ func TestValidatePrefixLengthDoesNotAssumeIPv4(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAClaimAddressScopeMustBeKnown(t *testing.T) {
+	for _, tc := range []struct {
+		scope ipam.AddressScope
+		valid bool
+	}{
+		{"", true},
+		{ipam.AddressScopePublic, true},
+		{ipam.AddressScopePrivate, true},
+		{"Internet", false},
+	} {
+		t.Run(string(tc.scope), func(t *testing.T) {
+			errs := validateIPClaim(claim(func(c *ipam.IPClaim) { c.Spec.AddressScope = tc.scope }))
+			if tc.valid && len(errs) != 0 {
+				t.Fatalf("addressScope %q rejected: %v", tc.scope, errs)
+			}
+			if !tc.valid && (len(errs) == 0 || errs[0].Field != "spec.addressScope") {
+				t.Fatalf("errors = %v, want one on spec.addressScope", errs)
+			}
+		})
+	}
+}
+
+func TestAClaimAddressScopeIsImmutable(t *testing.T) {
+	old := claim(func(c *ipam.IPClaim) { c.Spec.AddressScope = ipam.AddressScopePublic })
+	updated := old.DeepCopy()
+	updated.Spec.AddressScope = ipam.AddressScopePrivate
+
+	errs := NewStrategy(nil).ValidateUpdate(context.Background(), updated, old)
+	for _, e := range errs {
+		if e.Field == "spec.addressScope" {
+			return
+		}
+	}
+	t.Fatalf("errors = %v, want one forbidding spec.addressScope", errs)
 }

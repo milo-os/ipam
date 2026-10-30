@@ -67,6 +67,10 @@ const (
 	// when no class is named; it never overrides one that is.
 	ReasonFamilyMismatch Reason = "FamilyMismatch"
 
+	// ReasonAddressScopeMismatch reports that the claim stated an address scope
+	// the class it resolved to does not carry.
+	ReasonAddressScopeMismatch Reason = "AddressScopeMismatch"
+
 	// ReasonScopeRolesMissing reports that the claim's scope did not carry
 	// roles the class requires. MissingScopeRoles names them.
 	ReasonScopeRolesMissing Reason = "ScopeRolesMissing"
@@ -231,6 +235,7 @@ var knownReasons = map[Reason]bool{
 	ReasonNoOfferingPool:       true,
 	ReasonPrefixLengthRejected: true,
 	ReasonFamilyMismatch:       true,
+	ReasonAddressScopeMismatch: true,
 	ReasonScopeRolesMissing:    true,
 	ReasonAllocationRetained:   true,
 	ReasonClaimExists:          true,
