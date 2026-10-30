@@ -4,6 +4,8 @@
 # condition. A Milo older than milo-os/milo#940 drops that condition and charges
 # every IPClaim, so an environment selects this path in place of
 # ../service-catalog only once its Milo and service catalog carry conditions.
+# IPAM also embeds Milo quota admission: its go.mod dependency must include
+# that change. Upgrading the standalone Milo server alone is insufficient.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 

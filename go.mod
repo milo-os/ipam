@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/exaring/otelpgx v0.11.1
+	github.com/go-logr/logr v1.4.4
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/prometheus/client_model v0.6.2
@@ -12,7 +13,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	go.datum.net/datumctl v0.15.2
-	go.miloapis.com/milo v0.36.9
+	go.miloapis.com/milo v0.36.22-0.20261029220052-b2a99a5059fd
 	go.miloapis.com/service-catalog v0.3.1
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
@@ -59,7 +60,6 @@ require (
 	github.com/felixge/httpsnoop v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
