@@ -15,7 +15,7 @@ jobs:
     name: Build, vet, and test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -50,7 +50,7 @@ jobs:
     name: golangci-lint
     runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && vars.MILO_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -65,7 +65,7 @@ jobs:
     name: Validate kustomize overlays
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install kustomize
         run: |
@@ -91,7 +91,7 @@ jobs:
     name: Validate k6 scripts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
 
@@ -111,7 +111,7 @@ jobs:
       # test-infra writes kubeconfig here when running outside the test-infra repo
       KUBECONFIG: .test-infra/kubeconfig
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
@@ -268,7 +268,7 @@ jobs:
     env:
       TASK_X_REMOTE_TASKFILES: "1"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # go-jsonnet, jb (jsonnet-bundler), kubeconform are installed via
       # `go install` from the observability Taskfile's install-tooling
