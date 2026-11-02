@@ -4,47 +4,25 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (startsWith(github.ref, 'refs/heads/') && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)) }}
 
 jobs:
-  test:
-    name: Build, vet, and test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download modules
-        run: go mod download
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: go build
-        run: go build ./...
-
-      - name: go test
-        # Runners have Docker, so a skipped PostgreSQL test means a broken
-        # fixture, not a missing database.
-        env:
-          IPAM_TEST_REQUIRE_POSTGRES: "1"
-        run: go test -timeout 5m ./pkg/... ./internal/... ./test/fixtures/... -count=1
-
-      - name: Verify no forbidden imports
-        run: |
-          if grep -rE "datum-cloud/(milo|quota)" --include='*.go' . ; then
-            echo "FAIL: unwanted imports of datum-cloud/milo or datum-cloud/quota"
-            exit 1
-          fi
-          echo "OK: no forbidden imports"
+  ci:
+    permissions:
+      contents: read
+    uses: datum-cloud/actions/.github/workflows/ci-basic.yaml@v1.26.0
+    with:
+      skip: test,docker
+      run: |
+        go vet ./...
+        IPAM_TEST_REQUIRE_POSTGRES=1 go test -timeout 5m ./pkg/... ./internal/... ./test/fixtures/... -count=1
+        if grep -rE "datum-cloud/(milo|quota)" --include='*.go' . ; then
+          echo "FAIL: unwanted imports of datum-cloud/milo or datum-cloud/quota"
+          exit 1
+        fi
 
   lint:
     name: golangci-lint
