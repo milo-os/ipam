@@ -85,7 +85,7 @@ tasks:
       - test "$(golangci-lint version --short 2>/dev/null)" = "{{.GOLANGCI_VERSION}}"
     cmd: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v{{.GOLANGCI_VERSION}}
     vars:
-      GOLANGCI_VERSION: 2.12.2
+      GOLANGCI_VERSION: 2.15.0
 
   generate:
     desc: Run code generation
