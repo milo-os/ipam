@@ -108,7 +108,7 @@ jobs:
     steps:
       - name: Mint catalog token from the milo-os GitHub App
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.PLUGIN_INDEX_APP_ID }}
           private-key: ${{ secrets.PLUGIN_INDEX_APP_PRIVATE_KEY }}
