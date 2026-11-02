@@ -1,6 +1,6 @@
 # Build stage. Debian-based so the race detector (which requires CGO + glibc)
 # can be enabled via --build-arg RACE=-race.
-FROM --platform=$BUILDPLATFORM golang:1.26-trixie AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-trixie AS builder
 
 # Build arguments for version injection
 ARG VERSION=dev
