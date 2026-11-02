@@ -2,6 +2,8 @@ module go.miloapis.com/ipam
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/exaring/otelpgx v0.11.1
 	github.com/jackc/pgx/v5 v5.9.2
