@@ -323,9 +323,7 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 	// and query latency without instrumenting the allocator. The SQL text is
 	// static and carries no user data, so it is safe to record; bound parameters
 	// are deliberately excluded because they carry tenant-scoped values.
-	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer(
-		otelpgx.WithTrimSQLInSpanName(),
-	)
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer()
 	allocatorPool, err := newAllocatorPoolWithRetry(context.Background(), poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("create pgx pool: %w", err)
