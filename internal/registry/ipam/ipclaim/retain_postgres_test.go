@@ -19,6 +19,7 @@ import (
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipaminstall "go.miloapis.com/ipam/pkg/apis/ipam/install"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	"go.miloapis.com/ipam/pkg/ipamnames"
 )
 
 // newLifecycleREST wires claim and allocation storage over one test database,
@@ -123,7 +124,7 @@ func readAllocationRow(t *testing.T, db *pgxpool.Pool, allocationKey string) (al
 
 func allocationKeyFor(claim *ipam.IPClaim) string {
 	id := tenant.Identity{Name: testProject}
-	return allocationObjectKey(id, claim.Namespace, allocationNameFor(claim.Namespace, claim.Name))
+	return allocationObjectKey(id, claim.Namespace, ipamnames.AllocationName(claim.Namespace, claim.Name))
 }
 
 // Deleting a claim under the default policy frees its address, and the next

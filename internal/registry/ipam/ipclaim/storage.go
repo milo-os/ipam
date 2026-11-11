@@ -8,8 +8,6 @@ package ipclaim
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
@@ -43,6 +41,7 @@ import (
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
+	"go.miloapis.com/ipam/pkg/ipamnames"
 )
 
 type IPClaimStorage struct {
@@ -383,7 +382,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 
 	// The IPAllocation's name and key are the allocation row's identity, so
 	// they are resolved before the row is written rather than after.
-	allocationName := allocationNameFor(claim.Namespace, claim.Name)
+	allocationName := ipamnames.AllocationName(claim.Namespace, claim.Name)
 	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
 
 	cidr, err := r.allocator.AllocatePrefix(ctx, tx, allocator.PrefixRequest{
@@ -792,15 +791,6 @@ func claimObjectKey(id tenant.Identity, namespace, name string) string {
 // prefix is applied for the same reason as claimObjectKey.
 func allocationObjectKey(id tenant.Identity, namespace, name string) string {
 	return id.ApplyPrefix(fmt.Sprintf("/ipam.miloapis.com/ipallocations/%s/%s", namespace, name))
-}
-
-// allocationNameFor generates a stable, collision-resistant name for the
-// IPAllocation produced by a given claim, using a truncated SHA-256 hash of
-// the claim's namespace/name. The "alloc-" prefix makes system-generated
-// names obvious and lets operators distinguish them at a glance.
-func allocationNameFor(namespace, name string) string {
-	h := sha256.Sum256([]byte(namespace + "/" + name))
-	return "alloc-" + hex.EncodeToString(h[:8])
 }
 
 // isIdentityCollision reports whether err is the unique violation a claim hits
