@@ -13,7 +13,7 @@ jobs:
   ci:
     permissions:
       contents: read
-    uses: datum-cloud/actions/.github/workflows/ci-basic.yaml@v1.27.1
+    uses: datum-cloud/actions/.github/workflows/ci-basic.yaml@v1.28.0
     with:
       skip: test,docker
       run: |
