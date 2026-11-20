@@ -1,0 +1,8 @@
+# Staging's IPAM prices. Staging's infra enables this component on IPAM's
+# service catalog; production doesn't, so production has no IPAM prices
+# until someone adds them deliberately.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+resources:
+  - service-pricing.yaml
