@@ -15,6 +15,7 @@ and order-insensitive within an overlay (with a few documented exceptions).
 | `k6-performance-tests`   | k6 SA/RBAC + `TestRun` resources for the perf suite                      |
 | `service-catalog`        | `Service` + `ServiceConfiguration` registering IPAM (incl. IPClaim quota) on the Milo control plane |
 | `service-catalog-public-ipv4` | `service-catalog` plus a per-project public IPv4 IPClaim limit; needs a Milo and service catalog that honour metric cost conditions |
+| `service-catalog-staging` | Staging's IPAM prices: an IPv4 fee per IP that contracts charge, as a billing `ServicePricing`. Enabled on top of the catalog in staging only |
 
 Order matters when:
 - `cert-manager-ca` must precede the deployment so its CSI volume can mount.

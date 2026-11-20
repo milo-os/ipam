@@ -1,0 +1,23 @@
+# The service catalog's IPv4 product on staging's price list, for contracts
+# to charge: a monthly fee per IP. It's priced at 0 for now: the staff portal
+# treats a list price of 0 as priced per contract, so staff enter each
+# customer's amount from the order form. Its tax code comes later.
+#
+# Pricings can't be changed once created: to change a price, add a new
+# version (-v2) and leave the old one, which published Offers and contracts
+# may still use.
+---
+apiVersion: billing.miloapis.com/v1alpha1
+kind: ServicePricing
+metadata:
+  name: ipv4-address-v1
+  namespace: milo-system
+spec:
+  displayName: "IPv4 IP Space"
+  sku: IP-V4
+  chargeType: Recurring
+  interval: monthly
+  currency: USD
+  amount: "0"
+  pricingUnit: IP
+  serviceRef: ipam.miloapis.com
