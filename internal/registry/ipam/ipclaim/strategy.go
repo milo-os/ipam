@@ -147,14 +147,19 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 	switch c.Spec.Target {
 	case "", ipam.TargetBlock:
 	case ipam.TargetScopeRange:
-		// A range is the pool a class holds for a scope. Its size, its position
-		// and its disposition are all properties of the pool, decided by the
-		// class that provisions it — so a claim that could restate any of them
-		// would be stating something the server is going to ignore. Refused by
-		// name rather than dropped silently.
-		if c.Spec.Address != "" {
-			allErrs = append(allErrs, field.Forbidden(specPath.Child("address"),
-				"a scope-range claim binds the range its class holds, so it cannot name an address"))
+		// A range is the pool a class holds for a scope. Its size and its
+		// disposition are properties of the pool, decided by the class that
+		// provisions it — so a claim that could restate either would be stating
+		// something the server is going to ignore. Refused by name rather than
+		// dropped silently.
+		//
+		// Its position is the exception: a claim may name the range, which
+		// places the chain there if it does not exist yet. It must be written
+		// as the CIDR of the whole range, because a bare address names a block
+		// only once a size is known, and here the size is the class's.
+		if c.Spec.Address != "" && !strings.Contains(c.Spec.Address, "/") {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("address"), c.Spec.Address,
+				"a scope-range claim names its range as a CIDR, such as fd00:0:a::/48; the class decides its length"))
 		}
 		if c.Spec.PrefixLength != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("prefixLength"),

@@ -86,3 +86,23 @@ func normalise(block net.IPNet) net.IPNet {
 	}
 	return block
 }
+
+// ContainingBlock returns the block of prefixLen bits that contains block.
+//
+// It is how a range named at one level of a class chain is placed at the
+// levels above it: a /64 subnet named as fd00:0:a:10::/64 sits in the /48
+// fd00:0:a::/48, and that /48 is the only position its VPC could have. A
+// prefixLen longer than the block's own is ErrInvalidPrefixLen: a block is not
+// contained by anything smaller than itself.
+func ContainingBlock(block net.IPNet, prefixLen int) (net.IPNet, error) {
+	block = normalise(block)
+	ones, bits := block.Mask.Size()
+	if bits == 0 {
+		return net.IPNet{}, fmt.Errorf("%w: %s has a non-canonical mask", ErrInvalidPrefixLen, block.String())
+	}
+	if prefixLen < 0 || prefixLen > ones {
+		return net.IPNet{}, fmt.Errorf("%w: a /%d cannot contain %s", ErrInvalidPrefixLen, prefixLen, block.String())
+	}
+	mask := net.CIDRMask(prefixLen, bits)
+	return net.IPNet{IP: block.IP.Mask(mask), Mask: mask}, nil
+}

@@ -13,7 +13,7 @@ Run it alone with `task e2e:suite SUITE=claim-specific-address`.
 | `csa-two-b` | 172.18.33.0/24 | `csa-two` (/32) | one class offered by two pools |
 | `csa-rsv` | 172.18.32.0/28 | `csa-rsv-v4` (/32) | first address withheld (`reservations.leading: 1`) |
 | `csa-v6` | fd83:183::/64 | `csa-host-v6` (/128, `uniqueWithin: [network]`) | the network-services-operator internal-DNS claim shape |
-| `csa-range-root` | fd83:184::/64 | `csa-range` (`poolPer: [network]`) | ScopeRange regression check |
+| `csa-range-root` | fd83:184::/64 | `csa-range` (`poolPer: [network]`) | a ScopeRange claim cannot place a shared pool (`SharedPoolUnplaced`) |
 
 No other fixture uses these ranges (`go test ./test/fixtures/ -run TestFixtureRootRangesAreDisjoint`).
 

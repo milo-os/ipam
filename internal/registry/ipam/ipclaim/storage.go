@@ -347,9 +347,17 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		Name:     id.Name,
 	}
 
+	// The address states the family a second time, and is held to the class
+	// as spec.ipFamily is, whichever target the claim binds.
+	if claim.Spec.Address != "" {
+		if err := checkAddressFamily(claim.Spec.Address, class); err != nil {
+			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
+			failSpan(tracing.ReasonPoolNotFound)
+			return nil, err
+		}
+	}
+
 	if claim.Spec.Target == ipam.TargetScopeRange {
-		// The chain is provisioned outside any transaction, level by level,
-		// exactly as it is for a block claim.
 		obj, outcome, err := r.createScopeRange(ctx, span, claim, class, id, dryRun)
 		result = outcome
 		if err != nil {
@@ -366,11 +374,6 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	// the strategy has already refused a CIDR that disagrees with an explicit
 	// prefixLength.
 	if claim.Spec.Address != "" {
-		if err := checkAddressFamily(claim.Spec.Address, class); err != nil {
-			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
-			failSpan(tracing.ReasonPoolNotFound)
-			return nil, err
-		}
 		if claim.Spec.PrefixLength == nil {
 			if prefix, err := netip.ParsePrefix(claim.Spec.Address); err == nil {
 				bits := int32(prefix.Bits())
@@ -425,7 +428,24 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	// transaction opens, not inside it. A pool is durable infrastructure that
 	// outlives the claim that caused it; holding a transaction across the
 	// chain would make a herd of first claims serialise behind the slowest.
-	poolKey, err := allocator.ResolvePoolFor(ctx, r.db, class, claim.Spec.Scope, wantBlock)
+	//
+	// A dry-run is the exception. A pool is never renumbered, so provisioning
+	// one to answer a hypothetical would leave the hypothetical behind: the
+	// whole dry-run runs in one transaction, each level in a savepoint of it,
+	// and the rollback below takes the levels with it.
+	var resolveDB allocator.TxBeginner = r.db
+	var dryTx pgx.Tx
+	if dryRun {
+		dryTx, err = r.db.Begin(ctx)
+		if err != nil {
+			metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
+			failSpan(tracing.ReasonTxError)
+			return nil, fmt.Errorf("begin dry-run transaction: %w", err)
+		}
+		defer func() { _ = dryTx.Rollback(ctx) }()
+		resolveDB = dryTx
+	}
+	poolKey, err := allocator.ResolvePoolFor(ctx, resolveDB, class, claim.Spec.Scope, wantBlock)
 	if err != nil {
 		if errors.Is(err, allocator.ErrAddressOutsidePool) {
 			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
@@ -454,8 +474,9 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		return nil, fmt.Errorf("resolve pool: %w", err)
 	}
 
-	tx, err = r.db.Begin(ctx)
-	if err != nil {
+	if dryTx != nil {
+		tx = dryTx
+	} else if tx, err = r.db.Begin(ctx); err != nil {
 		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
 		failSpan(tracing.ReasonTxError)
 		return nil, fmt.Errorf("begin allocation transaction: %w", err)

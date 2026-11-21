@@ -877,6 +877,15 @@ type IPClaimSpec struct {
 	// AddressOutsidePool when no pool offering the class contains it, and
 	// AddressUnaligned when the address does not start a block of the claim's
 	// size. It is never moved to another block or rounded down. Immutable.
+	//
+	// On a ScopeRange claim it names the range, as a CIDR whose length is the
+	// class's pool size (e.g. "fd00:0:a::/48"), and places the class's chain
+	// there: each level that exists must contain it, and each missing level is
+	// carved at the block of its size containing it. A level already placed
+	// elsewhere, including the class's own pool, is AddressOutsidePool naming
+	// its range, since a placed pool is never moved; a missing level shared by
+	// every consumer of its class is SharedPoolUnplaced. Placing the chain
+	// first is how a Block claim adopts an address under a chained class.
 	// +optional
 	Address string `json:"address,omitempty"`
 

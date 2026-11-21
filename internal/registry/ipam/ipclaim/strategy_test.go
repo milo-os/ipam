@@ -259,3 +259,41 @@ func TestAddressIsImmutable(t *testing.T) {
 		t.Errorf("an unchanged address was refused: %v", errs)
 	}
 }
+
+// A ScopeRange claim may name its range, as the CIDR of the whole range: the
+// class decides the length, so a bare address names nothing yet. Its length and
+// alignment against the class are judged on create.
+func TestAScopeRangeClaimNamesItsRangeAsACIDR(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+		wantErr bool
+	}{
+		{name: "IPv6 range", address: "fd00:0:a::/48"},
+		{name: "IPv4 range", address: "10.20.0.0/16"},
+		{name: "unaligned is judged on create", address: "fd00:0:a:1::/48"},
+		{name: "bare address", address: "fd00:0:a::", wantErr: true},
+		{name: "garbage", address: "not-a-range/48", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := claim(func(c *ipam.IPClaim) {
+				c.Spec.Target = ipam.TargetScopeRange
+				c.Spec.Address = tc.address
+			})
+			errs := validateIPClaim(c)
+			if !tc.wantErr {
+				if len(errs) != 0 {
+					t.Fatalf("validateIPClaim() refused %q: %v", tc.address, errs)
+				}
+				return
+			}
+			if len(errs) == 0 {
+				t.Fatalf("validateIPClaim() accepted %q", tc.address)
+			}
+			if errs[0].Field != "spec.address" {
+				t.Errorf("error names %q, want spec.address", errs[0].Field)
+			}
+		})
+	}
+}

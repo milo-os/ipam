@@ -1,5 +1,5 @@
-# A scope-range claim binds the range its class holds; it cannot name one.
-# Already refused before #183 — kept as a regression check.
+# A scope-range claim naming its range places the class's pool there, but
+# csa-range's pool is shared by every consumer, so no one consumer may place it.
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClaim
 metadata:

@@ -51,6 +51,7 @@ func TestReasonForEveryRefusal(t *testing.T) {
 		{"address reserved", NewAddressReserved(ipclaims, "web", "address 10.0.0.0/32 is reserved"), ReasonAddressReserved, http.StatusConflict},
 		{"address outside pool", New(ReasonAddressOutsidePool, "address 192.0.2.1 is in no pool"), ReasonAddressOutsidePool, http.StatusBadRequest},
 		{"address unaligned", New(ReasonAddressUnaligned, "10.0.0.5 is not the start of a /28"), ReasonAddressUnaligned, http.StatusBadRequest},
+		{"shared pool unplaced", New(ReasonSharedPoolUnplaced, "class \"public\" holds one pool for every consumer"), ReasonSharedPoolUnplaced, http.StatusBadRequest},
 	}
 
 	for _, tc := range cases {

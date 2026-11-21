@@ -196,11 +196,13 @@ func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimS
 // claim, and the allocation then refuses the block with ErrAddressOutsidePool
 // unless that leaf pool already contains it.
 //
-// That is a known limitation. Steering a cascade to provision the leaf carve
-// around a requested address is placement policy this path does not have, and
-// guessing at it would carve durable infrastructure to suit one claim.
-// Adopting an address under a chained class therefore works only once the leaf
-// pool holding it exists.
+// A Block claim does not steer the cascade: guessing at placement from one
+// endpoint's address would carve durable infrastructure to suit one claim.
+// Adopting an address under a chained class works by placing the chain first,
+// with a ScopeRange claim that names the range (PlaceScopeRange); the Block
+// claim then finds the leaf pool holding its address. A pool placed before
+// adoption, by first-free, is never moved, so an address outside it stays
+// refused.
 func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
 	// Resolution runs outside the allocation transaction, so its cost lands in
 	// end-to-end claim latency without appearing in any query timing.
@@ -357,7 +359,7 @@ func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourceP
 		return poolKey, false, nil
 	}
 
-	if err := provisionPool(ctx, tx, level, sourcePoolKey); err != nil {
+	if err := provisionPool(ctx, tx, level, sourcePoolKey, nil, ""); err != nil {
 		return "", false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -437,7 +439,10 @@ func claimPoolIdentity(ctx context.Context, tx pgx.Tx, className, scopeDigest, p
 // pool object, in the transaction that claimed the identity row. That is what
 // makes the identity and the object it names appear together: a loser waking on
 // the identity row is guaranteed to find the pool.
-func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKey string) error {
+//
+// at, when set, is the block to carve instead of the first free one, and
+// requestedBy is the storage key of the claim that named it (see poolCarve).
+func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKey string, at *net.IPNet, requestedBy string) error {
 	prefixLen, err := EffectivePrefixLength(level.Class.IPClass, nil)
 	if err != nil {
 		return fmt.Errorf("resolve block size for class %q: %w", level.Class.Name, err)
@@ -449,6 +454,8 @@ func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoo
 		ScopeDigest:   level.ScopeDigest,
 		IPFamily:      string(level.Class.Spec.IPFamily),
 		OwnerProject:  level.OwnerProject(),
+		At:            at,
+		RequestedBy:   requestedBy,
 	})
 	if err != nil {
 		return err
@@ -581,6 +588,17 @@ type poolCarve struct {
 	// OwnerProject attributes the carved space. See CascadeLevel.OwnerProject:
 	// the consumer for a per-consumer level, the defining project otherwise.
 	OwnerProject string
+
+	// At is the block to carve, for a level a ScopeRange claim places at the
+	// range it names. Nil carves the first free block. A named block is
+	// carved there or refused, never moved: it is checked by the same
+	// classification a named claim gets, so a collision reads as AddressInUse
+	// or AddressReserved rather than as exhaustion.
+	At *net.IPNet
+
+	// RequestedBy is the storage key of the claim that named At. It decides
+	// only whether a refusal may name the allocation in the way.
+	RequestedBy string
 }
 
 // carveFromPool takes a block out of the source pool for a child pool to own.
@@ -607,12 +625,21 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 	// spaceAll, not carve.ScopeDigest — which is a POOL digest and identifies
 	// nothing the search understands. The block leaves the pool, so it must be
 	// free in every space, not in one of them.
-	block, err := findBlock(ctx, tx, sourcePoolKey, spaceAll, parents, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
-	if err != nil {
-		if errors.Is(err, allocation.ErrPoolExhausted) {
-			return nil, ErrPoolExhausted
+	var block *net.IPNet
+	if carve.At != nil {
+		if err := checkRequestedBlock(ctx, tx, sourcePoolKey, spaceAll, parents, *carve.At, carve.RequestedBy); err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("carve /%d out of %q: %w", prefixLen, sourcePoolKey, err)
+		at := *carve.At
+		block = &at
+	} else {
+		block, err = findBlock(ctx, tx, sourcePoolKey, spaceAll, parents, prefixLen, allocation.Strategy(pool.Spec.Allocation.Strategy))
+		if err != nil {
+			if errors.Is(err, allocation.ErrPoolExhausted) {
+				return nil, ErrPoolExhausted
+			}
+			return nil, fmt.Errorf("carve /%d out of %q: %w", prefixLen, sourcePoolKey, err)
+		}
 	}
 
 	consumed, err := consumptionAfterAllocate(ctx, tx, sourcePoolKey, parents, *block)

@@ -2,14 +2,19 @@ package allocator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"k8s.io/klog/v2"
 
+	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
 // ErrClassHoldsNoRange is returned for a scope-range request against a class
@@ -32,6 +37,13 @@ var ErrScopeRangeOccupied = errors.New("ipam: range still has allocations inside
 // by an operator rather than provisioned — and an operator's pool is not a
 // range any claim may take away.
 var ErrScopeRangeCarveMissing = errors.New("ipam: pool holds no carve against a source pool")
+
+// ErrSharedPoolUnplaced is returned when a ScopeRange claim names its range
+// and a level of the chain that would have to be created is shared by every
+// consumer of its class. One consumer naming where a shared pool goes would be
+// choosing for all of them, so only a per-consumer level is placed; a shared
+// level must already exist and contain the range.
+var ErrSharedPoolUnplaced = errors.New("ipam: a shared pool cannot be placed by one consumer")
 
 // ResolveScopeRange provisions the pool a class holds for a scope, and every
 // level above it, returning that pool's key.
@@ -229,4 +241,173 @@ func releaseRangeTree(ctx context.Context, tx pgx.Tx, alloc PrefixAllocator, poo
 		return fmt.Errorf("delete range pool: %w", err)
 	}
 	return nil
+}
+
+// PlaceScopeRange is ResolveScopeRange for a claim that names its range: every
+// level of the chain is found or created so that it holds want, and want
+// becomes the class's own pool. It returns that pool's key.
+//
+// Walked root-first, a level is one of:
+//
+//   - present and containing want: reused, exactly as an unaddressed claim
+//     would reuse it;
+//   - present elsewhere: ErrAddressOutsidePool, naming the pool and its range.
+//     A pool is never renumbered, so a range placed before this claim, by
+//     first-free or by another claim, stays where it is. The class's own pool
+//     must equal want, not merely contain it;
+//   - missing and per-consumer: carved at the block of its size containing
+//     want, out of the level above. A collision there is the AddressInUse or
+//     AddressReserved a named claim gets, from the same classification;
+//   - missing and shared: ErrSharedPoolUnplaced.
+//
+// The root level's source is the operator-authored pool that contains the
+// root's block (DiscoverPoolFor). want must already be the class's pool size
+// and aligned, which allocation.RequestedBlock establishes.
+//
+// Unlike ResolveScopeRange every level is written in the caller's transaction,
+// so a refusal at any depth leaves nothing behind, and a dry-run that rolls
+// back has placed nothing. The order of locks is the cascade's: per level, the
+// identity row and then the source pool. A claim losing the identity race to
+// a concurrent one reads the winner's pool and is held to it like any present
+// level, so it is refused rather than placed elsewhere, and it never carves.
+func PlaceScopeRange(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, want net.IPNet, claimKey string) (string, error) {
+	if len(leaf.Spec.PoolPer) == 0 {
+		return "", fmt.Errorf("%w: class %q names no poolPer", ErrClassHoldsNoRange, leaf.Name)
+	}
+
+	start := time.Now()
+	result, provisioned := "error", false
+	defer func() { metrics.ObserveCascadeResolution(result, provisioned, start) }()
+
+	levels, err := PlanScopeRangeCascade(ctx, tx, leaf, claimScope)
+	if err != nil {
+		return "", err
+	}
+	blocks, err := levelBlocks(levels, want)
+	if err != nil {
+		return "", err
+	}
+
+	source, err := DiscoverPoolFor(ctx, tx, levels[0].Class, claimScope, &blocks[0])
+	if err != nil {
+		return "", err
+	}
+	for i := range levels {
+		poolKey, created, err := placeLevel(ctx, tx, levels[i], source, blocks[i], want, i == len(levels)-1, claimKey)
+		if err != nil {
+			return "", fmt.Errorf("place pool for class %q: %w", levels[i].Class.Name, err)
+		}
+		provisioned = provisioned || created
+		source = poolKey
+	}
+	result = "success"
+	return source, nil
+}
+
+// levelBlocks returns, for each level, the block of that level's pool size
+// containing want.
+func levelBlocks(levels []CascadeLevel, want net.IPNet) ([]net.IPNet, error) {
+	blocks := make([]net.IPNet, len(levels))
+	for i, level := range levels {
+		prefixLen, err := EffectivePrefixLength(level.Class.IPClass, nil)
+		if err != nil {
+			return nil, fmt.Errorf("resolve block size for class %q: %w", level.Class.Name, err)
+		}
+		block, err := allocation.ContainingBlock(want, prefixLen)
+		if err != nil {
+			return nil, fmt.Errorf("%w: class %q carves /%d pools, which cannot hold %s",
+				ErrAddressOutsidePool, level.Class.Name, prefixLen, want.String())
+		}
+		blocks[i] = block
+	}
+	return blocks, nil
+}
+
+// placeLevel finds or creates one level's pool at block, reporting whether
+// this call created it. leaf marks the class's own pool, which must be exactly
+// want.
+func placeLevel(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKey string, block, want net.IPNet, leaf bool, claimKey string) (poolKey string, provisioned bool, err error) {
+	outcome := levelError
+	defer func() { metrics.RecordCascadeLevel(level.Class.Name, outcome) }()
+
+	existing, err := lookupPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest)
+	if err != nil {
+		return "", false, err
+	}
+	if existing != "" {
+		if err := checkPlaced(ctx, tx, level, existing, want, leaf); err != nil {
+			return "", false, err
+		}
+		outcome = levelReused
+		return existing, false, nil
+	}
+
+	// Before the identity row is claimed, so a refusal holds nothing.
+	if level.Tenancy.Consumer == "" {
+		return "", false, fmt.Errorf("%w: class %q holds one pool for this scope for every consumer, and it does not exist yet; "+
+			"claim the range without spec.address to have it placed, then name ranges inside it",
+			ErrSharedPoolUnplaced, level.Class.Name)
+	}
+
+	poolKey, won, err := claimPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest, level.PoolKey)
+	if err != nil {
+		return "", false, err
+	}
+	if !won {
+		// The winner committed its pool with the identity row. It is held to
+		// the range like any pool that was already there.
+		if err := checkPlaced(ctx, tx, level, poolKey, want, leaf); err != nil {
+			return "", false, err
+		}
+		outcome = levelLost
+		return poolKey, false, nil
+	}
+
+	if err := provisionPool(ctx, tx, level, sourcePoolKey, &block, claimKey); err != nil {
+		return "", false, err
+	}
+	outcome = levelProvisioned
+	klog.V(2).InfoS("Placed pool at the range a claim named",
+		"class", level.Class.Name, "pool", poolKey, "cidr", block.String(), "source", sourcePoolKey)
+	return poolKey, true, nil
+}
+
+// checkPlaced holds an existing pool to the range a claim named: it must
+// contain want, and when it is the class's own pool, be exactly want.
+func checkPlaced(ctx context.Context, tx pgx.Tx, level CascadeLevel, poolKey string, want net.IPNet, leaf bool) error {
+	parents, err := readPoolRange(ctx, tx, poolKey)
+	if err != nil {
+		return err
+	}
+	ok := allocation.IsBlockAvailable(parents, nil, want)
+	if leaf {
+		ok = len(parents) == 1 && parents[0].String() == want.String()
+	}
+	if ok {
+		return nil
+	}
+	relation := "does not contain"
+	if leaf {
+		relation = "is not"
+	}
+	return fmt.Errorf("%w: class %q already placed IPPool %q for this scope at %s, which %s %s; a placed pool is never moved",
+		ErrAddressOutsidePool, level.Class.Name, poolNameFromKey(poolKey), parentsString(parents), relation, want.String())
+}
+
+// readPoolRange reads a pool's range without locking its row. A provisioned
+// pool's range is fixed when it is written, so nothing a lock would exclude
+// can change it.
+func readPoolRange(ctx context.Context, tx pgx.Tx, poolKey string) ([]net.IPNet, error) {
+	var data []byte
+	if err := tx.QueryRow(ctx, `SELECT data FROM ipam_objects WHERE key = $1`, poolKey).Scan(&data); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPoolNotFound
+		}
+		return nil, fmt.Errorf("read pool %q: %w", poolKey, err)
+	}
+	var pool ipamv1alpha1.IPPool
+	if err := json.Unmarshal(data, &pool); err != nil {
+		return nil, fmt.Errorf("decode pool %q: %w", poolKey, err)
+	}
+	return parsePoolCIDR(&pool)
 }

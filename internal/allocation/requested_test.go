@@ -100,3 +100,42 @@ func TestIsSingleAddress(t *testing.T) {
 		t.Error("IsSingleAddress(zero) = true, want false")
 	}
 }
+
+func TestContainingBlock(t *testing.T) {
+	tests := []struct {
+		name      string
+		block     string
+		prefixLen int
+		want      string
+		wantErr   error
+	}{
+		{name: "IPv6 subnet in its VPC", block: "fd00:0:a:10::/64", prefixLen: 48, want: "fd00:0:a::/48"},
+		{name: "IPv6 endpoint in its region", block: "fd00:0:a:10:0:5::/96", prefixLen: 64, want: "fd00:0:a:10::/64"},
+		{name: "same length is itself", block: "fd00:0:a::/48", prefixLen: 48, want: "fd00:0:a::/48"},
+		{name: "IPv4", block: "10.20.30.64/26", prefixLen: 16, want: "10.20.0.0/16"},
+		{name: "IPv4 to zero", block: "10.20.30.64/26", prefixLen: 0, want: "0.0.0.0/0"},
+		{name: "longer than the block", block: "fd00:0:a::/48", prefixLen: 64, wantErr: ErrInvalidPrefixLen},
+		{name: "negative", block: "10.0.0.0/8", prefixLen: -1, wantErr: ErrInvalidPrefixLen},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, block, err := net.ParseCIDR(tc.block)
+			if err != nil {
+				t.Fatalf("parse %q: %v", tc.block, err)
+			}
+			got, err := ContainingBlock(*block, tc.prefixLen)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("ContainingBlock(%s, %d) = %s, %v; want error %v", tc.block, tc.prefixLen, got.String(), err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ContainingBlock(%s, %d) error = %v", tc.block, tc.prefixLen, err)
+			}
+			if got.String() != tc.want {
+				t.Errorf("ContainingBlock(%s, %d) = %s, want %s", tc.block, tc.prefixLen, got.String(), tc.want)
+			}
+		})
+	}
+}

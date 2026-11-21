@@ -99,21 +99,40 @@ func requestedBlock(ctx context.Context, tx pgx.Tx, req PrefixRequest, parents [
 	if err != nil {
 		return fail(err)
 	}
-	if !allocation.IsBlockAvailable(parents, nil, want) {
-		return fail(fmt.Errorf("%w: %s is not inside pool %q (%s)", ErrAddressOutsidePool,
-			want.String(), poolNameFromKey(req.PoolKey), parentsString(parents)))
+	own := req.AllocationKey
+	if own == "" {
+		own = req.ClaimKey
 	}
-
-	holder, err := firstOverlap(ctx, tx, req.PoolKey, req.ScopeDigest, want)
-	if err != nil {
+	if err := checkRequestedBlock(ctx, tx, req.PoolKey, req.ScopeDigest, parents, want, own); err != nil {
 		return fail(err)
-	}
-	if holder != nil {
-		return fail(holder.refusal(want, req))
 	}
 
 	span.SetAttributes(attribute.String(tracing.AttrResultCIDR, want.String()))
 	return &want, nil
+}
+
+// checkRequestedBlock reports whether want can be taken from the pool at
+// poolKey, whose range is parents, in the address space scopeDigest: nil when
+// it can, otherwise the refusal that says why not. ownKey is the storage key of
+// whoever is asking, and decides only whether a holding allocation is named.
+//
+// It is the one classification both a named block and a named carve use, so a
+// claim and a ScopeRange placing a pool are refused in the same words for the
+// same collision. A carve passes spaceAll: the block leaves the pool, so it
+// must be free in every space.
+func checkRequestedBlock(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, parents []net.IPNet, want net.IPNet, ownKey string) error {
+	if !allocation.IsBlockAvailable(parents, nil, want) {
+		return fmt.Errorf("%w: %s is not inside pool %q (%s)", ErrAddressOutsidePool,
+			want.String(), poolNameFromKey(poolKey), parentsString(parents))
+	}
+	holder, err := firstOverlap(ctx, tx, poolKey, scopeDigest, want)
+	if err != nil {
+		return err
+	}
+	if holder != nil {
+		return holder.refusal(want, poolKey, ownKey)
+	}
+	return nil
 }
 
 // overlappingRow is the one allocation row a requested block collides with.
@@ -157,21 +176,19 @@ func firstOverlap(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, w
 	return &row, nil
 }
 
-// refusal classifies the collision by what holds the block.
-func (r *overlappingRow) refusal(want net.IPNet, req PrefixRequest) error {
+// refusal classifies the collision by what holds the block. ownKey is the
+// requester's storage key: a holding allocation is named only when it is in
+// the requester's own project.
+func (r *overlappingRow) refusal(want net.IPNet, poolKey, ownKey string) error {
 	switch r.purpose {
 	case "Reservation":
 		return fmt.Errorf("%w: %s overlaps %s, which pool %q withholds", ErrAddressReserved,
-			want.String(), r.cidr, poolNameFromKey(req.PoolKey))
+			want.String(), r.cidr, poolNameFromKey(poolKey))
 	case "PoolCarve":
 		return &AddressInUseError{Address: want.String(), Held: r.cidr, Carved: true}
 	}
 	e := &AddressInUseError{Address: want.String(), Held: r.cidr, Retained: r.retained}
-	own := req.AllocationKey
-	if own == "" {
-		own = req.ClaimKey
-	}
-	if tenant.ProjectFromKey(r.allocationKey) == tenant.ProjectFromKey(own) {
+	if tenant.ProjectFromKey(r.allocationKey) == tenant.ProjectFromKey(ownKey) {
 		e.AllocationNamespace, e.AllocationName = allocationRefFromKey(r.allocationKey)
 	}
 	return e

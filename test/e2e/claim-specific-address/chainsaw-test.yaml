@@ -580,11 +580,13 @@ spec:
               ($error == null): true
               "(contains($stdout, 'OK: the address of a bound claim is immutable'))": true
 
-    - name: refused-an-address-on-a-scope-range-claim
+    - name: refused-placing-a-shared-range
       description: |
-        Regression check: a ScopeRange claim binds the range its class holds and
-        cannot name one. 422 on spec.address, and no range was provisioned on
-        the way to the refusal.
+        A ScopeRange claim may name its range, which places the class's pool
+        there (see the scoperange-specific-address suite). csa-range does not
+        name the project role, so its pool for a network is shared by every
+        consumer, and one consumer cannot choose where it goes: 400
+        SharedPoolUnplaced, and no range was provisioned on the way.
       try:
         - script:
             timeout: 60s
@@ -593,11 +595,12 @@ spec:
                 value: ($namespace)
             content: |
               . ../lib/ipam.sh
-              expect_invalid "$NAMESPACE" spec.address '' "a ScopeRange claim naming fd83:184::/96" \
+              expect_refusal "$NAMESPACE" 400 SharedPoolUnplaced 'csa-range' \
+                "a ScopeRange claim placing shared csa-range at fd83:184::/96" \
                 < test-data/refuse-scoperange.yaml
               expect_no_claim "$NAMESPACE" csa-range-addr
               expect_pool_count 0 csa-range network=csa-net-a
-              echo "OK: a scope-range claim cannot name an address"
+              echo "OK: a shared range cannot be placed by one consumer"
             check:
               ($error == null): true
-              "(contains($stdout, 'OK: a scope-range claim cannot name an address'))": true
+              "(contains($stdout, 'OK: a shared range cannot be placed by one consumer'))": true

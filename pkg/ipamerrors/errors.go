@@ -104,13 +104,23 @@ const (
 	ReasonAddressReserved Reason = "AddressReserved"
 
 	// ReasonAddressOutsidePool reports that the address a claim named is in no
-	// pool offering the claim's class, so there is nowhere to bind it from.
+	// pool offering the claim's class, so there is nowhere to bind it from. For
+	// a ScopeRange claim it also reports a pool of the class's chain that
+	// already exists for the claim's scope somewhere else: a placed pool is
+	// never moved, and the message names it and its range.
 	ReasonAddressOutsidePool Reason = "AddressOutsidePool"
 
 	// ReasonAddressUnaligned reports that the address a claim named is not the
 	// first address of a block of the claim's size. It is never rounded to the
 	// block it falls in.
 	ReasonAddressUnaligned Reason = "AddressUnaligned"
+
+	// ReasonSharedPoolUnplaced reports that a ScopeRange claim named its
+	// range, and a pool of its class chain that does not exist yet is shared
+	// by every consumer of its class. One consumer cannot choose where a
+	// shared pool goes; it must already exist and contain the range, so the
+	// caller claims without an address to have it placed by the allocator.
+	ReasonSharedPoolUnplaced Reason = "SharedPoolUnplaced"
 )
 
 // scopeFieldPrefix is the field path under which a missing scope role is
@@ -351,6 +361,7 @@ var knownReasons = map[Reason]bool{
 	ReasonAddressReserved:      true,
 	ReasonAddressOutsidePool:   true,
 	ReasonAddressUnaligned:     true,
+	ReasonSharedPoolUnplaced:   true,
 }
 
 // codeFor is the HTTP code each reason answers with. Exhaustion is 507:
