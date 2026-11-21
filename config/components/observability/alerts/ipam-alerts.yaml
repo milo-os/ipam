@@ -33,6 +33,7 @@ spec:
           labels:
             severity: critical
             service: ipam
+            team: connect
             slo: availability
           annotations:
             summary: "IPAM apiserver is down"
@@ -61,6 +62,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: claim_latency
           annotations:
             summary: "IPAM claim p95 latency above 500ms"
@@ -85,6 +87,7 @@ spec:
           labels:
             severity: critical
             service: ipam
+            team: connect
             slo: error_rate
           annotations:
             summary: "IPAM allocation error rate above 5%"
@@ -104,6 +107,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
           annotations:
             summary: "IPAM allocation failure rate > 1 req/s"
             description: |
@@ -124,6 +128,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: pool_capacity
           annotations:
             summary: "IPAM pool {{ $labels.pool_key }} utilization above 80%"
@@ -142,6 +147,7 @@ spec:
           labels:
             severity: critical
             service: ipam
+            team: connect
             slo: pool_capacity
           annotations:
             summary: "IPAM pool {{ $labels.pool_key }} fully exhausted"
@@ -166,6 +172,7 @@ spec:
           labels:
             severity: critical
             service: ipam
+            team: connect
             slo: db_capacity
           annotations:
             summary: "IPAM postgres connection pool < 10% idle"
@@ -197,6 +204,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: db_capacity
           annotations:
             summary: "IPAM pgxpool metrics are stale — background sampler may have died"
@@ -228,6 +236,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: watch_freshness
           annotations:
             summary: "IPAM watch consumer is lagging behind by {{ $value }}s"
@@ -252,6 +261,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: watch_freshness
           annotations:
             summary: "IPAM watcher dispatched no events for 5m despite active allocation traffic"
@@ -278,6 +288,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: watch_freshness
           annotations:
             summary: "IPAM watcher poll batches near the 500-row saturation limit"
@@ -327,6 +338,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: read_latency
           annotations:
             summary: "IPAM read-path p95 latency above 500ms ({{ $labels.verb }} {{ $labels.resource }})"
@@ -363,6 +375,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: claim_availability
           annotations:
             summary: "IPAM cannot provision pools for class {{ $labels.class }}"
@@ -387,6 +400,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: claim_latency
           annotations:
             summary: "IPAM claims are queueing on pool provisioning without any pool being created"
@@ -415,6 +429,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: claim_latency
           annotations:
             summary: "IPAM pool resolution p95 above 100ms for claims that provisioned nothing"
