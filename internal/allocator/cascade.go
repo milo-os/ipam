@@ -185,6 +185,23 @@ func planLevels(ctx context.Context, chain []*ResolvedClass, claimScope map[stri
 // immediately, and holding one transaction across the whole chain would make a
 // herd of first claims serialise behind the slowest.
 func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, error) {
+	return ResolvePoolFor(ctx, db, leaf, claimScope, nil)
+}
+
+// ResolvePoolFor is ResolvePool for a claim that may name its block.
+//
+// For a class with no parent, want narrows discovery to the offering pool that
+// contains it (see DiscoverPoolFor). For a class with a parent chain it changes
+// nothing: the leaf pool is found or provisioned exactly as it is for any other
+// claim, and the allocation then refuses the block with ErrAddressOutsidePool
+// unless that leaf pool already contains it.
+//
+// That is a known limitation. Steering a cascade to provision the leaf carve
+// around a requested address is placement policy this path does not have, and
+// guessing at it would carve durable infrastructure to suit one claim.
+// Adopting an address under a chained class therefore works only once the leaf
+// pool holding it exists.
+func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
 	// Resolution runs outside the allocation transaction, so its cost lands in
 	// end-to-end claim latency without appearing in any query timing.
 	start := time.Now()
@@ -208,7 +225,7 @@ func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimS
 	// A leaf with no ancestry draws straight from whichever operator-authored
 	// pool offers it. There is nothing to cascade.
 	if len(levels) == 0 {
-		poolKey, err := discoverInTx(ctx, db, leaf, claimScope)
+		poolKey, err := discoverInTx(ctx, db, leaf, claimScope, want)
 		if err == nil {
 			result = "success"
 		}
@@ -217,7 +234,7 @@ func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimS
 
 	// The root-most level carves from an operator-authored pool offering its
 	// class; every level below carves from the level above.
-	source, err := discoverInTx(ctx, db, levels[0].Class, claimScope)
+	source, err := discoverInTx(ctx, db, levels[0].Class, claimScope, nil)
 	if err != nil {
 		return "", err
 	}
@@ -275,13 +292,13 @@ func ResolveExistingPool(ctx context.Context, db TxBeginner, leaf *ResolvedClass
 	return poolKey, nil, nil
 }
 
-func discoverInTx(ctx context.Context, db TxBeginner, class *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, error) {
+func discoverInTx(ctx context.Context, db TxBeginner, class *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("begin pool discovery transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	return DiscoverPool(ctx, tx, class, claimScope)
+	return DiscoverPoolFor(ctx, tx, class, claimScope, want)
 }
 
 // ensureLevel finds or creates the pool for one level, in a transaction of its

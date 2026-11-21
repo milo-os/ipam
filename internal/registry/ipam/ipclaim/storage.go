@@ -12,6 +12,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"slices"
 	"strings"
 	"time"
@@ -33,6 +35,7 @@ import (
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/access"
+	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
@@ -155,11 +158,49 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 // allocation row in ipam_cidr_allocations, and the IPAllocation API object
 // together so the response body carries a CIDR that has already been
 // reserved.
+//
+// A claim created with metadata.generateName is named here, as the generic
+// Store would name it: AllocatingREST replaces Store.Create, and BeforeCreate
+// refuses an object whose name was never generated. A generated name that
+// collides with a claim, or with an allocation a former claim of that name
+// retained, is drawn again rather than refused.
 func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
 	claim, ok := obj.(*ipam.IPClaim)
 	if !ok {
 		return nil, fmt.Errorf("expected *ipam.IPClaim, got %T", obj)
 	}
+	if claim.GenerateName == "" || claim.Name != "" {
+		return r.create(ctx, claim, createValidation, options)
+	}
+	var err error
+	for range maxNameGenerationAttempts {
+		attempt := claim.DeepCopy()
+		attempt.Name = r.strategy.GenerateName(attempt.GenerateName)
+		var out runtime.Object
+		out, err = r.create(ctx, attempt, createValidation, options)
+		if err == nil || !isGeneratedNameCollision(err) {
+			return out, err
+		}
+	}
+	return nil, err
+}
+
+// maxNameGenerationAttempts matches the generic Store's retry budget for
+// generated names.
+const maxNameGenerationAttempts = 8
+
+// isGeneratedNameCollision reports whether err refused a claim for its name
+// alone, which a freshly generated name avoids.
+func isGeneratedNameCollision(err error) bool {
+	switch ipamerrors.ReasonFor(err) {
+	case ipamerrors.ReasonClaimExists, ipamerrors.ReasonAllocationRetained:
+		return true
+	}
+	return false
+}
+
+// create is Create for a claim whose name is already decided.
+func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
 
 	// A server-side dry-run must compute the would-be allocation but persist
 	// nothing and consume no capacity (see Create body for how the transaction
@@ -319,10 +360,47 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return obj, nil
 	}
 
+	// A CIDR-form address states its own length. Taking it as the claim's
+	// prefix length, before the class default applies, is what makes
+	// "address: 10.0.0.16/28" mean a /28 under a class whose default is /32;
+	// the strategy has already refused a CIDR that disagrees with an explicit
+	// prefixLength.
+	if claim.Spec.Address != "" {
+		if err := checkAddressFamily(claim.Spec.Address, class); err != nil {
+			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
+			failSpan(tracing.ReasonPoolNotFound)
+			return nil, err
+		}
+		if claim.Spec.PrefixLength == nil {
+			if prefix, err := netip.ParsePrefix(claim.Spec.Address); err == nil {
+				bits := int32(prefix.Bits())
+				claim.Spec.PrefixLength = &bits
+			}
+		}
+	}
+
 	prefixLen, err := allocator.EffectivePrefixLength(class.IPClass, claim.Spec.PrefixLength)
 	if err != nil {
 		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 		return nil, ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error())
+	}
+
+	// The block a named address asks for, resolved once the size is known. An
+	// address that is not the start of its block is refused here, never
+	// rounded down to the block it falls in.
+	var wantBlock *net.IPNet
+	if claim.Spec.Address != "" {
+		block, err := allocation.RequestedBlock(claim.Spec.Address, prefixLen)
+		if err != nil {
+			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
+			failSpan(tracing.ReasonPoolNotFound)
+			if errors.Is(err, allocation.ErrUnalignedAddress) {
+				return nil, ipamerrors.New(ipamerrors.ReasonAddressUnaligned, fmt.Sprintf(
+					"spec.address %s: %v", claim.Spec.Address, err))
+			}
+			return nil, apierrors.NewBadRequest(fmt.Sprintf("spec.address %s: %v", claim.Spec.Address, err))
+		}
+		wantBlock = &block
 	}
 	reclaimPolicy := allocator.EffectiveReclaimPolicy(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy))
 
@@ -347,8 +425,13 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 	// transaction opens, not inside it. A pool is durable infrastructure that
 	// outlives the claim that caused it; holding a transaction across the
 	// chain would make a herd of first claims serialise behind the slowest.
-	poolKey, err := allocator.ResolvePool(ctx, r.db, class, claim.Spec.Scope)
+	poolKey, err := allocator.ResolvePoolFor(ctx, r.db, class, claim.Spec.Scope, wantBlock)
 	if err != nil {
+		if errors.Is(err, allocator.ErrAddressOutsidePool) {
+			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
+			failSpan(tracing.ReasonPoolNotFound)
+			return nil, ipamerrors.New(ipamerrors.ReasonAddressOutsidePool, err.Error())
+		}
 		metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
 		if errors.Is(err, allocator.ErrNoOfferingPool) {
@@ -396,6 +479,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		ScopeDigest:   scopeDigest,
 		ClassName:     class.Name,
 		ReclaimPolicy: reclaimPolicy,
+		Address:       claim.Spec.Address,
 	})
 	if err != nil {
 		if isClaimNameCollision(err) || isIdentityCollision(err) {
@@ -414,18 +498,19 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		case "pool_exhausted":
 			result = "exhausted"
 			failSpan(tracing.ReasonExhausted)
-		case "pool_not_found":
+		case "pool_not_found", "invalid":
 			failSpan(tracing.ReasonPoolNotFound)
 		default:
 			failSpan(tracing.ReasonTxError)
 		}
-		return nil, mapAllocationError(err, poolName)
+		return nil, mapAllocationError(err, poolName, claim.Name)
 	}
 
 	// Populate the claim status with the computed allocation up-front so both
 	// the dry-run and the persisting paths return identical bound status.
 	claim.Status.Phase = ipam.ClaimBound
 	claim.Status.AllocatedCIDR = cidr
+	claim.Status.Address = singleAddress(cidr)
 	claim.Status.BoundAllocationRef = &ipam.LocalRef{Name: allocationName}
 	claim.Status.PoolRef = &ipam.LocalRef{Name: poolName}
 
@@ -462,6 +547,7 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		Status: ipam.IPAllocationStatus{
 			Phase:         ipam.AllocationReady,
 			AllocatedCIDR: cidr,
+			Address:       claim.Status.Address,
 			ScopeDigest:   scopeDigest,
 		},
 	}
@@ -552,12 +638,21 @@ func isDryRun(dryRun []string) bool {
 
 // allocationFailureReason maps an allocator error onto the canonical reason
 // label used by ipam_allocation_failures_total.
+//
+// A named address that is held, withheld, outside the pool or unaligned is the
+// caller's request refused, so it is counted with the other refusals of that
+// kind rather than as a server fault.
 func allocationFailureReason(err error) string {
 	switch {
 	case errors.Is(err, allocator.ErrPoolExhausted):
 		return "pool_exhausted"
 	case errors.Is(err, allocator.ErrPoolNotFound):
 		return "pool_not_found"
+	case errors.Is(err, allocator.ErrAddressInUse), errors.Is(err, allocator.ErrAddressReserved):
+		return "conflict"
+	case errors.Is(err, allocator.ErrAddressOutsidePool), errors.Is(err, allocation.ErrUnalignedAddress),
+		errors.Is(err, allocation.ErrInvalidAddress), errors.Is(err, allocation.ErrPrefixLenMismatch):
+		return "invalid"
 	default:
 		return "tx_error"
 	}
@@ -843,15 +938,67 @@ func retainedAllocationConflict(claimName, allocationName string) error {
 // mapAllocationError turns an allocator failure into the status the caller
 // sees. poolName names the pool the allocation was attempted against, so an
 // exhaustion 507 can say which one ran out.
-func mapAllocationError(err error, poolName string) error {
+func mapAllocationError(err error, poolName, claimName string) error {
+	var inUse *allocator.AddressInUseError
 	switch {
 	case errors.Is(err, allocator.ErrPoolExhausted):
 		return registryerrors.NewPoolExhausted(poolName)
 	case errors.Is(err, allocator.ErrPoolNotFound):
 		return apierrors.NewBadRequest("IPPool not found")
+	case errors.As(err, &inUse):
+		return ipamerrors.NewAddressInUse(v1alpha1.Resource("ipclaims"), claimName, ipamerrors.Holder{
+			Namespace: inUse.AllocationNamespace,
+			Name:      inUse.AllocationName,
+			Retained:  inUse.Retained,
+		}, inUse.Error())
+	case errors.Is(err, allocator.ErrAddressReserved):
+		return ipamerrors.NewAddressReserved(v1alpha1.Resource("ipclaims"), claimName, err.Error())
+	case errors.Is(err, allocator.ErrAddressOutsidePool):
+		return ipamerrors.New(ipamerrors.ReasonAddressOutsidePool, err.Error())
+	case errors.Is(err, allocation.ErrUnalignedAddress):
+		return ipamerrors.New(ipamerrors.ReasonAddressUnaligned, err.Error())
+	case errors.Is(err, allocation.ErrInvalidAddress), errors.Is(err, allocation.ErrPrefixLenMismatch):
+		return apierrors.NewBadRequest(err.Error())
 	default:
 		return apierrors.NewInternalError(err)
 	}
+}
+
+// checkAddressFamily refuses a named address of the other family from the
+// class. spec.ipFamily is already held to the class; the address is a second
+// statement of the family and is held to it the same way.
+func checkAddressFamily(address string, class *allocator.ResolvedClass) error {
+	host := address
+	if i := strings.IndexByte(host, '/'); i >= 0 {
+		host = host[:i]
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		// The strategy refuses a malformed address before create gets here.
+		return apierrors.NewBadRequest(fmt.Sprintf("spec.address %q is not an IP address", address))
+	}
+	family := v1alpha1.IPv6
+	if ip.Is4() {
+		family = v1alpha1.IPv4
+	}
+	if family != class.Spec.IPFamily {
+		return ipamerrors.New(ipamerrors.ReasonFamilyMismatch, fmt.Sprintf(
+			"spec.address %s is %s but class %q hands out %s",
+			address, family, class.LocalName, class.Spec.IPFamily))
+	}
+	return nil
+}
+
+// singleAddress returns the bare address a single-address block holds, or ""
+// for a block of more than one. Every claim reports it, not only claims that
+// named an address: a consumer of a /32 or /128 wants the address, not a CIDR
+// it has to strip.
+func singleAddress(cidr string) string {
+	_, block, err := net.ParseCIDR(cidr)
+	if err != nil || !allocation.IsSingleAddress(*block) {
+		return ""
+	}
+	return block.IP.String()
 }
 
 // Compile-time interface assertions.

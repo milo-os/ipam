@@ -1,0 +1,9 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-two-a-7
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-two
+  address: 172.18.31.7

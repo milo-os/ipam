@@ -348,7 +348,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref common.ReferenceCallba
 					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is the single address form of AllocatedCIDR, set when the class hands out host addresses rather than blocks.",
+							Description: "Address is the single address form of AllocatedCIDR, set whenever the allocated block holds exactly one address (a /32 or a /128).",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -511,7 +511,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) com
 					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address names a specific address to bind. Omitted, the allocator chooses.",
+							Description: "Address names the exact block to bind: a bare address (the block of PrefixLength bits starting at it, e.g. \"10.0.0.16\") or a CIDR (e.g. \"10.0.0.16/28\", whose length must equal PrefixLength when both are set, and supplies it when PrefixLength is omitted). Omitted, the allocator chooses.\n\nThe claim is bound to exactly that block or refused: AddressInUse when something holds it, AddressReserved when its pool withholds it, AddressOutsidePool when no pool offering the class contains it, and AddressUnaligned when the address does not start a block of the claim's size. It is never moved to another block or rounded down. Immutable.",
 							Type:        []string{"string"},
 							Format:      "",
 						},
@@ -585,7 +585,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimStatus(ref common.ReferenceCallback) c
 					},
 					"address": {
 						SchemaProps: spec.SchemaProps{
-							Description: "Address is the single address form of AllocatedCIDR, set when the class hands out host addresses rather than blocks.",
+							Description: "Address is the single address form of AllocatedCIDR, set whenever the allocated block holds exactly one address (a /32 or a /128).",
 							Type:        []string{"string"},
 							Format:      "",
 						},

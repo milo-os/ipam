@@ -1,0 +1,9 @@
+# No address: the allocator chooses, exactly as before #183.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-auto
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-host-v4

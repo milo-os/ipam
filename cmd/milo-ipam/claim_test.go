@@ -9,6 +9,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	"go.miloapis.com/ipam/pkg/ipamerrors"
 )
 
 func TestBuildClaim(t *testing.T) {
@@ -413,5 +414,52 @@ func TestClaimReleaseNotFound(t *testing.T) {
 	err := cmd.RunE(cmd, []string{"nope"})
 	if err == nil || toCLIError(err).code != exitNotFound {
 		t.Fatalf("error = %v, want not found(%d)", err, exitNotFound)
+	}
+}
+
+// A named-address refusal tells the caller what to do, and the next step depends
+// on why: a retained holder is released, a live one belongs to a claim, a
+// reserved position is the pool's, and an outside or unaligned address is the
+// caller's to fix.
+func TestAddressRefusalFixIts(t *testing.T) {
+	ipclaims := ipamv1alpha1.Resource("ipclaims")
+	o := &claimOptions{class: "dns-v6", address: "fd00::53"}
+	cases := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantFix  string
+	}{
+		{"retained holder", ipamerrors.NewAddressInUse(ipclaims, "dns",
+			ipamerrors.Holder{Namespace: "net", Name: "alloc-1", Retained: true}, "held"),
+			exitConflict, "datumctl ipam allocation release alloc-1 --namespace net"},
+		{"live holder", ipamerrors.NewAddressInUse(ipclaims, "dns",
+			ipamerrors.Holder{Namespace: "net", Name: "alloc-2"}, "held"),
+			exitConflict, "Release that claim first"},
+		{"unnamed holder", ipamerrors.NewAddressInUse(ipclaims, "dns", ipamerrors.Holder{}, "carved"),
+			exitConflict, "omit --address"},
+		{"reserved", ipamerrors.NewAddressReserved(ipclaims, "dns", "withheld"),
+			exitConflict, "withholds this position"},
+		{"outside", ipamerrors.New(ipamerrors.ReasonAddressOutsidePool, "in no pool"),
+			exitInvalid, "datumctl ipam class show dns-v6"},
+		{"unaligned", ipamerrors.New(ipamerrors.ReasonAddressUnaligned, "not aligned"),
+			exitInvalid, "first address of the block"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ce := addressRefusalError(tc.err, o)
+			if ce == nil {
+				t.Fatal("addressRefusalError returned nil for an address refusal")
+			}
+			if ce.code != tc.wantCode {
+				t.Errorf("exit code = %d, want %d", ce.code, tc.wantCode)
+			}
+			if !strings.Contains(ce.fix, tc.wantFix) {
+				t.Errorf("fix %q does not contain %q", ce.fix, tc.wantFix)
+			}
+		})
+	}
+	if ce := addressRefusalError(ipamerrors.NewClaimExists(ipclaims, "dns", "exists"), o); ce != nil {
+		t.Errorf("a duplicate-claim refusal was rendered as an address refusal: %v", ce)
 	}
 }

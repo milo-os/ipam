@@ -47,6 +47,10 @@ func TestReasonForEveryRefusal(t *testing.T) {
 		{"retained allocation", NewRetainedAllocation(ipclaims, "web", "alloc-1234", "retained by an earlier claim"), ReasonAllocationRetained, http.StatusConflict},
 		{"claim exists", NewClaimExists(ipclaims, "web", "already holds an allocation"), ReasonClaimExists, http.StatusConflict},
 		{"no project scope", New(ReasonNoProjectScope, "ipam: request carries no project scope"), ReasonNoProjectScope, http.StatusBadRequest},
+		{"address in use", NewAddressInUse(ipclaims, "web", Holder{Namespace: "default", Name: "alloc-1234"}, "address 10.0.0.1/32 is held"), ReasonAddressInUse, http.StatusConflict},
+		{"address reserved", NewAddressReserved(ipclaims, "web", "address 10.0.0.0/32 is reserved"), ReasonAddressReserved, http.StatusConflict},
+		{"address outside pool", New(ReasonAddressOutsidePool, "address 192.0.2.1 is in no pool"), ReasonAddressOutsidePool, http.StatusBadRequest},
+		{"address unaligned", New(ReasonAddressUnaligned, "10.0.0.5 is not the start of a /28"), ReasonAddressUnaligned, http.StatusBadRequest},
 	}
 
 	for _, tc := range cases {
@@ -178,5 +182,53 @@ func TestUnknownReasonIsNotGuessed(t *testing.T) {
 	}}
 	if got := ReasonFor(roundTrip(t, future)); got != ReasonUnknown {
 		t.Errorf("ReasonFor(future reason) = %q, want unknown", got)
+	}
+}
+
+// A held address is a conflict to client-go, and must not read as
+// AlreadyExists: a controller that treats AlreadyExists as "mine is there"
+// would adopt somebody else's address.
+func TestAddressInUseIsNotAlreadyExists(t *testing.T) {
+	err := roundTrip(t, NewAddressInUse(ipclaims, "web", Holder{}, "held"))
+	if !apierrors.IsConflict(err) {
+		t.Error("an address-in-use refusal is not a conflict to client-go")
+	}
+	if apierrors.IsAlreadyExists(err) {
+		t.Error("an address-in-use refusal reads as AlreadyExists")
+	}
+	if ReasonFor(err) != ReasonAddressInUse {
+		t.Errorf("ReasonFor = %q, want AddressInUse", ReasonFor(err))
+	}
+	reserved := roundTrip(t, NewAddressReserved(ipclaims, "web", "reserved"))
+	if !apierrors.IsConflict(reserved) || apierrors.IsAlreadyExists(reserved) {
+		t.Error("an address-reserved refusal must be a conflict and not AlreadyExists")
+	}
+}
+
+// The holder is what the caller acts on: a retained allocation is deleted to
+// free the address, a live one belongs to someone else.
+func TestAddressHolder(t *testing.T) {
+	retained := roundTrip(t, NewAddressInUse(ipclaims, "web",
+		Holder{Namespace: "dns", Name: "alloc-1234", Retained: true}, "held by a retained allocation"))
+	h, ok := AddressHolder(retained)
+	if !ok || h != (Holder{Namespace: "dns", Name: "alloc-1234", Retained: true}) {
+		t.Errorf("AddressHolder = %+v, %v; want the retained allocation", h, ok)
+	}
+
+	live := roundTrip(t, NewAddressInUse(ipclaims, "web", Holder{Namespace: "dns", Name: "alloc-5678"}, "held"))
+	if h, ok := AddressHolder(live); !ok || h.Retained || h.Name != "alloc-5678" || h.Namespace != "dns" {
+		t.Errorf("AddressHolder = %+v, %v; want a live holder", h, ok)
+	}
+
+	anonymous := roundTrip(t, NewAddressInUse(ipclaims, "web", Holder{}, "carved to a child pool"))
+	if h, ok := AddressHolder(anonymous); !ok || h != (Holder{}) {
+		t.Errorf("AddressHolder = %+v, %v; want an unnamed holder", h, ok)
+	}
+
+	if _, ok := AddressHolder(roundTrip(t, NewAddressReserved(ipclaims, "web", "reserved"))); ok {
+		t.Error("a reserved address reports a holder")
+	}
+	if _, ok := RetainedAllocation(retained); ok {
+		t.Error("an address-in-use refusal reads as a retained claim name")
 	}
 }

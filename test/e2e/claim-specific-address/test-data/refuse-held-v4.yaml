@@ -1,0 +1,10 @@
+# 172.18.30.10 is held by csa-exact-v4-again.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-dup-v4
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-host-v4
+  address: 172.18.30.10

@@ -1,0 +1,11 @@
+# CIDR form. 172.18.30.64/28 is aligned and not the first free /28.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-exact-block
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-block-v4
+  prefixLength: 28
+  address: 172.18.30.64/28

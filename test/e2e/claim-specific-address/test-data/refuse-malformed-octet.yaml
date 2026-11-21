@@ -1,0 +1,9 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-malformed-octet
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-host-v4
+  address: 172.18.30.999

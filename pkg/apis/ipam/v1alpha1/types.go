@@ -766,8 +766,8 @@ type IPAllocationStatus struct {
 	Phase AllocationPhase `json:"phase,omitempty"`
 	// +optional
 	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
-	// Address is the single address form of AllocatedCIDR, set when the class
-	// hands out host addresses rather than blocks.
+	// Address is the single address form of AllocatedCIDR, set whenever the
+	// allocated block holds exactly one address (a /32 or a /128).
 	// +optional
 	Address string `json:"address,omitempty"`
 	// ScopeDigest is the canonical digest of spec.scope, computed by the
@@ -866,7 +866,17 @@ type IPClaimSpec struct {
 	// +optional
 	AddressScope AddressScope `json:"addressScope,omitempty"`
 
-	// Address names a specific address to bind. Omitted, the allocator chooses.
+	// Address names the exact block to bind: a bare address (the block of
+	// PrefixLength bits starting at it, e.g. "10.0.0.16") or a CIDR (e.g.
+	// "10.0.0.16/28", whose length must equal PrefixLength when both are set,
+	// and supplies it when PrefixLength is omitted). Omitted, the allocator
+	// chooses.
+	//
+	// The claim is bound to exactly that block or refused: AddressInUse when
+	// something holds it, AddressReserved when its pool withholds it,
+	// AddressOutsidePool when no pool offering the class contains it, and
+	// AddressUnaligned when the address does not start a block of the claim's
+	// size. It is never moved to another block or rounded down. Immutable.
 	// +optional
 	Address string `json:"address,omitempty"`
 
@@ -915,8 +925,8 @@ type IPClaimStatus struct {
 	Phase ClaimPhase `json:"phase,omitempty"`
 	// +optional
 	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
-	// Address is the single address form of AllocatedCIDR, set when the class
-	// hands out host addresses rather than blocks.
+	// Address is the single address form of AllocatedCIDR, set whenever the
+	// allocated block holds exactly one address (a /32 or a /128).
 	// +optional
 	Address string `json:"address,omitempty"`
 	// PoolRef names the pool the allocation was drawn from. It is resolved by

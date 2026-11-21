@@ -1,0 +1,10 @@
+# The first address of csa-rsv, which the pool withholds (leading: 1, /32).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-rsv-first
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-rsv-v4
+  address: 172.18.32.0

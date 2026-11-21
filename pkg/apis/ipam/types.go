@@ -461,8 +461,8 @@ type IPAllocationSpec struct {
 type IPAllocationStatus struct {
 	Phase         AllocationPhase
 	AllocatedCIDR string
-	// Address is the single address form of AllocatedCIDR, set when the class
-	// hands out host addresses rather than blocks.
+	// Address is the single address form of AllocatedCIDR, set whenever the
+	// allocated block holds exactly one address (a /32 or a /128).
 	Address string
 	// ScopeDigest is the canonical digest of Spec.Scope, computed by the
 	// server — the value uniqueness is enforced on.
@@ -521,7 +521,17 @@ type IPClaimSpec struct {
 	// with the class the claim resolves to. Immutable.
 	AddressScope AddressScope
 
-	// Address names a specific address to bind. Omitted, the allocator chooses.
+	// Address names the exact block to bind: a bare address (the block of
+	// PrefixLength bits starting at it, e.g. "10.0.0.16") or a CIDR (e.g.
+	// "10.0.0.16/28", whose length must equal PrefixLength when both are set,
+	// and supplies it when PrefixLength is omitted). Omitted, the allocator
+	// chooses.
+	//
+	// The claim is bound to exactly that block or refused: AddressInUse when
+	// something holds it, AddressReserved when its pool withholds it,
+	// AddressOutsidePool when no pool offering the class contains it, and
+	// AddressUnaligned when the address does not start a block of the claim's
+	// size. It is never moved to another block or rounded down. Immutable.
 	Address string
 
 	// PrefixLength is the requested block size in bits. Nil applies the class's
@@ -550,8 +560,8 @@ type IPClaimSpec struct {
 type IPClaimStatus struct {
 	Phase         ClaimPhase
 	AllocatedCIDR string
-	// Address is the single address form of AllocatedCIDR, set when the class
-	// hands out host addresses rather than blocks.
+	// Address is the single address form of AllocatedCIDR, set whenever the
+	// allocated block holds exactly one address (a /32 or a /128).
 	Address string
 	// PoolRef names the pool the allocation was drawn from. It is resolved by
 	// the allocator, not requested.

@@ -1,0 +1,12 @@
+# The address says /28, prefixLength says /29. Both are lengths the class
+# allows, so only the disagreement can refuse it.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-len-mismatch
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-block-v4
+  prefixLength: 29
+  address: 172.18.30.32/28

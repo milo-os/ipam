@@ -1,0 +1,199 @@
+# Classes and pools for claim-specific-address (milo-os/ipam#183).
+#
+# Everything is prefixed csa- so the suite cannot collide with another suite
+# running concurrently in the same project, and every root range is one no
+# other fixture holds (test/fixtures TestFixtureRootRangesAreDisjoint).
+#
+#   csa-v4          172.18.30.0/24  csa-host-v4 (/32) and csa-block-v4 (/28-/29)
+#   csa-two-a       172.18.31.0/24  csa-two (/32)   } one class, two pools; -a
+#   csa-two-b       172.18.33.0/24  csa-two (/32)   } sorts first by name
+#   csa-rsv         172.18.32.0/28  csa-rsv-v4 (/32), first address withheld
+#   csa-v6          fd83:183::/64   csa-host-v6 (/128, unique within network)
+#   csa-range-root  fd83:184::/64   csa-range (poolPer network, /96 ranges)
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: csa-host-v4
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+# Blocks rather than hosts, from the same pool as csa-host-v4. Allowing /29 as
+# well as /28 is what lets a CIDR-form address of /28 with prefixLength 29 be
+# refused for disagreeing with itself rather than for an out-of-bounds size.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: csa-block-v4
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 28
+    max: 29
+  defaultPrefixLength: 28
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: csa-two
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: csa-rsv-v4
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+# The network-services-operator internal-DNS shape: one /128 per network, and
+# two networks may each hold the same address.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: csa-host-v6
+spec:
+  ipFamily: IPv6
+  uniqueWithin:
+    - network
+  allowedPrefixLengths:
+    min: 128
+    max: 128
+  defaultPrefixLength: 128
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+# Only here so a target: ScopeRange claim has a class that holds ranges.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: csa-range
+spec:
+  ipFamily: IPv6
+  poolPer:
+    - network
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 96
+    max: 96
+  defaultPrefixLength: 96
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: csa-v4
+spec:
+  cidr: 172.18.30.0/24
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - csa-host-v4
+    - csa-block-v4
+  allocation:
+    minPrefixLength: 28
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: csa-two-a
+spec:
+  cidr: 172.18.31.0/24
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - csa-two
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: csa-two-b
+spec:
+  cidr: 172.18.33.0/24
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - csa-two
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+# The first address is withheld, as a subnet's router would hold it.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: csa-rsv
+spec:
+  cidr: 172.18.32.0/28
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - csa-rsv-v4
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+  reservations:
+    leading: 1
+    unitPrefixLength: 32
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: csa-v6
+spec:
+  cidr: fd83:183::/64
+  ipFamily: IPv6
+  visibility: consumer
+  classNames:
+    - csa-host-v6
+  allocation:
+    minPrefixLength: 128
+    maxPrefixLength: 128
+    strategy: FirstFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: csa-range-root
+spec:
+  cidr: fd83:184::/64
+  ipFamily: IPv6
+  visibility: platform
+  classNames:
+    - csa-range
+  allocation:
+    minPrefixLength: 96
+    maxPrefixLength: 96
+    strategy: FirstFit

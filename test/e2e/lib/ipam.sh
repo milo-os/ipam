@@ -557,3 +557,258 @@ if ip in net:
 print(("OK: %s %s does not contain %s" % (label, cidr, addr)).strip())
 ' "$1" "$2" "${3:-}"
 }
+
+# ---------------------------------------------------------------------------
+# Asserting on the IPAM reason a refusal carries
+#
+# A status code alone does not say which rule refused a request: a 409 is both
+# "this address is already held" and "an object of this name exists", and a
+# 400 is half the allocator's refusals. IPAM names the rule in the Status body
+# as details.causes[].reason — what Go calls StatusCause.Type — and kubectl's
+# rendered error never shows causes. So these read the server's own Status
+# object out of the client transport log.
+#
+# Recent kubectl logs the body as a Go-quoted string,
+#
+#   "Response Body" body="{\"kind\":\"Status\",...}"
+#
+# and older kubectl as `Response Body: {...}`; both are read. -v=9 rather than
+# -v=8 because -v=8 truncates bodies past 1024 bytes, and a refusal listing the
+# pools it checked can be long. The LAST Status in the log is the answer: a
+# patch GETs the object before it sends the PATCH.
+# ---------------------------------------------------------------------------
+
+# _check_status <label> <rc> <code> <cause-reason-or-empty> <field-or-empty> <regex-or-empty>
+# The kubectl -v=9 output is on stdin.
+#
+# <cause-reason> is matched against details.causes[0].reason; <field> against
+# the field of ANY cause (field errors carry one cause per field). <regex> is
+# a Python regex searched in status.message and every cause message. The
+# status.reason is derived from <code> and always asserted, so a 409 that is
+# AlreadyExists cannot pass for one that is Conflict.
+_check_status() {
+  python3 -c '
+import json, re, sys
+
+label, rc, want_code, want_cause, want_field, regex = sys.argv[1:7]
+want_code = int(want_code)
+reasons = {400: "BadRequest", 403: "Forbidden", 404: "NotFound", 409: "Conflict",
+           422: "Invalid", 507: "InsufficientStorage"}
+
+def fail(msg, body=None):
+    print("FAIL: %s %s" % (label, msg))
+    if body is not None:
+        print("      response: %s" % json.dumps(body, sort_keys=True))
+    sys.exit(1)
+
+if rc == "0":
+    fail("was accepted; expected a refusal with HTTP %d" % want_code)
+
+status = None
+lines = sys.stdin.read().splitlines()
+bodies = []
+k = 0
+while k < len(lines):
+    line = lines[k]
+    k += 1
+    i = line.find("\"Response Body\" body=")
+    if i >= 0:
+        rest = line[i + len("\"Response Body\" body="):].strip()
+        if rest == "<":
+            # klog writes a value that ends in a newline as a block:
+            #   "Response Body" body=<
+            #   \t{...}
+            #    >
+            block = []
+            while k < len(lines) and lines[k].strip() != ">":
+                block.append(lines[k][1:] if lines[k].startswith("\t") else lines[k])
+                k += 1
+            k += 1
+            bodies.append("\n".join(block))
+        else:
+            try:
+                bodies.append(json.loads(rest))
+            except ValueError:
+                pass
+        continue
+    j = line.find("Response Body: ")
+    if j >= 0:
+        bodies.append(line[j + len("Response Body: "):].strip())
+
+for raw in bodies:
+    if not raw:
+        continue
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        continue
+    if isinstance(obj, dict) and obj.get("kind") == "Status":
+        status = obj
+
+if status is None:
+    fail("was refused but no Status body could be read from the kubectl transport log")
+
+code = status.get("code")
+if code == 500:
+    fail("returned 500; a refused request must not read as a server fault", status)
+if code != want_code:
+    fail("returned HTTP %s, expected %d" % (code, want_code), status)
+want_reason = reasons.get(want_code)
+if want_reason and status.get("reason") != want_reason:
+    fail("returned reason %r, expected %r" % (status.get("reason"), want_reason), status)
+
+causes = (status.get("details") or {}).get("causes") or []
+if want_cause:
+    got = (causes[0].get("reason") or causes[0].get("type") or "") if causes else ""
+    if got != want_cause:
+        fail("carried IPAM reason %r (details.causes[0].reason), expected %r" % (got or None, want_cause), status)
+if want_field:
+    fields = [c.get("field", "") for c in causes]
+    if want_field not in fields:
+        fail("named fields %s, expected %r among them" % (fields, want_field), status)
+if regex:
+    text = "\n".join([status.get("message", "")] + [c.get("message", "") for c in causes])
+    if not re.search(regex, text):
+        fail("message does not match %r" % regex, status)
+
+print("OK: %s refused with %d%s%s" % (label, want_code,
+      (" " + want_cause) if want_cause else "",
+      (" on " + want_field) if want_field else ""))
+' "$@"
+}
+
+# expect_refusal <namespace> <httpCode> <causeReason> [messageRegex] [label]
+# Manifest on stdin. Asserts the create was refused with <httpCode>, the
+# matching status.reason, and the IPAM reason <causeReason> as the first cause.
+expect_refusal() {
+  _ns="$1"; _code="$2"; _cause="$3"; _re="${4:-}"; _label="${5:-create}"
+  _out=$($KUBECTL create -n "$_ns" -v=9 -f - 2>&1) && _rc=0 || _rc=$?
+  printf '%s\n' "$_out" | _check_status "$_label" "$_rc" "$_code" "$_cause" "" "$_re"
+}
+
+# expect_invalid <namespace> <field> [messageRegex] [label]
+# Manifest on stdin. Asserts a 422 Invalid naming <field> (e.g. spec.address).
+expect_invalid() {
+  _ns="$1"; _field="$2"; _re="${3:-}"; _label="${4:-create}"
+  _out=$($KUBECTL create -n "$_ns" -v=9 -f - 2>&1) && _rc=0 || _rc=$?
+  printf '%s\n' "$_out" | _check_status "$_label" "$_rc" 422 "" "$_field" "$_re"
+}
+
+# expect_patch_invalid <kind> <namespace> <name> <mergePatchJSON> <field> [messageRegex] [label]
+# The update counterpart of expect_invalid, for immutable fields.
+expect_patch_invalid() {
+  _kind="$1"; _ns="$2"; _name="$3"; _patch="$4"; _field="$5"; _re="${6:-}"; _label="${7:-patch}"
+  _out=$($KUBECTL patch "$_kind" -n "$_ns" "$_name" --type merge -p "$_patch" -v=9 2>&1) && _rc=0 || _rc=$?
+  printf '%s\n' "$_out" | _check_status "$_label" "$_rc" 422 "" "$_field" "$_re"
+}
+
+# expect_no_claim <namespace> <name> [label]
+# A refused claim must leave nothing behind.
+expect_no_claim() {
+  if $KUBECTL get ipclaim -n "$1" "$2" >/dev/null 2>&1; then
+    echo "FAIL: ${3:-ipclaim $1/$2} was refused but the IPClaim persisted"
+    $KUBECTL get ipclaim -n "$1" "$2" -o yaml 2>&1 | sed 's/^/    /' || true
+    return 1
+  fi
+}
+
+# allocation_count <namespace> [pool] — IPAllocations in <namespace>, optionally
+# only those drawn from <pool>. Compared before and after a refusal, it proves
+# the refusal consumed nothing.
+allocation_count() {
+  $KUBECTL get ipallocation -n "$1" -o json \
+    | jq --arg p "${2:-}" '[.items[] | select($p == "" or .spec.poolRef.name == $p)] | length'
+}
+
+# ---------------------------------------------------------------------------
+# Asserting a claim was bound to exactly what it asked for
+# ---------------------------------------------------------------------------
+
+# create_claim_json <namespace> — manifest on stdin; prints the CREATE response
+# as JSON. Asserting on the response rather than on a later GET is what shows
+# the allocation is synchronous.
+create_claim_json() {
+  _out=$($KUBECTL create -n "$1" -f - -o json 2>&1) && _rc=0 || _rc=$?
+  if [ "$_rc" != "0" ]; then
+    echo "FAIL: create was refused; expected it to bind" >&2
+    printf '%s\n' "$_out" | tail -3 >&2
+    return 1
+  fi
+  printf '%s\n' "$_out"
+}
+
+# assert_bound_exactly <claimJSON> <expectedCIDR> <expectedAddress|-> [label]
+# The claim is Bound, its allocatedCIDR is EXACTLY <expectedCIDR> (same network
+# and same length, compared through ipaddress so IPv6 spellings agree), and
+# status.address is <expectedAddress>, or empty when given "-".
+assert_bound_exactly() {
+  printf '%s' "$1" | python3 -c '
+import ipaddress, json, sys
+want_cidr, want_addr, label = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    c = json.load(sys.stdin)
+except ValueError:
+    print("FAIL: %s: no claim object to check (the create did not return one)" % (label or "claim"))
+    sys.exit(1)
+st = c.get("status") or {}
+name = (c.get("metadata") or {}).get("name", "?")
+label = label or name
+if st.get("phase") != "Bound":
+    print("FAIL: %s is %r, expected Bound" % (label, st.get("phase")))
+    sys.exit(1)
+got = st.get("allocatedCIDR", "")
+want = ipaddress.ip_network(want_cidr, strict=True)
+try:
+    ok = ipaddress.ip_network(got, strict=True) == want
+except ValueError:
+    ok = False
+if not ok:
+    print("FAIL: %s asked for %s and was bound to %r instead." % (label, want, got))
+    print("      expected status.allocatedCIDR=%s, got %r" % (want, got))
+    sys.exit(1)
+addr = st.get("address", "")
+if want_addr == "-":
+    if addr:
+        print("FAIL: %s holds the block %s but status.address is %r; expected it empty" % (label, got, addr))
+        sys.exit(1)
+else:
+    try:
+        aok = ipaddress.ip_address(addr) == ipaddress.ip_address(want_addr)
+    except ValueError:
+        aok = False
+    if not aok:
+        print("FAIL: %s status.address is %r, expected %s" % (label, addr, want_addr))
+        sys.exit(1)
+print("OK: %s bound exactly %s%s" % (label, want, "" if want_addr == "-" else " (address " + want_addr + ")"))
+' "$2" "$3" "${4:-}"
+}
+
+# assert_single_address <claimJSON> [label]
+# For an automatic claim of a single-address block (/32 or /128): status.address
+# is the bare address of allocatedCIDR. Prints the allocated CIDR on success.
+assert_single_address() {
+  printf '%s' "$1" | python3 -c '
+import ipaddress, json, sys
+label = sys.argv[1]
+try:
+    c = json.load(sys.stdin)
+except ValueError:
+    print("FAIL: %s: no claim object to check (the create did not return one)" % (label or "claim"), file=sys.stderr)
+    sys.exit(1)
+st = c.get("status") or {}
+label = label or (c.get("metadata") or {}).get("name", "?")
+if st.get("phase") != "Bound":
+    print("FAIL: %s is %r, expected Bound" % (label, st.get("phase")), file=sys.stderr); sys.exit(1)
+net = ipaddress.ip_network(st.get("allocatedCIDR", ""), strict=True)
+if net.num_addresses != 1:
+    print("FAIL: %s holds %s, not a single address" % (label, net), file=sys.stderr); sys.exit(1)
+try:
+    ok = ipaddress.ip_address(st.get("address", "")) == net.network_address
+except ValueError:
+    ok = False
+if not ok:
+    print("FAIL: %s holds %s but status.address is %r, expected %s"
+          % (label, net, st.get("address"), net.network_address), file=sys.stderr); sys.exit(1)
+print(net)
+' "${2:-}"
+}

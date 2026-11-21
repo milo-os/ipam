@@ -1,0 +1,20 @@
+# The same address in a different network: csa-host-v6 is unique within
+# network, so this is a different address space and must bind.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  generateName: csa-dns-
+  labels:
+    suite: claim-specific-address
+    csa-case: dns-b
+spec:
+  className: csa-host-v6
+  ipFamily: IPv6
+  prefixLength: 128
+  address: "fd83:183::53"
+  reclaimPolicy: Delete
+  scope:
+    network:
+      apiGroup: networking.datumapis.com
+      kind: Network
+      name: csa-net-b

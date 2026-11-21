@@ -60,7 +60,7 @@ func ResolveScopeRange(ctx context.Context, db TxBeginner, leaf *ResolvedClass, 
 		return "", err
 	}
 
-	source, err := discoverInTx(ctx, db, levels[0].Class, claimScope)
+	source, err := discoverInTx(ctx, db, levels[0].Class, claimScope, nil)
 	if err != nil {
 		return "", err
 	}

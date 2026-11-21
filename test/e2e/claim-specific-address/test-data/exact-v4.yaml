@@ -1,0 +1,11 @@
+# Deliberately not the first free address: a server that ignores spec.address
+# hands out 172.18.30.0/32 and this claim visibly lands somewhere it did not ask.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-exact-v4
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-host-v4
+  address: 172.18.30.10

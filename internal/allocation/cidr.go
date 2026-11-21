@@ -1,7 +1,7 @@
 // Package allocation provides pure-Go CIDR and ASN allocation primitives.
 //
 // INVARIANT: this package has zero non-stdlib imports. It depends only on
-// "net", "math/big", "sort", "errors", and "fmt". Other allocation services
+// "net", "math/big", "sort", "errors", "fmt" and "strings". Other allocation services
 // (VLAN, port, etc.) may import it directly.
 package allocation
 

@@ -1,0 +1,10 @@
+# The address csa-exact-v4 held, asked for again once that claim is gone.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-exact-v4-again
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-host-v4
+  address: 172.18.30.10

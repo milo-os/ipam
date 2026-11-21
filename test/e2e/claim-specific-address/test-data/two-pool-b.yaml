@@ -1,0 +1,11 @@
+# csa-two is offered by csa-two-a (sorts first) and csa-two-b. This address is
+# only inside csa-two-b.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-two-b-7
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-two
+  address: 172.18.33.7

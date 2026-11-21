@@ -1,0 +1,17 @@
+# A scope-range claim binds the range its class holds; it cannot name one.
+# Already refused before #183 — kept as a regression check.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-range-addr
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-range
+  target: ScopeRange
+  address: "fd83:184::/96"
+  scope:
+    network:
+      apiGroup: networking.datumapis.com
+      kind: Network
+      name: csa-net-a

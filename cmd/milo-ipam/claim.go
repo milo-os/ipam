@@ -14,6 +14,7 @@ import (
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	clientset "go.miloapis.com/ipam/pkg/client/clientset/versioned"
+	"go.miloapis.com/ipam/pkg/ipamerrors"
 )
 
 func setClaimGVK(c *ipamv1alpha1.IPClaim) {
@@ -420,6 +421,9 @@ func (a *app) renderClaimDryRun(dryClaim *ipamv1alpha1.IPClaim, cs clientset.Int
 // signature case is 507 (exhaustion), which is re-decorated with the class, the
 // scope, and the pools that back the class.
 func (a *app) claimCreateError(err error, o *claimOptions, cs clientset.Interface) error {
+	if ce := addressRefusalError(err, o); ce != nil {
+		return ce
+	}
 	switch httpStatusCode(err) {
 	case 507:
 		return exhaustionError(o.class, formatScope(mustScope(o.scope)), classPoolLines(cs, o.class), err)
@@ -434,6 +438,52 @@ func (a *app) claimCreateError(err error, o *claimOptions, cs clientset.Interfac
 			withFix("a claim with that name already exists; pick a different --name.").withCause(err)
 	}
 	return classifyError(err)
+}
+
+// addressRefusalError renders the refusals of a claim that named its address,
+// or returns nil for any other error. Each says what to do next, because the
+// HTTP code alone cannot: a held address and a reserved one are both 409s and
+// call for different people.
+func addressRefusalError(err error, o *claimOptions) *cliError {
+	switch ipamerrors.ReasonFor(err) {
+	case ipamerrors.ReasonAddressInUse:
+		ce := newCLIError(exitConflict, fmt.Sprintf("address %s is already in use: %s", o.address, apiMessage(err))).withCause(err)
+		holder, _ := ipamerrors.AddressHolder(err)
+		switch {
+		case holder.Retained && holder.Name != "":
+			// Retain is what keeps it held: nothing will release it on its own.
+			fix := "the address is held by an allocation retained after its claim was deleted.\n" +
+				"       Release it to free the address, then claim again:\n" +
+				"       datumctl ipam allocation release " + holder.Name
+			if holder.Namespace != "" {
+				fix += " --namespace " + holder.Namespace
+			}
+			return ce.withFix(fix)
+		case holder.Name != "":
+			return ce.withFix(fmt.Sprintf("IPAllocation %q holds it for a live claim. Release that claim first, or\n"+
+				"       omit --address to let the allocator choose a free one:\n"+
+				"       datumctl ipam allocation show %s", holder.Name, holder.Name))
+		}
+		return ce.withFix("omit --address to let the allocator choose a free address.")
+	case ipamerrors.ReasonAddressReserved:
+		return newCLIError(exitConflict, fmt.Sprintf("address %s is reserved by its pool: %s", o.address, apiMessage(err))).
+			withFix("the pool withholds this position (for example a subnet's router address).\n" +
+				"       Claim a different address, or omit --address.").withCause(err)
+	case ipamerrors.ReasonAddressOutsidePool:
+		fix := "no pool offering this class contains the address. Check the class's pools:"
+		if o.class != "" {
+			fix += "\n       datumctl ipam class show " + o.class
+		} else {
+			fix += "\n       datumctl ipam class list"
+		}
+		return newCLIError(exitInvalid, fmt.Sprintf("address %s is outside the class's pools: %s", o.address, apiMessage(err))).
+			withFix(fix).withCause(err)
+	case ipamerrors.ReasonAddressUnaligned:
+		return newCLIError(exitInvalid, fmt.Sprintf("address %s does not start a block of the requested size: %s", o.address, apiMessage(err))).
+			withFix("name the first address of the block, or pass the block as a CIDR\n" +
+				"       (for example --address 10.0.0.16/28).").withCause(err)
+	}
+	return nil
 }
 
 // mustScope re-parses the scope flags for error decoration. The values already

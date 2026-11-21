@@ -176,3 +176,86 @@ func TestAClaimAddressScopeIsImmutable(t *testing.T) {
 	}
 	t.Fatalf("errors = %v, want one forbidding spec.addressScope", errs)
 }
+
+func int32p(v int32) *int32 { return &v }
+
+// spec.address is checked for form before anything else runs. What fits the
+// class is decided on create; what cannot be an address at all is refused here.
+func TestAddressForm(t *testing.T) {
+	tests := []struct {
+		name         string
+		address      string
+		prefixLength *int32
+		wantErr      string
+	}{
+		{name: "bare IPv4", address: "10.0.0.10"},
+		{name: "bare IPv6", address: "fd00::53"},
+		{name: "IPv4 CIDR", address: "10.0.0.16/28"},
+		{name: "IPv6 CIDR", address: "fd00:0:0:1::/64"},
+		{name: "CIDR agreeing with prefixLength", address: "10.0.0.16/28", prefixLength: int32p(28)},
+		{name: "bare address with prefixLength", address: "10.0.0.16", prefixLength: int32p(28)},
+		// Alignment is the allocator's to judge once the size is known.
+		{name: "unaligned CIDR is a form the server judges later", address: "10.0.0.5/28"},
+
+		{name: "garbage", address: "not-an-ip", wantErr: "must be an IP address or a CIDR"},
+		{name: "octet out of range", address: "10.0.0.999", wantErr: "must be an IP address or a CIDR"},
+		{name: "malformed CIDR", address: "10.0.0.0/33", wantErr: "must be an IP address or a CIDR"},
+		{name: "zoned", address: "fe80::1%eth0", wantErr: "zone"},
+		{name: "IPv4-mapped IPv6", address: "::ffff:10.0.0.1", wantErr: "IPv4-mapped"},
+		{name: "IPv4-mapped IPv6 CIDR", address: "::ffff:10.0.0.0/120", wantErr: "IPv4-mapped"},
+		{name: "CIDR disagreeing with prefixLength", address: "10.0.0.32/28", prefixLength: int32p(29), wantErr: "spec.prefixLength is 29"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateIPClaim(claim(func(c *ipam.IPClaim) {
+				c.Spec.Address = tc.address
+				c.Spec.PrefixLength = tc.prefixLength
+			}))
+			if tc.wantErr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("validateIPClaim() = %v, want no errors", errs)
+				}
+				return
+			}
+			if len(errs) == 0 {
+				t.Fatalf("validateIPClaim() accepted %q", tc.address)
+			}
+			if errs[0].Field != "spec.address" {
+				t.Errorf("error names %q, want spec.address", errs[0].Field)
+			}
+			if !strings.Contains(errs[0].Detail, tc.wantErr) {
+				t.Errorf("error %q does not mention %q", errs[0].Detail, tc.wantErr)
+			}
+		})
+	}
+}
+
+// The address is what the claim is bound to; editing it would leave the claim
+// naming one address while holding another.
+func TestAddressIsImmutable(t *testing.T) {
+	s := NewStrategy(nil)
+	old := claim(func(c *ipam.IPClaim) { c.Spec.Address = "10.0.0.10" })
+	for _, next := range []string{"10.0.0.11", ""} {
+		updated := old.DeepCopy()
+		updated.Spec.Address = next
+		errs := s.ValidateUpdate(context.Background(), updated, old)
+		found := false
+		for _, e := range errs {
+			if e.Field == "spec.address" && e.Type == field.ErrorTypeForbidden && strings.Contains(e.Detail, "immutable") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("changing spec.address %q -> %q: errors %v, want spec.address immutable", old.Spec.Address, next, errs)
+		}
+	}
+	added := claim()
+	withAddr := added.DeepCopy()
+	withAddr.Spec.Address = "10.0.0.10"
+	if errs := s.ValidateUpdate(context.Background(), withAddr, added); len(errs) == 0 {
+		t.Error("adding spec.address to a bound claim was accepted")
+	}
+	if errs := s.ValidateUpdate(context.Background(), old.DeepCopy(), old); len(errs) != 0 {
+		t.Errorf("an unchanged address was refused: %v", errs)
+	}
+}

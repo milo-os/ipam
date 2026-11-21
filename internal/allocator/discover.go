@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -24,6 +27,16 @@ var ErrNoOfferingPool = errors.New("ipam: no pool offers this class")
 // an allocation out of what its ancestry provisions, so an operator backs the
 // chain once at the top rather than once per class hanging off it.
 func DiscoverPool(ctx context.Context, tx pgx.Tx, class *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, error) {
+	return DiscoverPoolFor(ctx, tx, class, claimScope, nil)
+}
+
+// DiscoverPoolFor is DiscoverPool for a claim that may name its block. With
+// want set, only a pool containing the whole block is a candidate, and the
+// class's strategy breaks ties among those: a claim adopting an address in use
+// has to land in the pool that holds it, not in whichever pool the strategy
+// prefers. No offering pool containing it is ErrAddressOutsidePool, naming the
+// pools that were checked.
+func DiscoverPoolFor(ctx context.Context, tx pgx.Tx, class *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
 	defer metrics.ObserveQuery("discover_pool", time.Now())
 
 	root, err := chainRoot(ctx, tx, class)
@@ -46,6 +59,12 @@ func DiscoverPool(ctx context.Context, tx pgx.Tx, class *ResolvedClass, claimSco
 	if len(candidates) == 0 {
 		return "", fmt.Errorf("%w: class %q in project %q", ErrNoOfferingPool, class.Name, class.Project)
 	}
+	if want != nil {
+		var err error
+		if candidates, err = poolsContaining(candidates, *want); err != nil {
+			return "", fmt.Errorf("%w (class %q)", err, class.Name)
+		}
+	}
 
 	best := 0
 	for i := 1; i < len(candidates); i++ {
@@ -54,6 +73,29 @@ func DiscoverPool(ctx context.Context, tx pgx.Tx, class *ResolvedClass, claimSco
 		}
 	}
 	return candidates[best].key, nil
+}
+
+// poolsContaining narrows candidates to the pools whose range contains want.
+func poolsContaining(candidates []offeringPool, want net.IPNet) ([]offeringPool, error) {
+	var out []offeringPool
+	checked := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		parents, err := parsePoolCIDR(&c.pool)
+		if err != nil {
+			// A pool whose range does not parse holds no address; the claim
+			// cannot land in it either way.
+			continue
+		}
+		checked = append(checked, fmt.Sprintf("%s (%s)", c.pool.Name, parentsString(parents)))
+		if allocation.IsBlockAvailable(parents, nil, want) {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: %s is in none of the pools offering it: %s",
+			ErrAddressOutsidePool, want.String(), strings.Join(checked, ", "))
+	}
+	return out, nil
 }
 
 // chainRoot returns the class whose pools back the chain: the furthest ancestor,
