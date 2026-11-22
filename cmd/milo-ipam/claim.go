@@ -844,13 +844,25 @@ owner, until something releases it explicitly.`,
 }
 
 // effectiveReclaimPolicy resolves what will actually happen to a claim's address
-// when it is released: the claim's own override, else the class default.
+// when it is released.
 //
-// The claim's spec is not enough on its own. A claim that states no policy
-// inherits Retain from its class, and this prompt must never tell the user
-// their address will be freed when it will not. The class lookup is
-// best-effort; if it fails, the answer falls back to the API default.
+// The server decides from the policy recorded on the allocation when the claim
+// bound, so a bound claim's IPAllocation is the answer: its spec.reclaimPolicy
+// is immutable and is what release reads. The claim and class are a fallback
+// for a claim with no allocation to read, and are only as good as they look —
+// the class's default can have been edited since the claim bound, and a
+// reference class states no policy of its own.
+//
+// This prompt must never tell the user their address will be freed when it
+// will not. Every lookup is best-effort; if all fail, the answer falls back to
+// the API default.
 func effectiveReclaimPolicy(cs clientset.Interface, c *ipamv1alpha1.IPClaim) ipamv1alpha1.ReclaimPolicy {
+	if ref := c.Status.BoundAllocationRef; ref != nil && ref.Name != "" {
+		al, err := cs.IpamV1alpha1().IPAllocations(c.Namespace).Get(context.Background(), ref.Name, metav1.GetOptions{})
+		if err == nil && al.Spec.ReclaimPolicy != "" {
+			return al.Spec.ReclaimPolicy
+		}
+	}
 	if c.Spec.ReclaimPolicy != "" {
 		return c.Spec.ReclaimPolicy
 	}

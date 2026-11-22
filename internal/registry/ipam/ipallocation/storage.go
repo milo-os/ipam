@@ -1,13 +1,16 @@
 // Package ipallocation provides REST storage for the namespaced IPAllocation
 // resource. IPAllocation rows are system-created by the ipclaim handler in the
 // same transaction as the claim that produced them; this storage exposes
-// standard CRUD plus a /status subresource for read paths and selectors.
+// reads, metadata updates and release (delete), plus a /status subresource,
+// and no create.
 package ipallocation
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,7 +18,6 @@ import (
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -28,11 +30,6 @@ import (
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
-
-// IPAllocationStorage is the standard REST storage for IPAllocation.
-type IPAllocationStorage struct {
-	*genericregistry.Store
-}
 
 // IPAllocationStatusStorage exposes the /status subresource.
 type IPAllocationStatusStorage struct {
@@ -59,16 +56,37 @@ func (s *IPAllocationStatusStorage) ConvertToTable(ctx context.Context, obj runt
 }
 
 // ReleasingREST decorates the standard allocation storage with the release
-// path a retained allocation needs.
+// path a retained allocation needs, and without create.
 //
 // An allocation whose claim was released under reclaimPolicy Retain still
 // holds its address and has no claim to delete, so deleting the allocation is
 // the only way to hand the address back. That has to free the underlying
 // ipam_cidr_allocations row, which the generic store knows nothing about.
+//
+// Allocations are written by the claim that makes them, in the transaction
+// that writes their row. One created through the API would have no row behind
+// it and could take the name a future claim's allocation needs, so the
+// endpoint does not offer create at all.
 type ReleasingREST struct {
-	*IPAllocationStorage
+	allocationStore
 	allocator allocator.PrefixAllocator
 	db        txBeginner
+}
+
+// allocationStore is the part of the generic store the IPAllocation endpoint
+// serves. It is an interface so that the store's Create, and the corrupt-object
+// deleter that would skip the row release, are not promoted onto ReleasingREST.
+type allocationStore interface {
+	rest.Storage
+	rest.Scoper
+	rest.SingularNameProvider
+	rest.StorageVersionProvider
+	rest.ResetFieldsStrategy
+	rest.Getter
+	rest.Lister
+	rest.Watcher
+	rest.Updater
+	rest.MayReturnFullObjectDeleter
 }
 
 // txBeginner is the minimal slice of *pgxpool.Pool the release path depends
@@ -78,9 +96,18 @@ type txBeginner interface {
 }
 
 // Delete frees a retained allocation: the ipam_cidr_allocations row and the
-// object row go together, in one transaction. A bound allocation is refused —
-// the same rule the strategy's ValidateDelete states for the paths that reach
-// the store directly.
+// object row go together, in one transaction. A bound allocation is refused
+// with 409 Conflict naming its claim.
+//
+// The object's spec.claimRef is checked first, so the common refusal costs no
+// transaction, but it is not what decides: the release itself deletes only a
+// row bound to no claim, and refuses the same way if the row says otherwise.
+//
+// The object is deleted only if it is still the one read here. Between that
+// read and this transaction another release can free the row and a recreated
+// claim can write a new, bound IPAllocation under the same name; deleting by
+// name alone would remove that one. A dry run runs the same checks and rolls
+// back.
 func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
 	existing, err := r.Get(ctx, name, &metav1.GetOptions{})
 	if err != nil {
@@ -95,12 +122,12 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 			return nil, false, err
 		}
 	}
-	if errs := NewStrategy(nil).ValidateDelete(ctx, alloc); len(errs) > 0 {
-		return nil, false, apierrors.NewInvalid(
-			schema.GroupKind{Group: v1alpha1.GroupName, Kind: "IPAllocation"}, name, errs)
+	if alloc.Spec.ClaimRef != nil && alloc.Spec.ClaimRef.Name != "" {
+		return nil, false, boundConflict(name, alloc.Spec.ClaimRef.Name)
 	}
-	if options != nil && isDryRun(options.DryRun) {
-		return alloc, true, nil
+	readVersion, err := strconv.ParseInt(alloc.ResourceVersion, 10, 64)
+	if err != nil {
+		return nil, false, fmt.Errorf("parse resourceVersion %q of IPAllocation %q: %w", alloc.ResourceVersion, name, err)
 	}
 
 	key := allocationObjectKey(tenant.FromContext(ctx), alloc.Namespace, alloc.Name)
@@ -108,19 +135,66 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 	if err != nil {
 		return nil, false, fmt.Errorf("begin allocation delete transaction: %w", err)
 	}
-	if err := r.allocator.ReleaseAllocation(ctx, tx, key); err != nil {
-		_ = tx.Rollback(ctx)
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	if err := r.allocator.ReleaseRetainedAllocation(ctx, tx, key); err != nil {
+		var bound *allocator.AllocationBoundError
+		if errors.As(err, &bound) {
+			claimName := ""
+			if bound.ClaimKey != "" {
+				claimName = path.Base(bound.ClaimKey)
+			}
+			return nil, false, boundConflict(name, claimName)
+		}
 		return nil, false, fmt.Errorf("release retained allocation: %w", err)
 	}
+
+	// After the release, so the order is pool, then object, as on create.
+	var currentVersion int64
+	err = tx.QueryRow(ctx,
+		`SELECT resource_version FROM ipam_objects WHERE key = $1 FOR UPDATE`, key,
+	).Scan(&currentVersion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, apierrors.NewNotFound(v1alpha1.Resource("ipallocations"), name)
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("lock IPAllocation row: %w", err)
+	}
+	if currentVersion != readVersion {
+		return nil, false, apierrors.NewConflict(v1alpha1.Resource("ipallocations"), name, fmt.Errorf(
+			"IPAllocation changed while it was being released; read it again and retry"))
+	}
+
+	if options != nil && isDryRun(options.DryRun) {
+		return alloc, true, nil
+	}
 	if _, err := r.allocator.DeleteObject(ctx, tx, key); err != nil {
-		_ = tx.Rollback(ctx)
 		return nil, false, fmt.Errorf("delete IPAllocation row: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, false, fmt.Errorf("commit allocation delete transaction: %w", err)
 	}
+	committed = true
 	klog.V(2).InfoS("retained allocation released", "allocation", name)
 	return alloc, true, nil
+}
+
+// boundConflict is the refusal to release an allocation something still
+// holds. It names the claim, because deleting that claim is what the caller
+// has to do instead. With no claim to name, the row is a reservation or a pool
+// carve, which no IPAllocation release frees.
+func boundConflict(name, claimName string) error {
+	if claimName == "" {
+		return apierrors.NewConflict(v1alpha1.Resource("ipallocations"), name, fmt.Errorf(
+			"IPAllocation's address is held by its pool, not by a claim, and cannot be released here"))
+	}
+	return apierrors.NewConflict(v1alpha1.Resource("ipallocations"), name, fmt.Errorf(
+		"IPAllocation is bound to IPClaim %q; delete the claim instead", claimName))
 }
 
 // DeleteCollection routes individual deletes through Delete so the allocation
@@ -175,8 +249,9 @@ func allocationObjectKey(id tenant.Identity, namespace, name string) string {
 
 // NewAllocationStorage builds the IPAllocation REST storage and matching
 // /status subresource. Allocations are created by the ipclaim Create handler,
-// never here; the allocator and db are for the delete path, which has to free
-// the address a retained allocation still holds.
+// never here, and the storage offers no create; the allocator and db are for
+// the delete path, which has to free the address a retained allocation still
+// holds.
 func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool) (*ReleasingREST, *IPAllocationStatusStorage, error) {
 	strategy := NewStrategy(scheme)
 	statusStrategy := NewStatusStrategy(scheme)
@@ -203,15 +278,14 @@ func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 	statusStore.ResetFieldsStrategy = statusStrategy
 
 	return &ReleasingREST{
-		IPAllocationStorage: &IPAllocationStorage{store},
-		allocator:           alloc,
-		db:                  db,
+		allocationStore: store,
+		allocator:       alloc,
+		db:              db,
 	}, &IPAllocationStatusStorage{store: &statusStore}, nil
 }
 
 // Compile-time interface assertions.
 var (
-	_ rest.Storage           = (*IPAllocationStorage)(nil)
 	_ rest.Storage           = (*ReleasingREST)(nil)
 	_ rest.GracefulDeleter   = (*ReleasingREST)(nil)
 	_ rest.CollectionDeleter = (*ReleasingREST)(nil)

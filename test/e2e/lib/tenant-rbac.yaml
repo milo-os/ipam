@@ -58,9 +58,15 @@ rules:
       - "ipclasses/status"
       - "ipclaims"
       - "ipclaims/status"
-      - "ipallocations"
-      - "ipallocations/status"
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Allocations are written by their claims. The suites read them and release
+  # retained ones, which is deleting them; nothing creates or edits one.
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipallocations"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipallocations/status"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

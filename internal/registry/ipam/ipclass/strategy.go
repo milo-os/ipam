@@ -104,11 +104,26 @@ func (ipClassStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Obje
 }
 
 func (ipClassStrategy) Validate(_ context.Context, obj runtime.Object) field.ErrorList {
-	return validateIPClass(obj.(*ipam.IPClass))
+	c := obj.(*ipam.IPClass)
+	return append(validateIPClass(c), validateRetentionLease(c)...)
+}
+
+// validateRetentionLease holds a definition's lease to its bounds. A reference
+// may not state one at all, which validateReference already refuses.
+func validateRetentionLease(c *ipam.IPClass) field.ErrorList {
+	if c.Spec.Source != nil {
+		return nil
+	}
+	return ipamvalidation.RetentionLease(c.Spec.RetentionLease, field.NewPath("spec", "retentionLease"))
 }
 
 func (ipClassStrategy) WarningsOnCreate(_ context.Context, obj runtime.Object) []string {
-	return sharedPoolWarning(obj.(*ipam.IPClass))
+	c := obj.(*ipam.IPClass)
+	return append(sharedPoolWarning(c), retentionLeaseWarning(c)...)
+}
+
+func retentionLeaseWarning(c *ipam.IPClass) []string {
+	return ipamvalidation.RetentionLeaseWarning(c.Spec.RetentionLease, field.NewPath("spec", "retentionLease"))
 }
 
 // sharedPoolWarning states, once, what a provisioning class's poolPer means for
@@ -161,6 +176,12 @@ func (ipClassStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	allErrs := validateIPClass(n)
 	specPath := field.NewPath("spec")
 
+	// Ratcheted: a lease stored before its bounds were enforced does not make
+	// every later edit of the class fail.
+	if ipamvalidation.RetentionLeaseChanged(n.Spec.RetentionLease, o.Spec.RetentionLease) {
+		allErrs = append(allErrs, validateRetentionLease(n)...)
+	}
+
 	// Flipping between definition and reference, or re-pointing a reference,
 	// changes which class every claim naming this one allocates under, and so
 	// which pool and address space they already hold from.
@@ -185,7 +206,15 @@ func (ipClassStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	return allErrs
 }
 
-func (ipClassStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string { return nil }
+// WarningsOnUpdate repeats only the lease warning, and only when the update
+// sets or changes the lease: that is when someone is deciding on it.
+func (ipClassStrategy) WarningsOnUpdate(_ context.Context, obj, old runtime.Object) []string {
+	n, o := obj.(*ipam.IPClass), old.(*ipam.IPClass)
+	if !ipamvalidation.RetentionLeaseChanged(n.Spec.RetentionLease, o.Spec.RetentionLease) {
+		return nil
+	}
+	return retentionLeaseWarning(n)
+}
 
 func validateIPClass(c *ipam.IPClass) field.ErrorList {
 	if c.Spec.Source != nil {

@@ -15,6 +15,7 @@ package allocator
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
@@ -32,6 +33,17 @@ var ErrPoolExhausted = errors.New("ipam: pool exhausted")
 
 // ErrObjectNotFound is returned by GetObject when no row exists at the key.
 var ErrObjectNotFound = errors.New("ipam: object not found")
+
+// AllocationBoundError is the refusal to release an allocation whose row is
+// still bound to a claim. ClaimKey is the storage key of that claim.
+type AllocationBoundError struct {
+	AllocationKey string
+	ClaimKey      string
+}
+
+func (e *AllocationBoundError) Error() string {
+	return fmt.Sprintf("allocation %s is bound to claim %s", e.AllocationKey, e.ClaimKey)
+}
 
 // PrefixRequest describes one allocation against a pool.
 //
@@ -101,9 +113,17 @@ type PrefixAllocator interface {
 	Release(ctx context.Context, tx pgx.Tx, claimKey string) ([]string, error)
 
 	// ReleaseAllocation frees the allocation row identified by allocationKey
-	// whatever its claim binding. It is the release path for a retained
-	// allocation, which no longer has a claim to release through.
+	// whatever its claim binding. It is for server-side teardown that owns
+	// the binding it removes, such as a scope range's carve; an API client
+	// releasing an allocation goes through ReleaseRetainedAllocation.
 	ReleaseAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error
+
+	// ReleaseRetainedAllocation frees the claim allocation identified by
+	// allocationKey only if its row is bound to no claim, returning an
+	// *AllocationBoundError if it is. It is the release path an API client
+	// reaches, which must not be able to free an address a claim still holds.
+	// No row at all is not an error: there is nothing left to free.
+	ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error
 
 	// ReleasePoolReservations frees the rows a pool holds for its own
 	// reserved edge positions. They belong to no claim, so no claim-driven
