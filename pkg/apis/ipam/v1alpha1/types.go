@@ -246,15 +246,28 @@ type AllocationSpec struct {
 // same measurement, already reduced. Use the counts when you need exactness,
 // the percentage when you need a number to show someone.
 //
+// Every figure counts addresses of the pool's own range, never allocations. An
+// address held by several allocations counts once: a class whose uniqueWithin
+// includes the network lets two networks each bind the same address from one
+// pool, and that address is one allocated address, not two. allocated +
+// available == total always holds, and an address leaves allocated only when
+// its last holder releases it. Retained allocations still hold their
+// addresses. To count bindings rather than addresses, list IPAllocations with
+// the field selector spec.poolRef.name.
+//
 // Decimal digits only — no sign, no exponent, no units. An empty string means
 // the figure has not been computed, which is distinct from "0".
 type PoolCapacity struct {
+	// total is the number of addresses in the pool's range.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[0-9]+$`
 	Total string `json:"total,omitempty"`
+	// allocated is the number of the pool's addresses held by at least one
+	// allocation, in any address space. It is not the number of allocations.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[0-9]+$`
 	Allocated string `json:"allocated,omitempty"`
+	// available is total minus allocated: the addresses no allocation holds.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[0-9]+$`
 	Available string `json:"available,omitempty"`
@@ -633,7 +646,9 @@ type IPPoolStatus struct {
 	Capacity PoolCapacity `json:"capacity,omitempty"`
 	// utilizationPercent is the allocated share of the pool's address space,
 	// 0–100, computed with arbitrary-precision arithmetic so it is accurate for
-	// both IPv4 and IPv6, and rounded to four decimal places.
+	// both IPv4 and IPv6, and rounded to four decimal places. It is
+	// capacity.allocated over capacity.total, so an address held in several
+	// address spaces counts once and the figure never exceeds 100.
 	//
 	// A float because an integer percent is useless at the scale pools are
 	// sized for: 256 addresses out of a /12 is 0.024%, which truncated to 0 and

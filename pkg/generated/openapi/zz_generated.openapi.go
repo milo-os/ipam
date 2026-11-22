@@ -1150,7 +1150,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPPoolStatus(ref common.ReferenceCallback) co
 					},
 					"utilizationPercent": {
 						SchemaProps: spec.SchemaProps{
-							Description: "utilizationPercent is the allocated share of the pool's address space, 0–100, computed with arbitrary-precision arithmetic so it is accurate for both IPv4 and IPv6, and rounded to four decimal places.\n\nA float because an integer percent is useless at the scale pools are sized for: 256 addresses out of a /12 is 0.024%, which truncated to 0 and read as \"nothing allocated\" on a pool holding sixteen claims. Four decimals keeps a single address in a /12 visible.\n\nKubernetes API conventions discourage floating point because it does not round-trip reliably across every serializer. That applies to this field and is accepted deliberately: IPAM is an aggregated apiserver serving JSON, the alternative encodings (a scaled integer such as per-million, or a resource.Quantity) are materially harder to read for the audience that reads this field, and the exact address counts in capacity remain available for anyone who needs a number that cannot drift.",
+							Description: "utilizationPercent is the allocated share of the pool's address space, 0–100, computed with arbitrary-precision arithmetic so it is accurate for both IPv4 and IPv6, and rounded to four decimal places. It is capacity.allocated over capacity.total, so an address held in several address spaces counts once and the figure never exceeds 100.\n\nA float because an integer percent is useless at the scale pools are sized for: 256 addresses out of a /12 is 0.024%, which truncated to 0 and read as \"nothing allocated\" on a pool holding sixteen claims. Four decimals keeps a single address in a /12 visible.\n\nKubernetes API conventions discourage floating point because it does not round-trip reliably across every serializer. That applies to this field and is accepted deliberately: IPAM is an aggregated apiserver serving JSON, the alternative encodings (a scaled integer such as per-million, or a resource.Quantity) are materially harder to read for the audience that reads this field, and the exact address counts in capacity remain available for anyone who needs a number that cannot drift.",
 							Default:     0,
 							Type:        []string{"number"},
 							Format:      "double",
@@ -1250,25 +1250,28 @@ func schema_pkg_apis_ipam_v1alpha1_PoolCapacity(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "PoolCapacity reports a pool's address counts EXACTLY, as decimal strings.\n\nStrings because these are not int64 quantities. A /20 of IPv6 holds 2^108 addresses — thirty-three digits — so an integer field would report a ceiling rather than a count, and two such ceilings divided give a ratio that means nothing.\n\nThe cost is that a client wanting a percentage must do arbitrary-precision arithmetic. utilizationPercent exists so that most do not have to: it is the same measurement, already reduced. Use the counts when you need exactness, the percentage when you need a number to show someone.\n\nDecimal digits only — no sign, no exponent, no units. An empty string means the figure has not been computed, which is distinct from \"0\".",
+				Description: "PoolCapacity reports a pool's address counts EXACTLY, as decimal strings.\n\nStrings because these are not int64 quantities. A /20 of IPv6 holds 2^108 addresses — thirty-three digits — so an integer field would report a ceiling rather than a count, and two such ceilings divided give a ratio that means nothing.\n\nThe cost is that a client wanting a percentage must do arbitrary-precision arithmetic. utilizationPercent exists so that most do not have to: it is the same measurement, already reduced. Use the counts when you need exactness, the percentage when you need a number to show someone.\n\nEvery figure counts addresses of the pool's own range, never allocations. An address held by several allocations counts once: a class whose uniqueWithin includes the network lets two networks each bind the same address from one pool, and that address is one allocated address, not two. allocated + available == total always holds, and an address leaves allocated only when its last holder releases it. Retained allocations still hold their addresses. To count bindings rather than addresses, list IPAllocations with the field selector spec.poolRef.name.\n\nDecimal digits only — no sign, no exponent, no units. An empty string means the figure has not been computed, which is distinct from \"0\".",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"total": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "total is the number of addresses in the pool's range.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"allocated": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "allocated is the number of the pool's addresses held by at least one allocation, in any address space. It is not the number of allocations.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 					"available": {
 						SchemaProps: spec.SchemaProps{
-							Type:   []string{"string"},
-							Format: "",
+							Description: "available is total minus allocated: the addresses no allocation holds.",
+							Type:        []string{"string"},
+							Format:      "",
 						},
 					},
 				},
