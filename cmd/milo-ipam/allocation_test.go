@@ -163,6 +163,25 @@ func TestAllocationReleaseOfAnUnleasedAllocationPointsAtAnAdmin(t *testing.T) {
 	}
 }
 
+// A 403 that is not the unleased refusal, such as a viewer without delete,
+// gets the ordinary RBAC advice, not "ask an admin".
+func TestAllocationReleaseForbiddenForAnotherReasonIsPlainRBAC(t *testing.T) {
+	cs := newFakeClientset(newAllocation("alloc-1", "c", "10.0.0.0/26", "us-west-v4", ""))
+	cs.PrependReactor("delete", "ipallocations", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(ipamv1alpha1.Resource("ipallocations"), "alloc-1",
+			errors.New(`user "viewer" cannot delete resource "ipallocations"`))
+	})
+	ta := newTestApp(cs, nil)
+	cmd := newAllocationReleaseCommand(ta.app)
+	ce := toCLIError(cmd.RunE(cmd, []string{"alloc-1"}))
+	if ce == nil || ce.code != exitForbidden {
+		t.Fatalf("error = %v, want forbidden(%d)", ce, exitForbidden)
+	}
+	if strings.Contains(ce.fix, "IPAM Admin") {
+		t.Errorf("a plain RBAC denial is told to ask an admin: %q", ce.fix)
+	}
+}
+
 func TestAllocationReleaseDryRun(t *testing.T) {
 	cs := newFakeClientset(newAllocation("alloc-1", "c", "10.0.0.0/26", "us-west-v4", ""))
 	ta := newTestApp(cs, nil)
