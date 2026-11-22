@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/component-base/metrics/testutil"
 
@@ -407,7 +406,7 @@ func TestReclaimOfABoundRowIsClaimExists(t *testing.T) {
 
 // A dry-run reclaim reports the address it would take back and binds nothing.
 func TestADryRunReclaimBindsNothing(t *testing.T) {
-	r, allocREST, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
 	ctx := claimCtx(testProject)
 	claim := retainClaim("claim-1", "")
 	held := retainAndDelete(t, r, ctx, claim)
@@ -423,13 +422,6 @@ func TestADryRunReclaimBindsNothing(t *testing.T) {
 	assertStillRetained(t, db, claim)
 	if got := reclaimCount(t, "reclaimed"); got != reclaimed {
 		t.Errorf("a dry run moved ipam_reclaims_total{result=reclaimed} by %v", got-reclaimed)
-	}
-	alloc, err := allocREST.Get(ctx, allocationNameFor("default", "claim-1"), &metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get IPAllocation: %v", err)
-	}
-	if len(alloc.(*ipam.IPAllocation).Status.Conditions) != 0 {
-		t.Error("a dry run left a condition on the IPAllocation")
 	}
 }
 
@@ -493,8 +485,7 @@ func TestTwoRecreatesOfOneNameOverARetainedRowHaveOneWinner(t *testing.T) {
 }
 
 // The bookkeeping a reclaim leaves: the row is bound and no longer retained,
-// and the IPAllocation is the same object, pointing at the new claim and
-// saying it was reclaimed.
+// and the IPAllocation is the same object, pointing at the new claim.
 func TestReclaimRebindsTheRetainedAllocationObject(t *testing.T) {
 	r, allocREST, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
 	ctx := claimCtx(testProject)
@@ -531,9 +522,5 @@ func TestReclaimRebindsTheRetainedAllocationObject(t *testing.T) {
 	}
 	if a.Spec.ClaimRef == nil || a.Spec.ClaimRef.Name != "claim-1" {
 		t.Errorf("spec.claimRef = %v, want claim-1", a.Spec.ClaimRef)
-	}
-	cond := meta.FindStatusCondition(a.Status.Conditions, conditionRetained)
-	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != reasonReclaimed {
-		t.Errorf("Retained condition = %+v, want False/Reclaimed", cond)
 	}
 }

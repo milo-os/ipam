@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -26,14 +25,6 @@ import (
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
-)
-
-// The condition a reclaim leaves on the IPAllocation it binds. Retained is
-// the condition the retention lease will set when a claim is released; a
-// reclaim ends that retention, so it is False here rather than absent.
-const (
-	conditionRetained = "Retained"
-	reasonReclaimed   = "Reclaimed"
 )
 
 // reclaimTerms is what a recreated claim asks for, resolved as far as the
@@ -292,12 +283,6 @@ func (r *AllocatingREST) bindRetainedAllocation(
 	alloc.Spec.ReclaimPolicy = ipam.ReclaimPolicy(reclaimPolicy)
 	alloc.Spec.OwnerRef = claim.Spec.OwnerRef
 	alloc.Status.Phase = ipam.AllocationReady
-	meta.SetStatusCondition(&alloc.Status.Conditions, metav1.Condition{
-		Type:    conditionRetained,
-		Status:  metav1.ConditionFalse,
-		Reason:  reasonReclaimed,
-		Message: fmt.Sprintf("reclaimed by IPClaim %q, recreated under the name of the claim that retained it", claim.Name),
-	})
 
 	encoded, err := runtime.Encode(r.codec, alloc)
 	if err != nil {
