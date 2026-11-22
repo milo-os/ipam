@@ -275,3 +275,26 @@ func TestRolesGrantNoSubresourceWrites(t *testing.T) {
 		}
 	}
 }
+
+// A consumer releases the addresses its own claims retained: releasing is
+// deleting the IPAllocation, and the allocator refuses a bound one, so delete
+// is safe to grant where a claim can be filed. Nothing may write one, and an
+// admin keeps the release through the consumer role it inherits.
+func TestConsumersCanReleaseAllocationsButNotWriteThem(t *testing.T) {
+	roles := loadRoles(t)
+	for _, name := range []string{"ipam.miloapis.com-consumer", "ipam.miloapis.com-admin"} {
+		perms := permissionsOf(roles, name, map[string]bool{})
+		if !perms["ipam.miloapis.com/ipallocations.delete"] {
+			t.Errorf("role %q cannot release an IPAllocation", name)
+		}
+		for _, verb := range []string{"create", "update", "patch"} {
+			if perm := "ipam.miloapis.com/ipallocations." + verb; perms[perm] {
+				t.Errorf("role %q grants %q; allocations are written only by their claims", name, perm)
+			}
+		}
+	}
+	viewer := permissionsOf(roles, "ipam.miloapis.com-viewer", map[string]bool{})
+	if viewer["ipam.miloapis.com/ipallocations.delete"] {
+		t.Error("the viewer role can release an IPAllocation")
+	}
+}

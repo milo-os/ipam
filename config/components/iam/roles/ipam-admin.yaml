@@ -7,13 +7,11 @@ metadata:
     kubernetes.io/description: "Full access to all IPAM resources"
 spec:
   launchStage: Beta
-  # Admin is the union of provider (pool CRUD + use) and consumer (claim CRUD),
-  # both of which inherit viewer (reads). On top it adds releasing a retained
-  # IPAllocation, which is deleting it. Allocations are written only by the
-  # claim that makes them, so there is no create, update or patch to grant:
-  # their spec is immutable, and status remains system-managed.
+  # Admin is the union of provider (pool CRUD + use) and consumer (claim CRUD
+  # and releasing a retained IPAllocation), both of which inherit viewer
+  # (reads). Allocations are written only by the claim that makes them, so
+  # there is no create, update or patch to grant: their spec is immutable, and
+  # status remains system-managed.
   inheritedRoles:
     - name: ipam.miloapis.com-provider
     - name: ipam.miloapis.com-consumer
-  includedPermissions:
-    - ipam.miloapis.com/ipallocations.delete

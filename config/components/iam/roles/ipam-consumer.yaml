@@ -4,11 +4,18 @@ metadata:
   name: ipam.miloapis.com-consumer
   annotations:
     kubernetes.io/display-name: IPAM Consumer
-    kubernetes.io/description: "File and manage IP claims; read-only on pools and allocations"
+    kubernetes.io/description: "File and manage IP claims and release retained allocations; read-only on pools"
 spec:
   launchStage: Beta
   # Consumers inherit read access to every IPAM resource (including pools so
   # they can discover available address space) and add claim CRUD on top.
+  #
+  # They may also release an IPAllocation, which is deleting it, so a consumer
+  # can give back an address its own claim retained without asking an admin.
+  # The release frees only a row no claim is bound to: the allocator refuses a
+  # bound one with 409 in SQL, whatever the object says, so this cannot take
+  # an address out from under a live claim. Allocations are written only by
+  # the claim that makes them, so there is no create, update or patch to grant.
   inheritedRoles:
     - name: ipam.miloapis.com-viewer
   includedPermissions:
@@ -16,3 +23,4 @@ spec:
     - ipam.miloapis.com/ipclaims.update
     - ipam.miloapis.com/ipclaims.patch
     - ipam.miloapis.com/ipclaims.delete
+    - ipam.miloapis.com/ipallocations.delete
