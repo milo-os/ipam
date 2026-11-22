@@ -27,8 +27,10 @@ export PGDATABASE=quota
 
 ### In Kubernetes
 
-Migrations are applied via a Kubernetes Job that mounts the SQL files from a
-ConfigMap. See `config/components/postgres-migrations/` for the manifests.
+The `migrate` init container in `config/base/deployment.yaml` runs
+`ipam migrate up` before the apiserver starts. The binary embeds the SQL files
+(`migrations/embed.go`) and applies them with goose, so a new migration ships
+with the image and needs no manifest change.
 
 ## Adding New Migrations
 
@@ -37,5 +39,3 @@ ConfigMap. See `config/components/postgres-migrations/` for the manifests.
    idempotent.
 3. Add a matching `{NNN}_{description}.down.sql` that reverses the change.
    Use `IF EXISTS` guards there too — a partial down apply must not fail.
-4. Update the ConfigMap in `config/components/postgres-migrations/configmap.yaml`
-   to include the new file.

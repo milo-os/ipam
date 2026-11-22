@@ -155,10 +155,6 @@ ipam/
 │   │   │   ├── kustomization.yaml
 │   │   │   ├── helmrepository.yaml  # CloudNativePG or Bitnami postgres
 │   │   │   └── helmrelease.yaml
-│   │   ├── postgres-migrations/
-│   │   │   ├── kustomization.yaml
-│   │   │   ├── configmap.yaml       # Embeds migrations/*.sql
-│   │   │   └── job.yaml             # One-shot migration Job
 │   │   └── observability/
 │   │       ├── kustomization.yaml
 │   │       └── servicemonitor.yaml  # Prometheus ServiceMonitor
