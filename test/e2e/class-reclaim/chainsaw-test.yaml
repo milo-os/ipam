@@ -27,7 +27,8 @@ spec:
     property from retention itself: a retained address that can never be
     reclaimed is a permanent loss of capacity rather than a deliberate hold.
     Deleting the unbound allocation is the operator gesture; deleting a bound
-    one must be refused. The other way out, recreating the claim under its own
+    one must be refused. The last step makes both requests as a consumer, which
+    may release what its claims retained and nothing a claim still holds. The other way out, recreating the claim under its own
     name to take the address back, is class-retain-replacement's; every claim
     here that must not get a retained address carries a different name.
 
@@ -498,3 +499,84 @@ spec:
               ($error == null): true
               "(contains($stdout, 'OK: bound allocation refused with 409 naming its claim'))": true
 
+
+    - name: a-consumer-releases-what-it-retained
+      description: |
+        The ipam-consumer role grants ipallocations.delete, so a consumer gives
+        back what its own claim retained without an admin. This step runs as
+        e2e-tenant-consumer, which holds only that role (lib/tenant-rbac.yaml
+        mirrors it, and internal/iamconfig pins the mirror): a retained
+        allocation is released with 200, and a bound one is refused with 409
+        naming its claim, which keeps its address.
+      try:
+        - script:
+            timeout: 150s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              KUBECTL="kubectl --kubeconfig ../.tenant-impersonation.kubeconfig --context tenant-project-alpha-consumer"
+              . ../lib/ipam.sh
+
+              # The identity is the consumer, not the admin-like tenant user
+              # the other steps run as.
+              if [ "$($KUBECTL auth can-i create ippools.ipam.miloapis.com 2>/dev/null || true)" != "no" ]; then
+                echo "FAIL: the consumer context can create pools; it is not consumer-only"
+                exit 1
+              fi
+              if [ "$($KUBECTL auth can-i delete ipallocations.ipam.miloapis.com -n "$NAMESPACE" 2>/dev/null || true)" != "yes" ]; then
+                echo "FAIL: the consumer context may not delete IPAllocations; tenant-rbac.yaml is out of step"
+                exit 1
+              fi
+
+              claim() {
+                $KUBECTL create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: $1
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-retain
+              EOF
+                wait_claim_bound "$NAMESPACE" "$1" 60
+              }
+
+              # Retained: the consumer's claim is deleted under rc-retain.
+              claim rc-consumer-kept
+              kept=$($KUBECTL get ipclaim -n "$NAMESPACE" rc-consumer-kept -o jsonpath='{.status.boundAllocationRef.name}')
+              $KUBECTL delete ipclaim -n "$NAMESPACE" rc-consumer-kept --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rc-consumer-kept 60
+              claimref=$($KUBECTL get ipallocation -n "$NAMESPACE" "$kept" -o json | jq -r '.spec.claimRef // "none"')
+              if [ "$claimref" != "none" ]; then
+                echo "FAIL: setup: $kept was not retained (claimRef $claimref)"
+                exit 1
+              fi
+
+              out=$($KUBECTL delete ipallocation -n "$NAMESPACE" "$kept" -v=6 2>&1) && rc=0 || rc=$?
+              if [ "$rc" != "0" ] || ! printf '%s\n' "$out" | grep -q '200 OK'; then
+                echo "FAIL: the consumer's release of retained $kept did not return 200 (rc $rc)"
+                printf '%s\n' "$out" | grep -i 'response\|error' | tail -5
+                exit 1
+              fi
+              wait_gone ipallocation "$NAMESPACE" "$kept" 60
+              echo "OK: consumer released retained $kept"
+
+              # Bound: the release is refused and the claim keeps its address.
+              claim rc-consumer-bound
+              bound=$($KUBECTL get ipclaim -n "$NAMESPACE" rc-consumer-bound -o jsonpath='{.status.boundAllocationRef.name}')
+              addr=$(claim_cidr "$NAMESPACE" rc-consumer-bound)
+              expect_delete_rejected ipallocation "$NAMESPACE" "$bound" 409 'rc-consumer-bound' "consumer release of a bound allocation"
+              phase=$($KUBECTL get ipclaim -n "$NAMESPACE" rc-consumer-bound -o jsonpath='{.status.phase}')
+              still=$(claim_cidr "$NAMESPACE" rc-consumer-bound)
+              if [ "$phase" != "Bound" ] || [ "$still" != "$addr" ]; then
+                echo "FAIL: rc-consumer-bound is $phase on '$still' after the refused release, want Bound on $addr"
+                exit 1
+              fi
+              echo "OK: consumer release of bound $bound refused with 409"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: consumer released retained'))": true
+              "(contains($stdout, 'OK: consumer release of bound'))": true

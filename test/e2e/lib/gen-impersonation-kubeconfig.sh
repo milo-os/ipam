@@ -30,6 +30,11 @@
 #                            DEFINITIONS that the other two reference. Named
 #                            after the real platform project so a suite built on
 #                            the production layout reads as that layout.
+#   * tenant-project-alpha-consumer — as e2e-tenant-consumer, parent-name=
+#                            project-alpha. Holds only what the ipam-consumer
+#                            IAM role grants (lib/tenant-rbac.yaml mirrors it),
+#                            so a suite can show what a consumer may do in the
+#                            project the other suites run in.
 #
 # The impersonated user (e2e-tenant-tester) is deliberately NOT cluster-admin;
 # the suites' RBAC (resources/impersonation-rbac.yaml) grants it exactly the
@@ -48,6 +53,7 @@ SRC_CTX="${2:-${E2E_KUBE_CONTEXT:-}}"
 # The impersonated tenant user and the project parent identity constants. These
 # mirror internal/tenant.Extra* and the resourcemanager Project parent pair.
 TENANT_USER="e2e-tenant-tester"
+CONSUMER_USER="e2e-tenant-consumer"
 PARENT_API_GROUP="resourcemanager.miloapis.com"
 PARENT_TYPE="Project"
 
@@ -89,7 +95,9 @@ B_TOKEN="$(KUBECONFIG="$base" kubectl config view --raw -o jsonpath="{.users[?(@
 emit_user() {
   _proj="$1"   # project id, e.g. project-alpha
   _group="$2"  # single extra group or empty
-  printf '%s\n' "- name: tenant-${_proj}-as"
+  _as="${3:-$TENANT_USER}"              # impersonated user
+  _uname="${4:-tenant-${_proj}-as}"     # kubeconfig user entry name
+  printf '%s\n' "- name: ${_uname}"
   printf '%s\n' "  user:"
   if [ -n "$B_CERT" ]; then
     printf '%s\n' "    client-certificate-data: ${B_CERT}"
@@ -100,7 +108,7 @@ emit_user() {
   if [ -n "$B_TOKEN" ]; then
     printf '%s\n' "    token: ${B_TOKEN}"
   fi
-  printf '%s\n' "    as: ${TENANT_USER}"
+  printf '%s\n' "    as: ${_as}"
   if [ -n "$_group" ]; then
     printf '%s\n' "    as-groups:"
     printf '%s\n' "      - ${_group}"
@@ -153,10 +161,13 @@ emit_context() {
   # The platform project. Class definitions live here; consumer projects hold
   # references to them (spec.source), which is the shape production uses.
   emit_user datum-cloud ""
+  # project-alpha again, as a user holding only consumer access.
+  emit_user project-alpha "" "$CONSUMER_USER" tenant-project-alpha-consumer-as
   printf '%s\n' "contexts:"
   emit_context tenant-project-alpha tenant-project-alpha-as
   emit_context tenant-project-beta tenant-project-beta-as
   emit_context tenant-project-datum-cloud tenant-datum-cloud-as
+  emit_context tenant-project-alpha-consumer tenant-project-alpha-consumer-as
   # Stable-named platform (unimpersonated) context reusing the base user.
   emit_context tenant-platform "$BASE_USER"
 } >"$OUT"
@@ -164,4 +175,4 @@ emit_context() {
 rm -f "$base"
 
 echo "wrote impersonation kubeconfig: $OUT (source context: $SRC_CTX)"
-echo "  contexts: tenant-platform (platform), tenant-project-alpha, tenant-project-beta, tenant-project-datum-cloud"
+echo "  contexts: tenant-platform (platform), tenant-project-alpha, tenant-project-beta, tenant-project-datum-cloud, tenant-project-alpha-consumer"

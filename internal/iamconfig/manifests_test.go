@@ -298,3 +298,61 @@ func TestConsumersCanReleaseAllocationsButNotWriteThem(t *testing.T) {
 		t.Error("the viewer role can release an IPAllocation")
 	}
 }
+
+// The e2e cluster authorizes with RBAC rather than Milo IAM, so the consumer
+// identity's access is restated as a ClusterRole. It must grant exactly what
+// the consumer role does, or a consumer suite proves something about a role
+// nobody ships.
+func TestTheE2EConsumerRoleMirrorsTheConsumerRole(t *testing.T) {
+	const path = "../../test/e2e/lib/tenant-rbac.yaml"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	type clusterRole struct {
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Rules []struct {
+			APIGroups []string `json:"apiGroups"`
+			Resources []string `json:"resources"`
+			Verbs     []string `json:"verbs"`
+		} `json:"rules"`
+	}
+	got := map[string]bool{}
+	found := false
+	for _, doc := range strings.Split(string(data), "\n---\n") {
+		var cr clusterRole
+		if err := yaml.Unmarshal([]byte(doc), &cr); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if cr.Kind != "ClusterRole" || cr.Metadata.Name != "e2e-tenant-ipam-consumer" {
+			continue
+		}
+		found = true
+		for _, rule := range cr.Rules {
+			for _, group := range rule.APIGroups {
+				for _, resource := range rule.Resources {
+					for _, verb := range rule.Verbs {
+						got[group+"/"+resource+"."+verb] = true
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("%s has no ClusterRole e2e-tenant-ipam-consumer", path)
+	}
+	want := permissionsOf(loadRoles(t), "ipam.miloapis.com-consumer", map[string]bool{})
+	for perm := range want {
+		if !got[perm] {
+			t.Errorf("the e2e consumer ClusterRole lacks %q, which the consumer role grants", perm)
+		}
+	}
+	for perm := range got {
+		if !want[perm] {
+			t.Errorf("the e2e consumer ClusterRole grants %q, which the consumer role does not", perm)
+		}
+	}
+}
