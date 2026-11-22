@@ -11,6 +11,7 @@
 package metrics
 
 import (
+	"context"
 	"strconv"
 	"time"
 
@@ -92,7 +93,11 @@ var (
 			StabilityLevel: metrics.ALPHA,
 		},
 		// resource:  "ipclaims" | "asnclaims"
-		// reason:    "pool_exhausted" | "pool_not_found" | "verification_required" | "tx_error" | "internal"
+		// reason:    server faults "internal" | "tx_error"; refusals
+		//            "invalid" | "conflict" | "forbidden" | "pool_exhausted" |
+		//            "pool_not_found" | "class_not_found" |
+		//            "class_holds_no_range" | "namespace_not_live". The
+		//            mapping lives in internal/registry/ipam/ipclaim/failurereason.go.
 		// ip_family: "IPv4" | "IPv6" | "ASN" — mirrors AllocationAttempts so
 		//            success-ratio = 1 - (failures / attempts) can be computed
 		//            per address family.
@@ -100,53 +105,9 @@ var (
 		[]string{"resource", "reason", "ip_family", "project", "org"},
 	)
 
-	// PoolUtilization tracks per-pool utilization as a ratio in [0, 1].
-	// Tenant labels (project + org) let dashboards aggregate utilization by
-	// owning project / organization without re-deriving it from the
-	// pool_key. See top-of-block cardinality comment.
-	PoolUtilization = metrics.NewGaugeVec(
-		&metrics.GaugeOpts{
-			Namespace:      "ipam",
-			Name:           "pool_utilization_ratio",
-			Help:           "Ratio of allocated to total capacity per pool",
-			StabilityLevel: metrics.ALPHA,
-		},
-		// resource is the plural lowercase pool kind ("ippools" |
-		// "asnpools"), kept here so dashboards can split prefix vs ASN
-		// utilization without parsing pool_key — same shape used by
-		// PoolCapacity and PoolAllocated.
-		[]string{"pool_key", "ip_family", "resource", "project", "org"},
-	)
-
-	// PoolCapacity / PoolAllocated expose the absolute numerator and
-	// denominator behind PoolUtilization. The ratio gauge by itself doesn't
-	// distinguish "small pool half full" from "huge pool half full"; these
-	// two gauges close that gap so dashboards can show capacity in absolute
-	// terms (a /22 with 512 free is a different operational concern from a
-	// /28 with 8 free even though both are at 50%).
-	//
-	// Values are addresses for IPv4 / IPv6 prefix pools and ASN counts for
-	// ASN pools. resource is "ippools" | "asnpools" so a single PromQL
-	// can split prefix vs ASN capacity without parsing pool_key.
-	PoolCapacity = metrics.NewGaugeVec(
-		&metrics.GaugeOpts{
-			Namespace:      "ipam",
-			Name:           "pool_capacity_total",
-			Help:           "Total addressable capacity of the pool (addresses for prefix pools, ASN count for ASN pools)",
-			StabilityLevel: metrics.ALPHA,
-		},
-		[]string{"pool_key", "ip_family", "resource", "project", "org"},
-	)
-
-	PoolAllocated = metrics.NewGaugeVec(
-		&metrics.GaugeOpts{
-			Namespace:      "ipam",
-			Name:           "pool_allocated_total",
-			Help:           "Currently allocated count for the pool (addresses for prefix pools, ASN count for ASN pools)",
-			StabilityLevel: metrics.ALPHA,
-		},
-		[]string{"pool_key", "ip_family", "resource", "project", "org"},
-	)
+	// The per-pool gauges (ipam_pool_utilization_ratio,
+	// ipam_pool_capacity_total, ipam_pool_allocated_total) are exported by a
+	// collector over committed state; see pools.go.
 
 	// WatchLag measures end-to-end watch propagation latency: the elapsed
 	// time between the changelog row's INSERT timestamp (created_at) and
@@ -401,9 +362,6 @@ func init() {
 		AllocationDuration,
 		AllocationAttempts,
 		AllocationFailures,
-		PoolUtilization,
-		PoolCapacity,
-		PoolAllocated,
 		WatchLag,
 		PostgresQueryDuration,
 		PgxpoolTotalConnections,
@@ -411,6 +369,7 @@ func init() {
 		PgxpoolAcquiredConnections,
 		PgxpoolMaxConnections,
 		PgxpoolSamplerLastRunSeconds,
+		PoolGaugesLastSuccess,
 		WatchEvents,
 		WatcherPollBatchSize,
 		WatcherDrainCycles,
@@ -419,11 +378,33 @@ func init() {
 		CascadeLevels,
 		CascadeResolutionDuration,
 	)
+	legacyregistry.CustomMustRegister(poolGauges)
+}
+
+type dryRunKey struct{}
+
+// WithDryRun marks ctx as serving a server-side dry-run. Work done under it is
+// rolled back, so metrics that count what the work changed (a pool provisioned,
+// a level reused) are not recorded: they would describe changes that never
+// happened. Request-level metrics (attempts, failures, latency) and query
+// timings still record; the request and its queries are real.
+func WithDryRun(ctx context.Context) context.Context {
+	return context.WithValue(ctx, dryRunKey{}, true)
+}
+
+// IsDryRun reports whether ctx was marked by WithDryRun.
+func IsDryRun(ctx context.Context) bool {
+	v, _ := ctx.Value(dryRunKey{}).(bool)
+	return v
 }
 
 // RecordCascadeLevel records one class-chain level a claim walked. outcome is
-// "reused", "provisioned", "lost", or "error".
-func RecordCascadeLevel(className, outcome string) {
+// "reused", "provisioned", "lost", or "error". Nothing is recorded under a
+// dry-run (see WithDryRun).
+func RecordCascadeLevel(ctx context.Context, className, outcome string) {
+	if IsDryRun(ctx) {
+		return
+	}
 	CascadeLevels.WithLabelValues(className, outcome).Inc()
 }
 
@@ -433,11 +414,15 @@ func RecordCascadeLevel(className, outcome string) {
 //	start := time.Now()
 //	result, provisioned := "error", false
 //	defer func() {
-//	    metrics.ObserveCascadeResolution(result, provisioned, start)
+//	    metrics.ObserveCascadeResolution(ctx, result, provisioned, start)
 //	}()
 //
 // where the surrounding code sets result before each successful return.
-func ObserveCascadeResolution(result string, provisioned bool, start time.Time) {
+// Nothing is recorded under a dry-run (see WithDryRun).
+func ObserveCascadeResolution(ctx context.Context, result string, provisioned bool, start time.Time) {
+	if IsDryRun(ctx) {
+		return
+	}
 	CascadeResolutionDuration.
 		WithLabelValues(result, strconv.FormatBool(provisioned)).
 		Observe(time.Since(start).Seconds())
@@ -540,7 +525,7 @@ func ObservePgxpoolStat(stat PgxpoolStatLike) {
 // the address-family-aware code path is reached; that yields a brief window
 // where validation/permission failures land in the empty-string label, which
 // is fine — those failures are also already counted in
-// AllocationFailures{reason="internal"|...} and are visually distinct from
+// AllocationFailures{reason="invalid"|...} and are visually distinct from
 // the family-tagged successes. `project` and `org` come from the tenant
 // identity helpers (Identity.Project() / Identity.Org()); both are "" for
 // platform-scoped requests.
@@ -554,44 +539,13 @@ func ObserveAllocationDuration(resource, result, ipFamily, project, org string, 
 // success-ratio = 1 - (failures / attempts) without depending on the
 // AllocationDuration histogram count.
 //
-// Allowed reasons: "pool_exhausted" | "pool_not_found" |
-// "verification_required" | "namespace_not_live" | "tx_error" | "internal".
+// reason is "internal" or "tx_error" only for a server fault; a request the
+// server refused (422, 409, 403, 507, ...) carries a refusal reason. See the
+// AllocationFailures label comment for the set.
 // ipFamily mirrors the value passed to ObserveAllocationDuration ("IPv4" |
 // "IPv6" | "ASN", or "" for failures that fire before the claim spec is
 // readable).
 // `project` and `org` are the tenant labels (or "" for platform requests).
 func RecordAllocationFailure(resource, reason, ipFamily, project, org string) {
 	AllocationFailures.WithLabelValues(resource, reason, ipFamily, project, org).Inc()
-}
-
-// SetPoolUtilization publishes the current allocated/total ratio for a pool.
-// poolKey is the storage-layer key (the same key used as the FOR UPDATE
-// target in the allocation transaction); ipFamily is "IPv4", "IPv6", or
-// "ASN" for ASN pools. resource is the plural lowercase pool kind
-// ("ippools" | "asnpools") and matches the labels used by SetPoolCapacity
-// so all three pool gauges split identically. project / org carry the owning
-// tenant for org-level dashboards. Ratios outside [0, 1] are clamped — a
-// buggy capacity computation should not poison the dashboard.
-func SetPoolUtilization(poolKey, ipFamily, resource, project, org string, ratio float64) {
-	if ratio < 0 {
-		ratio = 0
-	} else if ratio > 1 {
-		ratio = 1
-	}
-	PoolUtilization.WithLabelValues(poolKey, ipFamily, resource, project, org).Set(ratio)
-}
-
-// SetPoolCapacity publishes the absolute total / allocated counts for a pool
-// alongside the existing utilization ratio. Callers should invoke this in
-// the same place they invoke SetPoolUtilization so all three gauges advance
-// together. resource is the plural lowercase resource name ("ippools" |
-// "asnpools") so dashboards can split prefix vs ASN capacity without parsing
-// pool_key.
-//
-// total / allocated are float64 because IPv6 pool sizes overflow int64
-// (a /48 has 2^80 addresses); the gauge stores them as the same float
-// representation big.Float produces from the prefix arithmetic upstream.
-func SetPoolCapacity(poolKey, ipFamily, resource, project, org string, total, allocated float64) {
-	PoolCapacity.WithLabelValues(poolKey, ipFamily, resource, project, org).Set(total)
-	PoolAllocated.WithLabelValues(poolKey, ipFamily, resource, project, org).Set(allocated)
 }

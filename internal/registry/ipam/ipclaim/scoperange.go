@@ -76,12 +76,12 @@ func (r *AllocatingREST) createScopeRange(
 	switch {
 	case want != nil:
 		if tx, err = r.db.Begin(ctx); err != nil {
-			return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)
+			return nil, reasonTxError, fmt.Errorf("begin scope-range transaction: %w", err)
 		}
 		poolKey, err = allocator.PlaceScopeRange(ctx, tx, class, claim.Spec.Scope, *want)
 	case dryRun:
 		if tx, err = r.db.Begin(ctx); err != nil {
-			return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)
+			return nil, reasonTxError, fmt.Errorf("begin scope-range transaction: %w", err)
 		}
 		poolKey, err = allocator.ResolveScopeRange(ctx, tx, class, claim.Spec.Scope)
 	default:
@@ -99,7 +99,7 @@ func (r *AllocatingREST) createScopeRange(
 	if tx == nil {
 		if tx, err = r.db.Begin(ctx); err != nil {
 			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
-			return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)
+			return nil, reasonTxError, fmt.Errorf("begin scope-range transaction: %w", err)
 		}
 	}
 
@@ -111,16 +111,16 @@ func (r *AllocatingREST) createScopeRange(
 		_ = tx.Rollback(ctx)
 		span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
 		if errors.Is(err, allocator.ErrScopeRangeHeld) {
-			return nil, "conflict", apierrors.NewConflict(
+			return nil, reasonConflict, apierrors.NewConflict(
 				v1alpha1.Resource("ipclaims"), claim.Name,
 				fmt.Errorf("the range %s holds is already held by another claim; delete that claim to release it", poolName))
 		}
 		if errors.Is(err, allocator.ErrScopeRangeCarveMissing) {
-			return nil, "conflict", apierrors.NewConflict(
+			return nil, reasonConflict, apierrors.NewConflict(
 				v1alpha1.Resource("ipclaims"), claim.Name,
 				fmt.Errorf("IPPool %q was authored rather than provisioned for this scope, so no claim holds it", poolName))
 		}
-		return nil, "tx_error", err
+		return nil, reasonTxError, err
 	}
 
 	claim.Status.Phase = ipam.ClaimBound
@@ -139,23 +139,23 @@ func (r *AllocatingREST) createScopeRange(
 	claimData, err := runtime.Encode(r.codec, claim)
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		return nil, "internal", fmt.Errorf("encode scope-range claim: %w", err)
+		return nil, reasonInternal, fmt.Errorf("encode scope-range claim: %w", err)
 	}
 	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		if isIdentityCollision(err) {
-			return nil, "conflict", duplicateClaimConflict(claim.Name)
+			return nil, reasonConflict, duplicateClaimConflict(claim.Name)
 		}
-		return nil, "tx_error", fmt.Errorf("persist scope-range claim: %w", err)
+		return nil, reasonTxError, fmt.Errorf("persist scope-range claim: %w", err)
 	}
 	versioner := storage.APIObjectVersioner{}
 	if err := versioner.UpdateObject(claim, uint64(rv)); err != nil {
 		_ = tx.Rollback(ctx)
-		return nil, "internal", fmt.Errorf("set resource version: %w", err)
+		return nil, reasonInternal, fmt.Errorf("set resource version: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, "tx_error", fmt.Errorf("commit scope-range transaction: %w", err)
+		return nil, reasonTxError, fmt.Errorf("commit scope-range transaction: %w", err)
 	}
 	return claim, "", nil
 }
@@ -166,21 +166,21 @@ func (r *AllocatingREST) createScopeRange(
 func requestedRange(claim *ipam.IPClaim, class *allocator.ResolvedClass) (net.IPNet, string, error) {
 	prefixLen, err := allocator.EffectivePrefixLength(class.IPClass, nil)
 	if err != nil {
-		return net.IPNet{}, "internal", ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error())
+		return net.IPNet{}, reasonInvalid, ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error())
 	}
 	block, err := allocation.RequestedBlock(claim.Spec.Address, prefixLen)
 	switch {
 	case err == nil:
 		return block, "", nil
 	case errors.Is(err, allocation.ErrPrefixLenMismatch):
-		return net.IPNet{}, "invalid", ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, fmt.Sprintf(
+		return net.IPNet{}, reasonInvalid, ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, fmt.Sprintf(
 			"spec.address %s: class %q holds /%d ranges, so a range it holds is a /%d",
 			claim.Spec.Address, class.LocalName, prefixLen, prefixLen))
 	case errors.Is(err, allocation.ErrUnalignedAddress):
-		return net.IPNet{}, "invalid", ipamerrors.New(ipamerrors.ReasonAddressUnaligned, fmt.Sprintf(
+		return net.IPNet{}, reasonInvalid, ipamerrors.New(ipamerrors.ReasonAddressUnaligned, fmt.Sprintf(
 			"spec.address %s: %v", claim.Spec.Address, err))
 	default:
-		return net.IPNet{}, "invalid", apierrors.NewBadRequest(fmt.Sprintf("spec.address %s: %v", claim.Spec.Address, err))
+		return net.IPNet{}, reasonInvalid, apierrors.NewBadRequest(fmt.Sprintf("spec.address %s: %v", claim.Spec.Address, err))
 	}
 }
 
@@ -189,13 +189,13 @@ func requestedRange(claim *ipam.IPClaim, class *allocator.ResolvedClass) (net.IP
 func scopeRangeError(err error, claimName string) (string, error) {
 	switch {
 	case errors.Is(err, allocator.ErrClassHoldsNoRange):
-		return "class_holds_no_range", apierrors.NewBadRequest(err.Error())
+		return reasonClassHoldsNoRange, apierrors.NewBadRequest(err.Error())
 	case errors.Is(err, allocator.ErrNoOfferingPool):
-		return "pool_not_found", ipamerrors.New(ipamerrors.ReasonNoOfferingPool, err.Error())
+		return reasonPoolNotFound, ipamerrors.New(ipamerrors.ReasonNoOfferingPool, err.Error())
 	case errors.Is(err, allocator.ErrPoolExhausted):
-		return "pool_exhausted", registryerrors.NewInsufficientStorage(err.Error())
+		return reasonPoolExhausted, registryerrors.NewInsufficientStorage(err.Error())
 	case errors.Is(err, allocator.ErrSharedPoolUnplaced):
-		return "invalid", ipamerrors.New(ipamerrors.ReasonSharedPoolUnplaced, err.Error())
+		return reasonInvalid, ipamerrors.New(ipamerrors.ReasonSharedPoolUnplaced, err.Error())
 	case errors.Is(err, allocator.ErrAddressInUse), errors.Is(err, allocator.ErrAddressReserved),
 		errors.Is(err, allocator.ErrAddressOutsidePool):
 		// A level's pool is not a pool the caller named, so there is no pool
@@ -204,9 +204,9 @@ func scopeRangeError(err error, claimName string) (string, error) {
 	}
 	var missingRole *scope.MissingRoleError
 	if errors.As(err, &missingRole) {
-		return "pool_not_found", ipamerrors.NewScopeRolesMissing(missingRole.Roles, err.Error())
+		return reasonInvalid, ipamerrors.NewScopeRolesMissing(missingRole.Roles, err.Error())
 	}
-	return "tx_error", fmt.Errorf("resolve scope range: %w", err)
+	return reasonTxError, fmt.Errorf("resolve scope range: %w", err)
 }
 
 // deleteScopeRange releases the range a claim holds and deletes the claim, in

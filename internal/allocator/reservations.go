@@ -103,7 +103,6 @@ func materialiseReservations(ctx context.Context, tx pgx.Tx, poolKey string, poo
 	if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, consumed); err != nil {
 		return fmt.Errorf("update pool capacity after reserving: %w", err)
 	}
-	publishPrefixUtilization(poolKey, family, parents, consumed)
 	return nil
 }
 

@@ -209,7 +209,7 @@ func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, cla
 	// end-to-end claim latency without appearing in any query timing.
 	start := time.Now()
 	result, provisioned := "error", false
-	defer func() { metrics.ObserveCascadeResolution(result, provisioned, start) }()
+	defer func() { metrics.ObserveCascadeResolution(ctx, result, provisioned, start) }()
 
 	planTx, err := db.Begin(ctx)
 	if err != nil {
@@ -368,7 +368,7 @@ func discoverInTx(ctx context.Context, db TxBeginner, class *ResolvedClass, clai
 //  3. Only on winning: carve a block from the source and write the pool.
 func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourcePoolKey string) (poolKey string, provisioned bool, err error) {
 	outcome := levelError
-	defer func() { metrics.RecordCascadeLevel(level.Class.Name, outcome) }()
+	defer func() { metrics.RecordCascadeLevel(ctx, level.Class.Name, outcome) }()
 
 	tx, err := db.Begin(ctx)
 	if err != nil {

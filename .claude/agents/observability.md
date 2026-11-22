@@ -15,9 +15,10 @@ Use `k8s.io/component-base/metrics` (Prometheus-compatible). Register everything
 |------|------|--------|-------------|
 | `ipam_allocation_duration_seconds` | Histogram | `resource`, `ip_family`, `outcome` | End-to-end latency for claim CREATE (postgres path). Buckets: 5ms–2s. |
 | `ipam_allocation_total` | Counter | `resource`, `ip_family`, `outcome` | Total allocation attempts. `outcome`: `success`, `pool_exhausted`, `conflict`, `error`. |
-| `ipam_pool_capacity_total` | Gauge | `pool_key`, `resource`, `ip_family` | Total addresses/prefixes in a pool. Updated on pool write. |
+| `ipam_pool_capacity_total` | Gauge | `pool_key`, `resource`, `ip_family` | Total addresses/prefixes in a pool. Read from committed pool status every 15s, never set from a write path: a dry-run or rolled-back write must not reach it, and a deleted pool must drop out on every replica. |
 | `ipam_pool_allocated_total` | Gauge | `pool_key`, `resource`, `ip_family` | Currently allocated addresses/prefixes. |
 | `ipam_pool_utilization_ratio` | Gauge | `pool_key`, `resource`, `ip_family` | `allocated / capacity`. Alert fires at 0.80. |
+| `ipam_pool_gauges_last_success_timestamp_seconds` | Gauge | — | Unix time of the last successful read-back of the per-pool gauges. Set only when a read succeeds; `IPAMPoolGaugesStale` fires when it is more than 300s old for 5m. |
 | `ipam_watch_lag_seconds` | Gauge | — | Age of oldest unprocessed `ipam_changelog` row. |
 | `ipam_postgres_query_duration_seconds` | Histogram | `query_name` | Latency of named SQL queries. |
 
@@ -104,16 +105,21 @@ PrometheusRule (or VMRule for Victoria Metrics):
 groups:
   - name: ipam.allocation
     rules:
-      - alert: IPAMAllocationErrorRateCritical
+      # Pages only on server faults. reason=internal (bug) and
+      # reason=tx_error (postgres) are the only server-fault reasons; every
+      # other reason (invalid, conflict, forbidden, pool_exhausted, ...) is a
+      # refused request the caller fixes and must not page. Pool exhaustion
+      # has its own utilization alerts below.
+      - alert: IPAMAllocationErrorRateHigh
         expr: |
-          rate(ipam_allocation_total{outcome=~"error|conflict"}[5m])
-          / rate(ipam_allocation_total[5m]) > 0.05
+          sum(rate(ipam_allocation_failures_total{reason=~"internal|tx_error"}[5m]))
+          / clamp_min(sum(rate(ipam_allocation_duration_seconds_count[5m])), 1e-9) > 0.05
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "IPAM allocation error rate above 5%"
-          runbook_url: "docs/runbooks/ipam-allocation-error-rate.md"
+          summary: "IPAM allocation server-fault rate above 5%"
+          runbook_url: "docs/runbooks/ipam-allocation-error-rate-high.md"
 
       - alert: IPAMPoolNearlyExhausted
         expr: ipam_pool_utilization_ratio > 0.80

@@ -206,6 +206,11 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	// nothing and consume no capacity (see Create body for how the transaction
 	// is rolled back).
 	dryRun := isDryRun(options.DryRun)
+	if dryRun {
+		// Nothing a dry-run changes survives it, so the metrics that count
+		// changes (cascade provisioning) must not count its changes either.
+		ctx = metrics.WithDryRun(ctx)
+	}
 
 	id := tenant.FromContext(ctx)
 	project := id.Project()
@@ -247,28 +252,31 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	defer func() {
 		metrics.ObserveAllocationDuration("ipclaim", result, ipFamily, project, org, allocStart)
 	}()
+	// fail records err under the reason failureReason gives it and returns it.
+	// label is reasonInternal or reasonTxError for a step whose own failure is
+	// the server's; a refusal that step returns is labelled as a refusal.
+	fail := func(err error, label string) error {
+		metrics.RecordAllocationFailure("ipclaim", failureReason(err, label), ipFamily, project, org)
+		return err
+	}
 
 	objectMeta, err := meta.Accessor(claim)
 	if err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, fmt.Errorf("get object metadata: %w", err)
+		return nil, fail(fmt.Errorf("get object metadata: %w", err), reasonInternal)
 	}
 	rest.FillObjectMetaSystemFields(objectMeta)
 
 	if err := rest.BeforeCreate(r.strategy, ctx, claim); err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, err
+		return nil, fail(err, reasonInternal)
 	}
 	if claim.Spec.ClassName == "" && claim.Spec.IPFamily == "" {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, apierrors.NewBadRequest("spec.className or spec.ipFamily is required")
+		return nil, fail(apierrors.NewBadRequest("spec.className or spec.ipFamily is required"), reasonInvalid)
 	}
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
 		failSpan(tracing.ReasonTxError)
-		return nil, fmt.Errorf("begin allocation transaction: %w", err)
+		return nil, fail(fmt.Errorf("begin allocation transaction: %w", err), reasonTxError)
 	}
 
 	// A claim names a CLASS. Resolution starts in the caller's own project and
@@ -278,38 +286,35 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	class, err := allocator.ResolveClass(ctx, tx, claim.Spec.ClassName, v1alpha1.IPFamily(claim.Spec.IPFamily))
 	_ = tx.Rollback(ctx)
 	if err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "class_not_found", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
 		switch {
 		case errors.Is(err, allocator.ErrClassNotFound):
-			return nil, ipamerrors.New(ipamerrors.ReasonClassNotFound, err.Error())
+			return nil, fail(ipamerrors.New(ipamerrors.ReasonClassNotFound, err.Error()), reasonClassNotFound)
 		case errors.Is(err, allocator.ErrNoDefaultClass):
-			return nil, ipamerrors.New(ipamerrors.ReasonNoDefaultClass, err.Error())
+			return nil, fail(ipamerrors.New(ipamerrors.ReasonNoDefaultClass, err.Error()), reasonClassNotFound)
 		case errors.Is(err, tenant.ErrNoTenant):
 			// A request that arrived without a project has nowhere to allocate
 			// from. That is the caller's request, not a server fault, so it is
 			// refused rather than reported as one.
-			return nil, ipamerrors.New(ipamerrors.ReasonNoProjectScope, err.Error())
+			return nil, fail(ipamerrors.New(ipamerrors.ReasonNoProjectScope, err.Error()), reasonInvalid)
 		}
-		return nil, fmt.Errorf("resolve class: %w", err)
+		return nil, fail(fmt.Errorf("resolve class: %w", err), reasonTxError)
 	}
 
 	// spec.ipFamily is a selector for the default class, never a second opinion
 	// about the class a claim names. Silently ignoring a disagreement let a
 	// claim ask for IPv4 from an IPv6 class and get IPv6 back with no error.
 	if claim.Spec.IPFamily != "" && string(claim.Spec.IPFamily) != string(class.Spec.IPFamily) {
-		metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
-		return nil, ipamerrors.New(ipamerrors.ReasonFamilyMismatch, fmt.Sprintf(
+		return nil, fail(ipamerrors.New(ipamerrors.ReasonFamilyMismatch, fmt.Sprintf(
 			"spec.ipFamily is %s but class %q hands out %s",
-			claim.Spec.IPFamily, class.LocalName, class.Spec.IPFamily))
+			claim.Spec.IPFamily, class.LocalName, class.Spec.IPFamily)), reasonInvalid)
 	}
 	if claim.Spec.AddressScope != "" && string(claim.Spec.AddressScope) != string(class.Spec.AddressScope) {
-		metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
-		return nil, ipamerrors.New(ipamerrors.ReasonAddressScopeMismatch, fmt.Sprintf(
+		return nil, fail(ipamerrors.New(ipamerrors.ReasonAddressScopeMismatch, fmt.Sprintf(
 			"spec.addressScope is %s but class %q has addressScope %q",
-			claim.Spec.AddressScope, class.Name, class.Spec.AddressScope))
+			claim.Spec.AddressScope, class.Name, class.Spec.AddressScope)), reasonInvalid)
 	}
 
 	// Default the class the same way a PersistentVolumeClaim is defaulted to
@@ -325,17 +330,15 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 
 	if createValidation != nil {
 		if err := createValidation(ctx, claim.DeepCopyObject()); err != nil {
-			metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-			return nil, err
+			return nil, fail(err, reasonInternal)
 		}
 	}
 
 	// Before any capacity is reserved: a namespace that is gone, or going,
 	// never releases what is bound into it.
 	if err := r.checkNamespaceLiveness(ctx, project, claim.Namespace); err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "namespace_not_live", ipFamily, project, org)
 		failSpan(tracing.ReasonNamespaceNotLive)
-		return nil, err
+		return nil, fail(err, reasonNamespaceNotLive)
 	}
 
 	// Overwrite any client-supplied ownerRef. The requestheader CA guarantees
@@ -351,18 +354,20 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	// as spec.ipFamily is, whichever target the claim binds.
 	if claim.Spec.Address != "" {
 		if err := checkAddressFamily(claim.Spec.Address, class); err != nil {
-			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
 			failSpan(tracing.ReasonPoolNotFound)
-			return nil, err
+			return nil, fail(err, reasonInvalid)
 		}
 	}
 
 	if claim.Spec.Target == ipam.TargetScopeRange {
 		obj, outcome, err := r.createScopeRange(ctx, span, claim, class, id, dryRun)
-		result = outcome
 		if err != nil {
-			metrics.RecordAllocationFailure("ipclaim", outcome, ipFamily, project, org)
-			return nil, err
+			// The latency histogram's result is success | exhausted | error,
+			// as on the block path; the reason goes on the failure counter.
+			if failureReason(err, outcome) == reasonPoolExhausted {
+				result = "exhausted"
+			}
+			return nil, fail(err, outcome)
 		}
 		result = "success"
 		return obj, nil
@@ -384,8 +389,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 
 	prefixLen, err := allocator.EffectivePrefixLength(class.IPClass, claim.Spec.PrefixLength)
 	if err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error())
+		return nil, fail(ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error()), reasonInvalid)
 	}
 
 	// The block a named address asks for, resolved once the size is known. An
@@ -395,13 +399,12 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	if claim.Spec.Address != "" {
 		block, err := allocation.RequestedBlock(claim.Spec.Address, prefixLen)
 		if err != nil {
-			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
 			failSpan(tracing.ReasonPoolNotFound)
 			if errors.Is(err, allocation.ErrUnalignedAddress) {
-				return nil, ipamerrors.New(ipamerrors.ReasonAddressUnaligned, fmt.Sprintf(
-					"spec.address %s: %v", claim.Spec.Address, err))
+				return nil, fail(ipamerrors.New(ipamerrors.ReasonAddressUnaligned, fmt.Sprintf(
+					"spec.address %s: %v", claim.Spec.Address, err)), reasonInvalid)
 			}
-			return nil, apierrors.NewBadRequest(fmt.Sprintf("spec.address %s: %v", claim.Spec.Address, err))
+			return nil, fail(apierrors.NewBadRequest(fmt.Sprintf("spec.address %s: %v", claim.Spec.Address, err)), reasonInvalid)
 		}
 		wantBlock = &block
 	}
@@ -415,12 +418,11 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	// nothing to explain it.
 	uniqueScope, scopeDigest, err := scope.ProjectAddressSpaceDigest(id.Name, claim.Spec.Scope, class.Spec.UniqueWithin, "uniqueWithin")
 	if err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
 		var missing *scope.MissingRoleError
 		if errors.As(err, &missing) {
-			return nil, ipamerrors.NewScopeRolesMissing(missing.Roles, fmt.Sprintf("%s (class %q)", missing.Error(), class.Name))
+			return nil, fail(ipamerrors.NewScopeRolesMissing(missing.Roles, fmt.Sprintf("%s (class %q)", missing.Error(), class.Name)), reasonInvalid)
 		}
-		return nil, apierrors.NewBadRequest(err.Error())
+		return nil, fail(apierrors.NewBadRequest(err.Error()), reasonInvalid)
 	}
 
 	// Resolving the pool provisions any missing level of the class's chain, and
@@ -438,53 +440,23 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	if dryRun {
 		dryTx, err = r.db.Begin(ctx)
 		if err != nil {
-			metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
 			failSpan(tracing.ReasonTxError)
-			return nil, fmt.Errorf("begin dry-run transaction: %w", err)
+			return nil, fail(fmt.Errorf("begin dry-run transaction: %w", err), reasonTxError)
 		}
 		defer func() { _ = dryTx.Rollback(ctx) }()
 		resolveDB = dryTx
 	}
 	poolKey, err := allocator.ResolvePoolFor(ctx, resolveDB, class, claim.Spec.Scope, wantBlock)
 	if err != nil {
-		if errors.Is(err, allocator.ErrRangeUnplaced) {
-			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
-			failSpan(tracing.ReasonPoolNotFound)
-			return nil, ipamerrors.New(ipamerrors.ReasonRangeUnplaced, err.Error())
-		}
-		if errors.Is(err, allocator.ErrAddressOutsidePool) {
-			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
-			failSpan(tracing.ReasonPoolNotFound)
-			return nil, ipamerrors.New(ipamerrors.ReasonAddressOutsidePool, err.Error())
-		}
-		metrics.RecordAllocationFailure("ipclaim", "pool_not_found", ipFamily, project, org)
 		failSpan(tracing.ReasonPoolNotFound)
-		if errors.Is(err, allocator.ErrNoOfferingPool) {
-			return nil, ipamerrors.New(ipamerrors.ReasonNoOfferingPool, err.Error())
-		}
-		// A scope short a role the class chain requires is a malformed request,
-		// not a server fault. The error already names the missing roles and the
-		// field that asked for them, which is the whole point of the type.
-		var missingRole *scope.MissingRoleError
-		if errors.As(err, &missingRole) {
-			return nil, ipamerrors.NewScopeRolesMissing(missingRole.Roles, err.Error())
-		}
-		// Running out of space while provisioning an ancestor is the same
-		// outcome as running out in the pool the claim was headed for, and gets
-		// the same 507. The level that failed is a level the caller never named,
-		// so the message carries the class rather than a pool name.
-		if errors.Is(err, allocator.ErrPoolExhausted) {
-			return nil, registryerrors.NewInsufficientStorage(err.Error())
-		}
-		return nil, fmt.Errorf("resolve pool: %w", err)
+		return nil, fail(resolvePoolError(err), reasonTxError)
 	}
 
 	if dryTx != nil {
 		tx = dryTx
 	} else if tx, err = r.db.Begin(ctx); err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
 		failSpan(tracing.ReasonTxError)
-		return nil, fmt.Errorf("begin allocation transaction: %w", err)
+		return nil, fail(fmt.Errorf("begin allocation transaction: %w", err), reasonTxError)
 	}
 	poolName := poolKey[strings.LastIndex(poolKey, "/")+1:]
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
@@ -510,26 +482,24 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	if err != nil {
 		if isClaimNameCollision(err) || isIdentityCollision(err) {
 			_ = tx.Rollback(ctx)
-			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
 			failSpan(tracing.ReasonTxError)
 			if isClaimNameCollision(err) {
-				return nil, duplicateClaimConflict(claim.Name)
+				return nil, fail(duplicateClaimConflict(claim.Name), reasonConflict)
 			}
-			return nil, retainedAllocationConflict(claim.Name, allocationName)
+			return nil, fail(retainedAllocationConflict(claim.Name, allocationName), reasonConflict)
 		}
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
-		metrics.RecordAllocationFailure("ipclaim", reason, ipFamily, project, org)
 		switch reason {
-		case "pool_exhausted":
+		case reasonPoolExhausted:
 			result = "exhausted"
 			failSpan(tracing.ReasonExhausted)
-		case "pool_not_found", "invalid":
+		case reasonPoolNotFound, reasonInvalid:
 			failSpan(tracing.ReasonPoolNotFound)
 		default:
 			failSpan(tracing.ReasonTxError)
 		}
-		return nil, mapAllocationError(err, poolName, claim.Name)
+		return nil, fail(mapAllocationError(err, poolName, claim.Name), reason)
 	}
 
 	// Populate the claim status with the computed allocation up-front so both
@@ -584,17 +554,14 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	allocData, err := runtime.Encode(r.codec, alloc)
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, fmt.Errorf("encode IPAllocation: %w", err)
+		return nil, fail(fmt.Errorf("encode IPAllocation: %w", err), reasonInternal)
 	}
 	if _, err := r.allocator.InsertObject(ctx, tx, allocationKey, "IPAllocation", claim.Namespace, allocationName, allocData); err != nil {
 		_ = tx.Rollback(ctx)
 		if isIdentityCollision(err) {
-			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
-			return nil, retainedAllocationConflict(claim.Name, allocationName)
+			return nil, fail(retainedAllocationConflict(claim.Name, allocationName), reasonConflict)
 		}
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
-		return nil, fmt.Errorf("persist IPAllocation: %w", err)
+		return nil, fail(fmt.Errorf("persist IPAllocation: %w", err), reasonTxError)
 	}
 
 	// Claim status was populated above (before the dry-run branch); the
@@ -604,8 +571,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	claimData, err := runtime.Encode(r.codec, claim)
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, fmt.Errorf("encode claim: %w", err)
+		return nil, fail(fmt.Errorf("encode claim: %w", err), reasonInternal)
 	}
 	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
 	if err != nil {
@@ -613,22 +579,18 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		// The claim row is the last write, so a collision here means the name
 		// is taken by a claim holding no live allocation row of its own.
 		if isIdentityCollision(err) {
-			metrics.RecordAllocationFailure("ipclaim", "conflict", ipFamily, project, org)
-			return nil, duplicateClaimConflict(claim.Name)
+			return nil, fail(duplicateClaimConflict(claim.Name), reasonConflict)
 		}
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
-		return nil, fmt.Errorf("persist claim: %w", err)
+		return nil, fail(fmt.Errorf("persist claim: %w", err), reasonTxError)
 	}
 	versioner := storage.APIObjectVersioner{}
 	if err := versioner.UpdateObject(claim, uint64(rv)); err != nil {
 		_ = tx.Rollback(ctx)
-		metrics.RecordAllocationFailure("ipclaim", "internal", ipFamily, project, org)
-		return nil, fmt.Errorf("set resource version: %w", err)
+		return nil, fail(fmt.Errorf("set resource version: %w", err), reasonInternal)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		metrics.RecordAllocationFailure("ipclaim", "tx_error", ipFamily, project, org)
-		return nil, fmt.Errorf("commit allocation transaction: %w", err)
+		return nil, fail(fmt.Errorf("commit allocation transaction: %w", err), reasonTxError)
 	}
 
 	result = "success"
@@ -671,16 +633,16 @@ func isDryRun(dryRun []string) bool {
 func allocationFailureReason(err error) string {
 	switch {
 	case errors.Is(err, allocator.ErrPoolExhausted):
-		return "pool_exhausted"
+		return reasonPoolExhausted
 	case errors.Is(err, allocator.ErrPoolNotFound):
-		return "pool_not_found"
+		return reasonPoolNotFound
 	case errors.Is(err, allocator.ErrAddressInUse), errors.Is(err, allocator.ErrAddressReserved):
-		return "conflict"
+		return reasonConflict
 	case errors.Is(err, allocator.ErrAddressOutsidePool), errors.Is(err, allocation.ErrUnalignedAddress),
 		errors.Is(err, allocation.ErrInvalidAddress), errors.Is(err, allocation.ErrPrefixLenMismatch):
-		return "invalid"
+		return reasonInvalid
 	default:
-		return "tx_error"
+		return reasonTxError
 	}
 }
 
@@ -959,6 +921,34 @@ func retainedAllocationConflict(claimName, allocationName string) error {
 		allocationName,
 		fmt.Sprintf("an allocation under this identity already exists: IPAllocation %q, retained by an earlier claim of the same name; delete it to reuse the name", allocationName),
 	)
+}
+
+// resolvePoolError turns a failure to resolve a Block claim's pool into the
+// status the caller sees. An error it leaves as a plain error is a server
+// fault.
+func resolvePoolError(err error) error {
+	switch {
+	case errors.Is(err, allocator.ErrRangeUnplaced):
+		return ipamerrors.New(ipamerrors.ReasonRangeUnplaced, err.Error())
+	case errors.Is(err, allocator.ErrAddressOutsidePool):
+		return ipamerrors.New(ipamerrors.ReasonAddressOutsidePool, err.Error())
+	case errors.Is(err, allocator.ErrNoOfferingPool):
+		return ipamerrors.New(ipamerrors.ReasonNoOfferingPool, err.Error())
+	case errors.Is(err, allocator.ErrPoolExhausted):
+		// Running out of space while provisioning an ancestor is the same
+		// outcome as running out in the pool the claim was headed for, and
+		// gets the same 507. The level that failed is a level the caller never
+		// named, so the message carries the class rather than a pool name.
+		return registryerrors.NewInsufficientStorage(err.Error())
+	}
+	// A scope short a role the class chain requires is a malformed request,
+	// not a server fault. The error already names the missing roles and the
+	// field that asked for them, which is the whole point of the type.
+	var missingRole *scope.MissingRoleError
+	if errors.As(err, &missingRole) {
+		return ipamerrors.NewScopeRolesMissing(missingRole.Roles, err.Error())
+	}
+	return fmt.Errorf("resolve pool: %w", err)
 }
 
 // mapAllocationError turns an allocator failure into the status the caller

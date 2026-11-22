@@ -20,18 +20,9 @@ import (
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/scope"
-	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/tracing"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
-
-// tenantsFromPoolKey derives (project, org) labels for utilization gauges
-// from a pool key. The key encodes only the immediate parent (project for
-// project-scoped pools), so org is "" today; see tenant.Identity.Org for the
-// long-term plan to populate it via a forwarded org extra.
-func tenantsFromPoolKey(poolKey string) (project, org string) {
-	return tenant.ProjectFromKey(poolKey), ""
-}
 
 // PostgresPrefixAllocator implements PrefixAllocator atop ipam_objects and
 // ipam_cidr_allocations. It performs the synchronous allocation sequence
@@ -56,7 +47,7 @@ func NewPostgresPrefixAllocator() *PostgresPrefixAllocator {
 
 // AllocatePrefix implements PrefixAllocator.AllocatePrefix.
 func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx, req PrefixRequest) (string, error) {
-	poolKey, prefixLen, ipFamily := req.PoolKey, req.PrefixLen, req.IPFamily
+	poolKey, prefixLen := req.PoolKey, req.PrefixLen
 
 	// Normalised once, here, and read from req by both the search and the
 	// insert. A block searched under one digest and recorded under another
@@ -127,7 +118,6 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, consumed); err != nil {
 		return "", fmt.Errorf("update pool capacity after allocation: %w", err)
 	}
-	publishPrefixUtilization(poolKey, ipFamily, parents, consumed)
 
 	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", req.ClaimKey, "ownerProject", req.OwnerProject, "requested", req.Address != "")
 	return cidr.String(), nil
@@ -323,7 +313,6 @@ func deleteAllocations(ctx context.Context, tx pgx.Tx, cond string, arg any) err
 		if perr := persistPoolCapacity(ctx, tx, pool, r.poolKey, parents, consumed); perr != nil {
 			return fmt.Errorf("update pool capacity after release: %w", perr)
 		}
-		publishPrefixUtilization(r.poolKey, r.ipFamily, parents, consumed)
 	}
 	return nil
 }
@@ -549,29 +538,6 @@ func loadExistingAllocations(ctx context.Context, tx pgx.Tx, poolKey string) ([]
 		   FROM ipam_cidr_allocations
 		  WHERE pool_key = $1`,
 		poolKey)
-}
-
-// publishPrefixUtilization recomputes allocated/total for the supplied pool
-// and updates the ipam_pool_utilization_ratio gauge. Both sums are computed
-// in big.Int so very large IPv6 pools do not overflow int64; the final
-// division is converted to float64 for the Prometheus gauge. A zero capacity
-// pool publishes 0 rather than NaN — the gauge is documented as ratio in
-// [0, 1] and dashboards/alerts assume a finite value.
-func publishPrefixUtilization(poolKey, ipFamily string, parents []net.IPNet, consumed *big.Int) {
-	project, org := tenantsFromPoolKey(poolKey)
-	total := totalAddresses(parents)
-	usedF, _ := new(big.Float).SetInt(consumed).Float64()
-	totalF, _ := new(big.Float).SetInt(total).Float64()
-	// Absolute counters are published alongside the ratio so dashboards can
-	// distinguish small/full pools from large/half-full pools at a glance.
-	// Float64 rather than int64: a /48 IPv6 pool has 2^80 addresses, well
-	// past int64.
-	metrics.SetPoolCapacity(poolKey, ipFamily, "ippools", project, org, totalF, usedF)
-	if total.Sign() == 0 {
-		metrics.SetPoolUtilization(poolKey, ipFamily, "ippools", project, org, 0)
-		return
-	}
-	metrics.SetPoolUtilization(poolKey, ipFamily, "ippools", project, org, usedF/totalF)
 }
 
 // insertPrefixAllocation records a new allocation row.

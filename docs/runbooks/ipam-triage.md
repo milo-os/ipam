@@ -29,6 +29,7 @@ runbook, the on-call experience regresses.
 | `IPAMAllocationErrorRateAbsolute` | warning | [`ipam-allocation-error-rate-high.md`](ipam-allocation-error-rate-high.md) |
 | `IPAMPoolExhaustionImminent` | warning | [`ipam-pool-exhaustion-imminent.md`](ipam-pool-exhaustion-imminent.md) |
 | `IPAMPoolExhausted` | critical | [`ipam-pool-exhaustion-imminent.md`](ipam-pool-exhaustion-imminent.md) |
+| `IPAMPoolGaugesStale` | warning | [`ipam-pool-exhaustion-imminent.md`](ipam-pool-exhaustion-imminent.md#ipampoolgaugesstale) |
 | `IPAMDBConnectionPoolSaturated` | critical | [`ipam-db-connection-pool-saturated.md`](ipam-db-connection-pool-saturated.md) |
 | `IPAMPgxpoolMetricsStale` | warning | [`ipam-db-connection-pool-saturated.md`](ipam-db-connection-pool-saturated.md) |
 | `IPAMWatchLagHigh` | warning | [`ipam-watch-lag-high.md`](ipam-watch-lag-high.md) |

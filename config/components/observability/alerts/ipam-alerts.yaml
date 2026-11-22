@@ -71,13 +71,16 @@ spec:
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-claim-latency-high.md"
 
         - alert: IPAMAllocationErrorRateHigh
-          # Failure ratio = failures / total attempts. Total attempts is
-          # derived from the `_count` series of the duration histogram
-          # because a dedicated `ipam_allocation_attempts_total` does not
-          # exist (audited). clamp_min keeps the ratio defined when there
-          # is zero traffic.
+          # Server-fault ratio = server faults / total attempts. Only
+          # reason=internal (a bug) and reason=tx_error (postgres) are server
+          # faults; every other reason is a request the server refused
+          # (invalid, conflict, forbidden, pool_exhausted, ...), which the
+          # caller fixes and which must not page. The mapping lives in
+          # internal/registry/ipam/ipclaim/failurereason.go. Total attempts
+          # is derived from the `_count` series of the duration histogram.
+          # clamp_min keeps the ratio defined when there is zero traffic.
           expr: |
-            sum(rate(ipam_allocation_failures_total[5m]))
+            sum(rate(ipam_allocation_failures_total{reason=~"internal|tx_error"}[5m]))
             /
             clamp_min(sum(rate(ipam_allocation_duration_seconds_count[5m])), 1e-9)
             > 0.05
@@ -87,28 +90,30 @@ spec:
             service: ipam
             slo: error_rate
           annotations:
-            summary: "IPAM allocation error rate above 5%"
+            summary: "IPAM allocation server-fault rate above 5%"
             description: |
-              IPAM allocation failure ratio is {{ $value | humanizePercentage }} over the last 5m,
-              exceeding the 5% error budget. Sustained for 2m.
-              Break down by `reason` label to determine cause:
-              pool_exhausted (capacity), tx_error (postgres),
-              pool_not_found (config drift), or internal (bug).
+              {{ $value | humanizePercentage }} of IPAM allocation attempts failed on a server
+              fault over the last 5m, exceeding the 5% error budget. Sustained for 2m.
+              Only reason=internal (bug) and reason=tx_error (postgres) count; refused
+              requests (invalid, conflict, forbidden, pool_exhausted, ...) do not.
+              Break down by `reason` to tell the two apart.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-allocation-error-rate-high.md"
 
         - alert: IPAMAllocationErrorRateAbsolute
-          # Belt-and-suspenders: triggers when failures absolutely spike even
-          # if total traffic is low (where the ratio alert is noisy).
-          expr: sum(rate(ipam_allocation_failures_total[5m])) > 1
+          # Belt-and-suspenders: triggers when server faults absolutely spike
+          # even if total traffic is low (where the ratio alert is noisy).
+          # Refused requests are excluded, as in IPAMAllocationErrorRateHigh.
+          expr: sum(rate(ipam_allocation_failures_total{reason=~"internal|tx_error"}[5m])) > 1
           for: 5m
           labels:
             severity: warning
             service: ipam
           annotations:
-            summary: "IPAM allocation failure rate > 1 req/s"
+            summary: "IPAM allocation server faults > 1 req/s"
             description: |
-              Absolute IPAM allocation failure rate is {{ $value }} req/s over 5m.
-              Investigate even if the ratio alert is silent.
+              IPAM allocations are failing on server faults (reason=internal or
+              tx_error) at {{ $value }} req/s over 5m. Investigate even if the ratio
+              alert is silent. Refused requests do not count.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-allocation-error-rate-high.md"
 
     - name: ipam-pool-capacity
@@ -150,6 +155,29 @@ spec:
               100% utilization. All new claims against this pool are being denied
               with HTTP 507. Customer impact is active.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-pool-exhaustion-imminent.md"
+
+        - alert: IPAMPoolGaugesStale
+          # The per-pool gauges are read back from the database every 15s by a
+          # sampler in cmd/ipam/serve.go. A failed read keeps the previous
+          # values, so the two pool alerts above would go quiet on numbers
+          # that no longer move. The sampler stamps
+          # ipam_pool_gauges_last_success_timestamp_seconds only when a read
+          # succeeds; 300s is 20 missed reads. Evaluated per series, so it
+          # names the replica whose reads are failing.
+          expr: time() - ipam_pool_gauges_last_success_timestamp_seconds > 300
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: pool_capacity
+          annotations:
+            summary: "IPAM pool gauges on {{ $labels.instance }} have not refreshed for {{ $value | humanizeDuration }}"
+            description: |
+              The pool gauge sampler on {{ $labels.instance }} has not read pool
+              capacity from the database for {{ $value | humanizeDuration }}. Its
+              ipam_pool_* gauges hold their last values, so IPAMPoolExhaustionImminent
+              and IPAMPoolExhausted cannot fire for pools that filled since.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-pool-exhaustion-imminent.md#ipampoolgaugesstale"
 
     - name: ipam-db-capacity
       interval: 30s
