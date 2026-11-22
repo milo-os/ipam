@@ -444,7 +444,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	}, uniqueScope, reclaimPolicy, generatedName, dryRun)
 	if reclaimed.handled {
 		if reclaimed.err != nil {
-			failSpan(tracing.ReasonTxError)
+			failSpan(spanReason(failureReason(reclaimed.err, reclaimed.outcome)))
 			return nil, fail(reclaimed.err, reclaimed.outcome)
 		}
 		// A request-level result, so a dry-run reclaim records it too (see
@@ -532,7 +532,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	if err != nil {
 		if isClaimNameCollision(err) || isIdentityCollision(err) {
 			_ = tx.Rollback(ctx)
-			failSpan(tracing.ReasonTxError)
+			failSpan(tracing.ReasonConflict)
 			if isClaimNameCollision(err) {
 				return nil, fail(duplicateClaimConflict(claim.Name), reasonConflict)
 			}
@@ -540,12 +540,16 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		}
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
-		switch reason {
-		case reasonPoolExhausted:
+		switch {
+		case reason == reasonPoolExhausted:
 			result = "exhausted"
 			failSpan(tracing.ReasonExhausted)
-		case reasonPoolNotFound, reasonInvalid:
+		case errors.Is(err, allocator.ErrRetentionLeaseRequired):
+			failSpan(tracing.ReasonInvalid)
+		case reason == reasonPoolNotFound, reason == reasonInvalid:
 			failSpan(tracing.ReasonPoolNotFound)
+		case reason == reasonConflict:
+			failSpan(tracing.ReasonConflict)
 		default:
 			failSpan(tracing.ReasonTxError)
 		}

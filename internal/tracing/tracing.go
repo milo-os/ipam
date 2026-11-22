@@ -79,7 +79,7 @@ const (
 	AttrSweepSkipped   = "ipam.retention.skipped"
 
 	// failure
-	AttrErrorReason = "ipam.error.reason" // pool_not_found | exhausted | cross_project_denied | namespace_not_live | tx_error
+	AttrErrorReason = "ipam.error.reason" // pool_not_found | exhausted | cross_project_denied | namespace_not_live | invalid | conflict | tx_error
 )
 
 // Scope returns the canonical scope attribute value for an identity.
@@ -97,4 +97,9 @@ const (
 	ReasonCrossProjectDenied = "cross_project_denied"
 	ReasonNamespaceNotLive   = "namespace_not_live"
 	ReasonTxError            = "tx_error"
+	// ReasonInvalid and ReasonConflict are refusals of the caller's request
+	// (422/400 and 409), matching the failure metric's labels. Only
+	// ReasonTxError marks a server fault.
+	ReasonInvalid  = "invalid"
+	ReasonConflict = "conflict"
 )
