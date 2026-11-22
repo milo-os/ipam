@@ -189,11 +189,13 @@ datumctl ipam prefix claim --pool prod-backbone --length 14 --dry-run
   pool sets `maxRetentionLease`, so an address is never held for good on a
   claim's say-so; a class that retains by default needs neither. A retained
   allocation shows when its class's or pool's retention lease runs out
-  (`datumctl ipam allocation show`); once it runs out the address is released
-  back to the pool. Release it sooner with `datumctl ipam allocation release`.
-  A consumer can release one that has a lease deadline; one with no deadline
-  (lease `none`, as under a class that retains by default with no lease) can be
-  released only by an IPAM Admin, or by deleting its namespace.
+  (`datumctl ipam allocation show`); after it, the address is eligible for
+  release, and the retention sweeper releases it back to the pool shortly
+  afterwards when it runs in enforce mode, the default. Release it sooner with
+  `datumctl ipam allocation release`. A consumer can release one that has a
+  lease deadline; one with no deadline (lease `none`, as under a class that
+  retains by default with no lease) can be released only by an IPAM Admin, or
+  by deleting its namespace.
 
 ### List, inspect, and release prefixes
 

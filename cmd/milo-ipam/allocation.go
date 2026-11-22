@@ -274,18 +274,20 @@ func (a *app) resolveAllocation(cs clientset.Interface, ns, arg string) ([]*ipam
 	return []*ipamv1alpha1.IPAllocation{al}, nil
 }
 
-// leaseText says what will happen to a retained allocation and when. Once its
-// lease runs out the server releases it on the next retention sweep, so a
-// deadline already passed reads as due rather than as still held.
+// leaseText says when a retained allocation's lease runs out. It does not
+// promise a release: the CLI cannot see whether the server's retention
+// sweeper runs in enforce mode, which releases an expired allocation, or in
+// observe mode, which releases nothing. So a deadline reads as when the
+// address becomes eligible for release, and a passed one says what releases it.
 func leaseText(al *ipamv1alpha1.IPAllocation, now time.Time) string {
 	if al.Status.ExpiresAt != nil {
 		at := al.Status.ExpiresAt.Time
 		if at.After(now) {
 			return "runs out " + at.UTC().Format(time.RFC3339) + " (in " + shortDuration(at.Sub(now)) +
-				"); released back to the pool then"
+				"); eligible for release after that"
 		}
 		return "ran out " + at.UTC().Format(time.RFC3339) + " (" + shortDuration(now.Sub(at)) +
-			" ago); due for release on the next retention sweep"
+			" ago); released by the retention sweeper when it runs in enforce mode"
 	}
 	if c := meta.FindStatusCondition(al.Status.Conditions, ipamv1alpha1.AllocationConditionRetained); c != nil &&
 		c.Reason == ipamv1alpha1.RetainedReasonLeasePending {
@@ -346,10 +348,11 @@ the same name is created again, which takes it back, until its retention lease
 runs out, or until it is released here. Release it to give the address to a
 claim of another name or terms.
 
-A retained allocation may show a lease deadline (allocation show). Once it
-passes, the server releases the allocation on its next retention sweep, and
-the address may be given to another claim. Release it here to hand it back
-sooner.
+A retained allocation may show a lease deadline (allocation show). After it,
+the allocation is eligible for release: the server's retention sweeper
+releases it shortly after the deadline when it runs in enforce mode, the
+default, and the address may then be given to another claim. Release it here
+to hand it back sooner.
 
 Releasing an allocation that still has a claim bound to it is refused — release
 the claim instead, so the claim and its address do not disagree.
