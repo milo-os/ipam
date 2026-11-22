@@ -96,7 +96,7 @@ block.
 | `status.phase` | AllocationPhase | Lifecycle phase. |
 | `status.allocatedCIDR` | CIDR string | The allocated block. |
 | `status.retainedAt` | timestamp | When the claim was deleted under `Retain`. Unset while a claim holds the allocation. |
-| `status.expiresAt` | timestamp | When the retention lease runs out: retention plus the effective lease, rounded up to the whole second so it is never before the full lease. The address is released on the retention sweeper's first pass after it. Unset when no lease applies, and while a claim holds the allocation. |
+| `status.expiresAt` | timestamp | When the retention lease runs out: retention plus the effective lease, rounded up to the whole second so it is never before the full lease. The address is released on a retention sweeper pass shortly after it, usually the next; see below. Unset when no lease applies, and while a claim holds the allocation. |
 | `status.conditions[type=Retained]` | Condition | `True` while retained, with reason `LeaseActive` (a deadline is set), `NoLease`, or `LeasePending` (the lease could not be evaluated at the delete; the sweeper evaluates it). `False`/`Reclaimed` once a recreated claim takes it back. |
 
 `IPAllocation` is namespace-scoped (`shortName: ipalloc`) and system-created; it
@@ -156,11 +156,14 @@ with no lease:
   class's default is then changed to `Delete`.
 
 **An expired retained address is released.** The apiserver's retention
-sweeper runs every minute by default. On its first pass after an allocation's
-`expiresAt` it deletes the IPAllocation and returns the address to the pool,
-where the next claim can be given it. Each pass releases at most a fixed budget
-of rows, oldest deadline first, so a backlog is worked through over several
-passes. A recreated claim that reclaims the address before that pass keeps it.
+sweeper runs every minute by default. On a pass shortly after an allocation's
+`expiresAt`, usually the next, it deletes the IPAllocation and returns the
+address to the pool, where the next claim can be given it. A release can wait
+for a later pass: a pass skips a pool a live claim holds at that moment, a
+release that fails leaves the allocation held until a pass succeeds, and each
+pass releases at most a fixed budget of rows, oldest deadline first, so a
+backlog is worked through over several passes. A recreated claim that reclaims
+the address before it is released keeps it.
 An allocation with no lease is never released by the sweeper. Releases are
 counted in `ipam_retention_releases_total{mode="enforce"}`.
 

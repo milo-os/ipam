@@ -79,7 +79,8 @@ and check whether the class still exists.
 - Release what is not needed: `datumctl ipam allocation release <name>`. The
   consumer that retained it can do this itself: the IPAM Consumer role grants
   it, and a bound allocation is refused.
-- Once a lease applies, the sweeper releases the allocation on its first pass
-  after `status.expiresAt`. That holds in the default enforce mode; a
+- Once a lease applies, the sweeper releases the allocation on a pass shortly
+  after `status.expiresAt`, usually the next; a pass skips a pool a live
+  claim holds, so a release can wait for a later one. That holds in the default enforce mode; a
   deployment running `RETENTION_SWEEP_MODE=observe` shows the deadline and
   releases nothing.

@@ -142,9 +142,11 @@ class, or changing a `Retain` class the claim agreed with to `Delete` while the
 claim is bound can still leave its address retained with no lease. Do not read
 an accepted `Retain` as a promise that a deadline will be set.
 
-An expired retained address is released. Shortly after `expiresAt`, on the
-retention sweeper's next pass, the IPAllocation is deleted and the address goes
-back to the pool, where another claim may be given it. To keep the address,
+An expired retained address is released. On a retention sweeper pass shortly
+after `expiresAt`, usually the next, the IPAllocation is deleted and the
+address goes back to the pool, where another claim may be given it. A pass
+skips a pool that a live claim holds at that moment, so a release can wait for
+a later pass. To keep the address,
 recreate the claim before `expiresAt`. Do not rely on it being held past that
 date.
 
