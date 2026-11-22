@@ -351,6 +351,18 @@ func TestASharedLevelIsPlacedOnlyWhenItExists(t *testing.T) {
 	}
 	expectUnchanged(t, db, before, "a refused shared placement")
 
+	// An addressed Block claim under the missing shared level is refused
+	// without pointing at a ScopeRange claim that would itself be refused.
+	_, want, _ := net.ParseCIDR("fd30:0:1:7::/64")
+	_, err := ResolvePoolFor(ctxIn(placementProject), db, placementClass(t, db, "pubsub"), placementScope("net-a", "loc-1"), want)
+	if !errors.Is(err, ErrRangeUnplaced) {
+		t.Fatalf("addressed claim under a missing shared level: %v, want ErrRangeUnplaced", err)
+	}
+	if strings.Contains(err.Error(), "ScopeRange claim of class") || !strings.Contains(err.Error(), "shared") {
+		t.Errorf("refusal %q should explain the shared pool, not point at an addressed ScopeRange claim", err)
+	}
+	expectUnchanged(t, db, before, "an addressed claim under a missing shared level")
+
 	// The allocator places the shared pool, first-free.
 	if _, err := ResolveScopeRange(ctxIn(placementProject), db, placementClass(t, db, "pubvpc"), placementScope("net-a", "")); err != nil {
 		t.Fatalf("first-free shared pool: %v", err)
