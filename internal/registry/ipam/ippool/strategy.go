@@ -115,16 +115,12 @@ func validateMaxRetentionLease(p *ipam.IPPool) field.ErrorList {
 	return ipamvalidation.RetentionLease(p.Spec.MaxRetentionLease, field.NewPath("spec", "maxRetentionLease"))
 }
 
-func (ipPoolStrategy) WarningsOnCreate(_ context.Context, obj runtime.Object) []string {
-	return maxRetentionLeaseWarning(obj.(*ipam.IPPool))
+func (ipPoolStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string {
+	return nil
 }
 func (ipPoolStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
 func (ipPoolStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
 func (ipPoolStrategy) Canonicalize(_ runtime.Object)                   {}
-
-func maxRetentionLeaseWarning(p *ipam.IPPool) []string {
-	return ipamvalidation.RetentionLeaseWarning(p.Spec.MaxRetentionLease, field.NewPath("spec", "maxRetentionLease"))
-}
 
 func (ipPoolStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
 	n := obj.(*ipam.IPPool)
@@ -151,13 +147,8 @@ func (ipPoolStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object)
 	return allErrs
 }
 
-// WarningsOnUpdate warns only when the update sets or changes the cap.
-func (ipPoolStrategy) WarningsOnUpdate(_ context.Context, obj, old runtime.Object) []string {
-	n, o := obj.(*ipam.IPPool), old.(*ipam.IPPool)
-	if !ipamvalidation.RetentionLeaseChanged(n.Spec.MaxRetentionLease, o.Spec.MaxRetentionLease) {
-		return nil
-	}
-	return maxRetentionLeaseWarning(n)
+func (ipPoolStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string {
+	return nil
 }
 
 func validateIPPool(p *ipam.IPPool) field.ErrorList {

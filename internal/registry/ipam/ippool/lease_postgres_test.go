@@ -19,14 +19,18 @@ type warningRecorder struct{ warnings []string }
 
 func (r *warningRecorder) AddWarning(_, text string) { r.warnings = append(r.warnings, text) }
 
+// isLeaseWarning reports a warning about a lease. Leases are enforced, so a
+// cap that is set needs no warning, and none should come back.
+func isLeaseWarning(w string) bool { return strings.Contains(strings.ToLower(w), "lease") }
+
 func withMaxLease(p *ipam.IPPool, d time.Duration) *ipam.IPPool {
 	p.Spec.MaxRetentionLease = &metav1.Duration{Duration: d}
 	return p
 }
 
-// The pool's cap is held to the same bounds as a class's lease, and setting
-// one is answered with the same warning that it is not enforced yet.
-func TestAPoolMaxRetentionLeaseIsBoundedAndWarned(t *testing.T) {
+// The pool's cap is held to the same bounds as a class's lease, and one within
+// them is accepted without a warning.
+func TestAPoolMaxRetentionLeaseIsBounded(t *testing.T) {
 	s := newPostgresPoolStorage(t, testdb.Pool(t))
 	rec := &warningRecorder{}
 	ctx := warning.WithWarningRecorder(poolCtx("tenant-a"), rec)
@@ -50,20 +54,16 @@ func TestAPoolMaxRetentionLeaseIsBoundedAndWarned(t *testing.T) {
 	if err := createPool(t, s, ctx, withMaxLease(rootPoolObj("capped", "10.61.3.0/24", ipam.IPv4), 24*time.Hour)); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	var found bool
 	for _, w := range rec.warnings {
-		if strings.Contains(w, "spec.maxRetentionLease") && strings.Contains(w, "issues/107") {
-			found = true
+		if isLeaseWarning(w) {
+			t.Errorf("create warned about the cap: %q", w)
 		}
-	}
-	if !found {
-		t.Errorf("warnings = %v, want one saying the cap is not enforced", rec.warnings)
 	}
 }
 
 // The pool's cap ratchets as a class's lease does: a stored out-of-bounds cap
-// does not block an update that leaves it alone, and that update is not warned
-// about. Changing the cap is held to the bounds and warned about.
+// does not block an update that leaves it alone. Changing the cap is held to
+// the bounds.
 func TestAPoolMaxRetentionLeaseIsRatchetedOnUpdate(t *testing.T) {
 	db := testdb.Pool(t)
 	s := newPostgresPoolStorage(t, db)
@@ -94,9 +94,6 @@ func TestAPoolMaxRetentionLeaseIsRatchetedOnUpdate(t *testing.T) {
 			nil, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
 		return err
 	}
-	isLeaseWarning := func(w string) bool {
-		return strings.Contains(w, "spec.maxRetentionLease") && strings.Contains(w, "issues/107")
-	}
 
 	rec.warnings = nil
 	labelled := get()
@@ -122,13 +119,9 @@ func TestAPoolMaxRetentionLeaseIsRatchetedOnUpdate(t *testing.T) {
 	if err := update(fixed); err != nil {
 		t.Fatalf("changing the cap to 24h: %v", err)
 	}
-	var warned int
 	for _, w := range rec.warnings {
 		if isLeaseWarning(w) {
-			warned++
+			t.Errorf("changing the cap warned about it: %q", w)
 		}
-	}
-	if warned != 1 {
-		t.Errorf("changing the cap warned %v, want one warning", rec.warnings)
 	}
 }

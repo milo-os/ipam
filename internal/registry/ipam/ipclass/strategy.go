@@ -118,12 +118,7 @@ func validateRetentionLease(c *ipam.IPClass) field.ErrorList {
 }
 
 func (ipClassStrategy) WarningsOnCreate(_ context.Context, obj runtime.Object) []string {
-	c := obj.(*ipam.IPClass)
-	return append(sharedPoolWarning(c), retentionLeaseWarning(c)...)
-}
-
-func retentionLeaseWarning(c *ipam.IPClass) []string {
-	return ipamvalidation.RetentionLeaseWarning(c.Spec.RetentionLease, field.NewPath("spec", "retentionLease"))
+	return sharedPoolWarning(obj.(*ipam.IPClass))
 }
 
 // sharedPoolWarning states, once, what a provisioning class's poolPer means for
@@ -206,14 +201,10 @@ func (ipClassStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	return allErrs
 }
 
-// WarningsOnUpdate repeats only the lease warning, and only when the update
-// sets or changes the lease: that is when someone is deciding on it.
-func (ipClassStrategy) WarningsOnUpdate(_ context.Context, obj, old runtime.Object) []string {
-	n, o := obj.(*ipam.IPClass), old.(*ipam.IPClass)
-	if !ipamvalidation.RetentionLeaseChanged(n.Spec.RetentionLease, o.Spec.RetentionLease) {
-		return nil
-	}
-	return retentionLeaseWarning(n)
+// WarningsOnUpdate returns nothing: the one class warning is about poolPer,
+// which an update cannot change.
+func (ipClassStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string {
+	return nil
 }
 
 func validateIPClass(c *ipam.IPClass) field.ErrorList {
