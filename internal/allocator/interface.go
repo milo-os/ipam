@@ -82,6 +82,13 @@ type PrefixRequest struct {
 	ClassName     string
 	ReclaimPolicy ipamv1alpha1.ReclaimPolicy
 
+	// ClassProject is the project holding the definition of the class, and
+	// AddressScope that class's spec.addressScope. With ClassName they are the
+	// terms a retained allocation is reclaimed on. They are recorded together
+	// and only when ClassProject is set.
+	ClassProject string
+	AddressScope ipamv1alpha1.AddressScope
+
 	// Address names the exact block to bind, as a bare address (the block of
 	// PrefixLen bits starting at it) or a CIDR of PrefixLen bits. Empty lets
 	// the pool's strategy choose.

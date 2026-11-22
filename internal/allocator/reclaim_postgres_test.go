@@ -102,3 +102,51 @@ func TestLockClaimAllocationFindsOnlyClaimRows(t *testing.T) {
 		return nil
 	})
 }
+
+// A claim row records its class's defining project and address scope as a
+// pair, an empty scope included; a row written without them records neither.
+func TestAllocationRowRecordsItsClassIdentity(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	a := NewPostgresPrefixAllocator()
+	poolKey := seedPool(t, db, "reclaim-identity", "10.58.0.0/16")
+
+	for _, req := range []PrefixRequest{
+		{ClaimKey: "public", ClassProject: "platform", AddressScope: ipamv1alpha1.AddressScopePublic},
+		{ClaimKey: "unset", ClassProject: "platform"},
+		{ClaimKey: "unrecorded"},
+	} {
+		req.PoolKey, req.PrefixLen, req.IPFamily, req.ClassName = poolKey, 24, "IPv4", "standard"
+		inTx(t, ctx, db.Begin, func(tx pgx.Tx) error {
+			_, err := a.AllocatePrefix(ctx, tx, req)
+			return err
+		})
+	}
+
+	for claim, want := range map[string][2]*string{
+		"public":     {strp("platform"), strp("Public")},
+		"unset":      {strp("platform"), strp("")},
+		"unrecorded": {nil, nil},
+	} {
+		var project, addressScope *string
+		if err := db.QueryRow(ctx,
+			`SELECT class_project, address_scope FROM ipam_cidr_allocations WHERE claim_key = $1`, claim,
+		).Scan(&project, &addressScope); err != nil {
+			t.Fatalf("read %s: %v", claim, err)
+		}
+		if !eqp(project, want[0]) || !eqp(addressScope, want[1]) {
+			t.Errorf("%s recorded (%v, %v), want (%v, %v)", claim, deref(project), deref(addressScope), deref(want[0]), deref(want[1]))
+		}
+	}
+}
+
+func strp(s string) *string { return &s }
+
+func eqp(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+
+func deref(s *string) string {
+	if s == nil {
+		return "NULL"
+	}
+	return *s
+}

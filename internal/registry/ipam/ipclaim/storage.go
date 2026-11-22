@@ -508,6 +508,8 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		OwnerProject:  id.Name,
 		ScopeDigest:   scopeDigest,
 		ClassName:     class.Name,
+		ClassProject:  class.Project,
+		AddressScope:  class.Spec.AddressScope,
 		ReclaimPolicy: reclaimPolicy,
 		Address:       claim.Spec.Address,
 	})
