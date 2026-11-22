@@ -1,0 +1,461 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: class-reclaim
+spec:
+  description: |
+    reclaimPolicy must genuinely decide what happens to an allocation when its
+    claim is deleted:
+
+      Retain — the allocation survives, with claimRef cleared and ownerRef
+               intact, so a retained address still has an attributable holder.
+      Delete — the allocation goes away and the address returns to circulation.
+
+    This is a regression test, not a formality. The allocator once wrote
+    'Delete' as a SQL literal rather than the resolved policy, so every
+    allocation released as if it were Delete and Retain never retained
+    anything. A test that only exercised the Delete path would have passed
+    throughout.
+
+    Three cases, because the bug hides in the difference between them:
+      a. class default Retain
+      b. class default Delete
+      c. class default Delete, overridden to Retain on the claim — the case
+         where the effective policy is neither object's literal default
+
+    The last two steps cover the way *out* of retention, which is a separate
+    property from retention itself: a retained address that can never be
+    reclaimed is a permanent loss of capacity rather than a deliberate hold.
+    Deleting the unbound allocation is the operator gesture; deleting a bound
+    one must be refused.
+
+    Retention leases are not enforced yet (milo-os/ipam#107), so nothing here
+    waits for one: a retained address is held until its allocation is deleted.
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    - name: setup
+      try:
+        - create:
+            file: test-data/setup.yaml
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              wait_pool_ready rc-pool
+              echo "OK: rc-pool Ready"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: rc-pool Ready'))": true
+
+    - name: retain-survives-claim-deletion
+      description: A Retain allocation outlives its claim, keeps its address, and keeps its owner
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-kept
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-retain
+              EOF
+              wait_claim_bound "$NAMESPACE" rc-kept 60
+
+              addr=$(claim_cidr "$NAMESPACE" rc-kept)
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" rc-kept -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$alloc" ]; then
+                echo "FAIL: claim reported no boundAllocationRef"
+                exit 1
+              fi
+              # The server sets the holder from the request's tenant, whatever
+              # the claim says, so the expected owner is read back rather than
+              # supplied.
+              holder=$(kubectl get ipclaim -n "$NAMESPACE" rc-kept -o jsonpath='{.spec.ownerRef.name}')
+              if [ -z "$holder" ]; then
+                echo "FAIL: claim rc-kept has no ownerRef; the server sets one on create"
+                exit 1
+              fi
+              echo "claim rc-kept holds $addr via allocation $alloc for $holder"
+
+              kubectl delete ipclaim -n "$NAMESPACE" rc-kept --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rc-kept 60
+
+              # The allocation must still be there. This is the assertion the
+              # SQL-literal bug fails.
+              if ! kubectl get ipallocation -n "$NAMESPACE" "$alloc" >/dev/null 2>&1; then
+                echo "FAIL: allocation $alloc was deleted despite reclaimPolicy Retain."
+                echo "      Retain did not retain."
+                exit 1
+              fi
+
+              json=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o json)
+              still=$(printf '%s' "$json" | jq -r '.status.allocatedCIDR')
+              claimref=$(printf '%s' "$json" | jq -r '.spec.claimRef // "none"')
+              owner=$(printf '%s' "$json" | jq -r '.spec.ownerRef.name // ""')
+              policy=$(printf '%s' "$json" | jq -r '.spec.reclaimPolicy // ""')
+
+              assert_equal_addr "$still" "$addr" "retained allocation still holds:"
+
+              if [ "$claimref" != "none" ]; then
+                echo "FAIL: claimRef was not cleared on release (got $claimref)."
+                echo "      A retained address must return to a claimable state"
+                echo "      without an operator clearing a stale reference by hand."
+                exit 1
+              fi
+              if [ "$owner" != "$holder" ]; then
+                echo "FAIL: ownerRef lost on release (got '$owner')."
+                echo "      A retained address with no holder cannot be billed or reclaimed."
+                exit 1
+              fi
+              if [ "$policy" != "Retain" ]; then
+                echo "FAIL: allocation records reclaimPolicy '$policy', expected Retain"
+                exit 1
+              fi
+              echo "OK: Retain retained ($addr, owner intact, claimRef cleared)"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: Retain retained'))": true
+
+    - name: retained-address-is-not-reissued
+      description: |
+        Retention is only real if the address is still held. If a fresh claim
+        can be handed the retained address, it was released in everything but
+        name.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              retained=$(kubectl get ipallocation -n "$NAMESPACE" -o json | jq -r \
+                '.items[] | select(.spec.claimRef == null)
+                          | select(.spec.purpose != "Reservation")
+                          | select(.spec.poolRef.name == "rc-pool")
+                          | .status.allocatedCIDR' | head -1)
+              if [ -z "$retained" ]; then
+                echo "FAIL: no retained allocation found on rc-pool"
+                exit 1
+              fi
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-newcomer
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-retain
+              EOF
+              wait_claim_bound "$NAMESPACE" rc-newcomer 60
+
+              got=$(claim_cidr "$NAMESPACE" rc-newcomer)
+              if [ "$got" = "$retained" ]; then
+                echo "FAIL: new claim was handed the retained address $retained."
+                echo "      A retained allocation is still held and must not be reissued."
+                exit 1
+              fi
+              echo "OK: retained $retained stayed held; newcomer got $got"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: retained'))": true
+
+    - name: delete-releases
+      description: The control case — Delete must actually delete
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-transient
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-delete
+              EOF
+              wait_claim_bound "$NAMESPACE" rc-transient 60
+
+              addr=$(claim_cidr "$NAMESPACE" rc-transient)
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" rc-transient -o jsonpath='{.status.boundAllocationRef.name}')
+
+              kubectl delete ipclaim -n "$NAMESPACE" rc-transient --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rc-transient 60
+              wait_gone ipallocation "$NAMESPACE" "$alloc" 60
+
+              # And the address is genuinely back: a new claim can take it.
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-reuser
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-delete
+                address: "$addr"
+              EOF
+              wait_claim_bound "$NAMESPACE" rc-reuser 60
+              got=$(claim_cidr "$NAMESPACE" rc-reuser)
+              assert_equal_addr "$got" "$addr" "released address retaken:"
+              echo "OK: Delete released the address"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: Delete released the address'))": true
+
+    - name: claim-overrides-class-default
+      description: |
+        A claim setting reclaimPolicy: Retain against a class whose default is
+        Delete must be retained. This is the case where the effective policy is
+        neither object's literal default, and the one a hard-coded policy value
+        gets wrong most quietly.
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-override
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-delete
+                reclaimPolicy: Retain
+              EOF
+              wait_claim_bound "$NAMESPACE" rc-override 60
+
+              addr=$(claim_cidr "$NAMESPACE" rc-override)
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" rc-override -o jsonpath='{.status.boundAllocationRef.name}')
+              holder=$(kubectl get ipclaim -n "$NAMESPACE" rc-override -o jsonpath='{.spec.ownerRef.name}')
+
+              # The override must be recorded on the allocation at bind time,
+              # because the allocation outlives the claim that chose it.
+              recorded=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o jsonpath='{.spec.reclaimPolicy}')
+              if [ "$recorded" != "Retain" ]; then
+                echo "FAIL: allocation recorded reclaimPolicy '$recorded'; the claim's Retain override was lost."
+                exit 1
+              fi
+
+              kubectl delete ipclaim -n "$NAMESPACE" rc-override --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rc-override 60
+
+              if ! kubectl get ipallocation -n "$NAMESPACE" "$alloc" >/dev/null 2>&1; then
+                echo "FAIL: allocation $alloc ($addr) was deleted; the claim's Retain override was ignored on release."
+                exit 1
+              fi
+              owner=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o jsonpath='{.spec.ownerRef.name}')
+              if [ -z "$owner" ] || [ "$owner" != "$holder" ]; then
+                echo "FAIL: ownerRef lost on release (got '$owner')"
+                exit 1
+              fi
+              echo "OK: claim-level Retain override survived release"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: claim-level Retain override survived release'))": true
+
+    - name: force-release-returns-the-capacity
+      description: |
+        The operator path out of retention. The design requires a retained
+        address to return to a claimable state, and deleting the unbound
+        IPAllocation is that gesture.
+
+        Asserted by re-issue rather than by absence. "The row is gone" would
+        pass against an implementation that dropped the record and lost the
+        space; what actually matters is that the capacity comes back, so this
+        fills a pool, retains through the claim's deletion, proves the pool is
+        genuinely exhausted while the address is held, force-releases, and then
+        requires the *same* address to be handed out again.
+      try:
+        - script:
+            timeout: 150s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              # A /31 under a /32 class is two addresses — small enough that
+              # "held" and "exhausted" are the same observation.
+              kubectl create -f - >/dev/null <<'EOF'
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPPool
+              metadata:
+                name: rc-tiny
+              spec:
+                cidr: 10.202.1.0/31
+                ipFamily: IPv4
+                visibility: consumer
+                classNames:
+                  - rc-tiny-cls
+                allocation:
+                  minPrefixLength: 32
+                  maxPrefixLength: 32
+                  strategy: FirstFit
+              EOF
+              wait_pool_ready rc-tiny
+
+              for n in 1 2; do
+                kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-tiny-$n
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-tiny-cls
+              EOF
+                wait_claim_bound "$NAMESPACE" "rc-tiny-$n" 60
+              done
+
+              held=$(claim_cidr "$NAMESPACE" rc-tiny-1)
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" rc-tiny-1 -o jsonpath='{.status.boundAllocationRef.name}')
+
+              # Retain through the claim's deletion.
+              kubectl delete ipclaim -n "$NAMESPACE" rc-tiny-1 --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rc-tiny-1 60
+
+              # While the address is retained the pool must be exhausted — this
+              # is what proves the space is really still held, not merely
+              # recorded.
+              expect_507 "$NAMESPACE" "" "claim while the address is retained" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-tiny-blocked
+                namespace: $NAMESPACE
+              spec:
+                className: rc-tiny-cls
+              EOF
+
+              # The operator gesture.
+              kubectl delete ipallocation -n "$NAMESPACE" "$alloc" >/dev/null
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-tiny-reissued
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-tiny-cls
+              EOF
+              wait_claim_bound "$NAMESPACE" rc-tiny-reissued 60
+
+              got=$(claim_cidr "$NAMESPACE" rc-tiny-reissued)
+              assert_equal_addr "$got" "$held" "force-released address reissued:"
+              echo "OK: force release returned the capacity"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: force release returned the capacity'))": true
+
+    - name: a-bound-allocation-cannot-be-force-released
+      description: |
+        The half of the fix that protects a running workload. Releasing an
+        address out from under a live claim would leave the claim naming
+        nothing while the workload keeps using the address, so a bound
+        allocation must be refused — and the refusal has to name the claim, or
+        the operator cannot tell what is holding it.
+
+        Deleting the claim stays the supported route; reclaimPolicy decides
+        from there. The refusal is read off the allocation row, not the
+        object, so it holds however the object reads.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" rc-tiny-reissued -o jsonpath='{.status.boundAllocationRef.name}')
+              out=$(kubectl delete ipallocation -n "$NAMESPACE" "$alloc" -v=8 2>&1) && rc=0 || rc=$?
+
+              if [ "$rc" = "0" ]; then
+                echo "FAIL: a bound allocation was deleted; the claim rc-tiny-reissued now names nothing"
+                exit 1
+              fi
+              status=$(_status_of "$out")
+              if [ "$status" != "409" ]; then
+                echo "FAIL: deleting a bound allocation returned '$status', expected 409 Conflict"
+                printf '%s\n' "$out" | grep -i message | tail -3
+                exit 1
+              fi
+              if ! printf '%s\n' "$out" | grep -q 'rc-tiny-reissued'; then
+                echo "FAIL: the 409 does not name the claim holding the allocation."
+                echo "      An operator cannot act on a refusal that does not say what is holding it."
+                printf '%s\n' "$out" | grep -i message | tail -3
+                exit 1
+              fi
+
+              # And the claim is untouched — still Bound, still on its address.
+              phase=$(kubectl get ipclaim -n "$NAMESPACE" rc-tiny-reissued -o jsonpath='{.status.phase}')
+              [ "$phase" = "Bound" ] || { echo "FAIL: claim is $phase after the refused delete"; exit 1; }
+              echo "OK: bound allocation refused with 409 naming its claim"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: bound allocation refused with 409 naming its claim'))": true
+
+      finally:
+        - script:
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              # Claims first and synchronously: an allocation still bound to a
+              # live claim is refused, by design.
+              kubectl delete ipclaim -n "$NAMESPACE" -l suite=class-reclaim --wait=true --ignore-not-found >/dev/null 2>&1 || true
+              # Retained allocations survive their claims by design, so they
+              # are force-released explicitly.
+              release_pool_allocations "$NAMESPACE" rc-tiny
+              release_pool_allocations "$NAMESPACE" rc-pool
+              kubectl delete ippool rc-tiny rc-pool --ignore-not-found >/dev/null 2>&1 || true
+              kubectl delete ipclass rc-retain rc-delete rc-tiny-cls --ignore-not-found >/dev/null 2>&1 || true
+              echo "class-reclaim cleanup done"
+            check:
+              ($error == null): true

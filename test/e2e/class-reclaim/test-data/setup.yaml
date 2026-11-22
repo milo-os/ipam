@@ -1,0 +1,61 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: rc-retain
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: rc-delete
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: rc-pool
+spec:
+  cidr: 10.202.0.0/28
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - rc-retain
+    - rc-delete
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+# A class of its own for the force-release proof, so that pool selection is
+# unambiguous. rc-retain is offered by rc-pool as well, and a claim naming it
+# would happily be satisfied from there — which would make "the pool is
+# exhausted" untestable rather than false.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: rc-tiny-cls
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Retain
