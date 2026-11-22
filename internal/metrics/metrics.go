@@ -50,7 +50,7 @@ var (
 			Buckets:        metrics.DefBuckets,
 			StabilityLevel: metrics.ALPHA,
 		},
-		// resource:  "ipclaims" | "asnclaims"
+		// resource:  "ipclaim"
 		// result:    "success" | "reclaimed" | "exhausted" | "error".
 		//            "reclaimed" is a claim recreated under the name of one
 		//            whose address was retained, bound back to that address
@@ -80,7 +80,7 @@ var (
 			Help:           "Total number of allocation attempts (incremented at the top of the allocation path before any DB work)",
 			StabilityLevel: metrics.ALPHA,
 		},
-		// resource:  "ipclaims" | "asnclaims"
+		// resource:  "ipclaim"
 		// ip_family: "IPv4" | "IPv6" | "ASN" — sourced from the same handler
 		//            value used for ObserveAllocationDuration so attempts,
 		//            failures, and the latency histogram split identically.
@@ -96,7 +96,7 @@ var (
 			Help:           "Total number of allocation failures",
 			StabilityLevel: metrics.ALPHA,
 		},
-		// resource:  "ipclaims" | "asnclaims"
+		// resource:  "ipclaim"
 		// reason:    server faults "internal" | "tx_error"; refusals
 		//            "invalid" | "conflict" | "forbidden" | "pool_exhausted" |
 		//            "pool_not_found" | "class_not_found" |
@@ -275,7 +275,7 @@ var (
 	// extremely rare (transaction-only failure mode) and surface as
 	// apiserver_request_total{verb="delete", code!~"2.."} already.
 	//
-	// resource: "ipclaims" | "asnclaims".
+	// resource: "ipclaim".
 	Releases = metrics.NewCounterVec(
 		&metrics.CounterOpts{
 			Namespace:      "ipam",
@@ -498,7 +498,7 @@ func RecordWatchEvent(kind, eventType string) {
 }
 
 // RecordRelease increments the releases_total counter for the given claim
-// resource ("ipclaims" | "asnclaims"). Called from
+// resource ("ipclaim"). Called from
 // the claim Delete handler immediately after the deletion transaction
 // commits successfully.
 func RecordRelease(resource string) {
@@ -573,7 +573,7 @@ func ObservePgxpoolStat(stat PgxpoolStatLike) {
 //
 //	start := time.Now()
 //	defer func() {
-//	    metrics.ObserveAllocationDuration("ipclaims", result, ipFamily, project, org, start)
+//	    metrics.ObserveAllocationDuration("ipclaim", result, ipFamily, project, org, start)
 //	}()
 //
 // where the surrounding code mutates `result` ("success" | "reclaimed" |
