@@ -76,7 +76,7 @@ spec:
   defaultPrefixLength: 32
   strategy: FirstFit
   reclaimPolicy: Retain
-  retentionLease: 10s
+  retentionLease: 30s
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPPool
