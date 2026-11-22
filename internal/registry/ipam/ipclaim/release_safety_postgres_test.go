@@ -12,6 +12,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/registry/rest"
 
+	"go.miloapis.com/ipam/internal/tenant"
+	"go.miloapis.com/ipam/internal/testdb"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -130,10 +132,99 @@ func TestReclaimPolicyCannotBeChangedAfterCreate(t *testing.T) {
 // row, so the two could each hold what the other waited for and Postgres
 // killed one with 40P01, which the caller saw as a 500.
 //
-// With every path taking the pool first, one of them waits. Each round ends in
-// one of two outcomes and nothing else: the release wins and the recreate is
-// handed a fresh allocation, or the recreate wins the lock, finds the retained
-// row and is refused with 409 AllocationRetained, and the release then frees it.
+// The interleaving is forced rather than hoped for: a third connection holds
+// the pool row while both requests start, in a known order, and lets go once
+// both are queued. With the recreate queued first, the old order deadlocked on
+// every run. With every path taking the pool first, the first in the queue
+// simply wins:
+//
+//   - recreate first: it finds the retained row and is refused with 409
+//     AllocationRetained, and the release then frees the address;
+//   - release first: it frees the address, and the recreate is handed a new
+//     allocation.
+func TestReleasingARetainedAllocationAndRecreatingItsClaimSerialiseOnThePool(t *testing.T) {
+	r, allocREST, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	ctx := claimCtx(testProject)
+	allocationName := allocationNameFor("default", "claim-1")
+	poolKey := tenant.Identity{Name: testProject}.ResourceKey("ippools", "us-east")
+
+	retain := func() {
+		t.Helper()
+		if _, err := r.Get(ctx, "claim-1", &metav1.GetOptions{}); apierrors.IsNotFound(err) {
+			if _, err := r.Create(ctx, retainClaim("claim-1", ""), nil, &metav1.CreateOptions{}); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+		}
+		if _, _, err := r.Delete(ctx, "claim-1", nil, &metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("Delete claim: %v", err)
+		}
+	}
+	release := func() <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			_, _, err := allocREST.Delete(ctx, allocationName, nil, &metav1.DeleteOptions{})
+			done <- err
+		}()
+		return done
+	}
+	recreate := func() <-chan error {
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.Create(ctx, retainClaim("claim-1", ""), nil, &metav1.CreateOptions{})
+			done <- err
+		}()
+		return done
+	}
+
+	for round := 0; round < 10; round++ {
+		recreateFirst := round%2 == 0
+		retain()
+
+		holder, err := db.Begin(context.Background())
+		if err != nil {
+			t.Fatalf("begin holder: %v", err)
+		}
+		if _, err := holder.Exec(context.Background(),
+			`SELECT 1 FROM ipam_objects WHERE key = $1 FOR UPDATE`, poolKey); err != nil {
+			_ = holder.Rollback(context.Background())
+			t.Fatalf("hold the pool: %v", err)
+		}
+		var releaseDone, recreateDone <-chan error
+		if recreateFirst {
+			recreateDone = recreate()
+			testdb.WaitForLockWaiters(t, db, 1)
+			releaseDone = release()
+		} else {
+			releaseDone = release()
+			testdb.WaitForLockWaiters(t, db, 1)
+			recreateDone = recreate()
+		}
+		testdb.WaitForLockWaiters(t, db, 2)
+		if err := holder.Commit(context.Background()); err != nil {
+			t.Fatalf("let go of the pool: %v", err)
+		}
+		releaseErr, claimErr := <-releaseDone, <-recreateDone
+
+		for what, err := range map[string]error{"release": releaseErr, "recreate": claimErr} {
+			if isDeadlock(err) {
+				t.Fatalf("round %d (recreate first: %v): %s deadlocked: %v", round, recreateFirst, what, err)
+			}
+		}
+		if releaseErr != nil {
+			t.Fatalf("round %d (recreate first: %v): release failed: %v", round, recreateFirst, releaseErr)
+		}
+		if recreateFirst && !apierrors.IsConflict(claimErr) {
+			t.Fatalf("round %d: recreate queued first returned %v, want 409 over the retained row", round, claimErr)
+		}
+		if !recreateFirst && claimErr != nil {
+			t.Fatalf("round %d: recreate queued after the release returned %v, want a fresh allocation", round, claimErr)
+		}
+	}
+}
+
+// The same race run free, as a smoke test under real scheduling. The forced
+// interleaving above is the regression guard; this one shows nothing else goes
+// wrong across many rounds.
 func TestReleasingARetainedAllocationRacingItsClaimsRecreateNeverDeadlocks(t *testing.T) {
 	const rounds = 200
 	r, allocREST, _ := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
