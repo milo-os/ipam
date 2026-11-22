@@ -108,7 +108,12 @@ func (ipClassStrategy) Validate(_ context.Context, obj runtime.Object) field.Err
 }
 
 func (ipClassStrategy) WarningsOnCreate(_ context.Context, obj runtime.Object) []string {
-	return sharedPoolWarning(obj.(*ipam.IPClass))
+	c := obj.(*ipam.IPClass)
+	return append(sharedPoolWarning(c), retentionLeaseWarning(c)...)
+}
+
+func retentionLeaseWarning(c *ipam.IPClass) []string {
+	return ipamvalidation.RetentionLeaseWarning(c.Spec.RetentionLease, field.NewPath("spec", "retentionLease"))
 }
 
 // sharedPoolWarning states, once, what a provisioning class's poolPer means for
@@ -185,7 +190,11 @@ func (ipClassStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	return allErrs
 }
 
-func (ipClassStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string { return nil }
+// WarningsOnUpdate repeats only the lease warning. The lease is editable, so
+// an update is a moment someone is deciding on it.
+func (ipClassStrategy) WarningsOnUpdate(_ context.Context, obj, _ runtime.Object) []string {
+	return retentionLeaseWarning(obj.(*ipam.IPClass))
+}
 
 func validateIPClass(c *ipam.IPClass) field.ErrorList {
 	if c.Spec.Source != nil {
@@ -302,6 +311,8 @@ func validateDefinition(c *ipam.IPClass) field.ErrorList {
 					scope.ReservedRoleProject)))
 		}
 	}
+
+	allErrs = append(allErrs, ipamvalidation.RetentionLease(c.Spec.RetentionLease, specPath.Child("retentionLease"))...)
 
 	// Apply the pool's own rule here, so a class cannot hold a reservation that
 	// the pools it provisions would refuse.

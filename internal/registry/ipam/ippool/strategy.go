@@ -110,10 +110,16 @@ func (ipPoolStrategy) Validate(_ context.Context, obj runtime.Object) field.Erro
 	return validateIPPool(obj.(*ipam.IPPool))
 }
 
-func (ipPoolStrategy) WarningsOnCreate(_ context.Context, _ runtime.Object) []string { return nil }
-func (ipPoolStrategy) AllowCreateOnUpdate(_ context.Context) bool                    { return false }
-func (ipPoolStrategy) AllowUnconditionalUpdate(_ context.Context) bool               { return true }
-func (ipPoolStrategy) Canonicalize(_ runtime.Object)                                 {}
+func (ipPoolStrategy) WarningsOnCreate(_ context.Context, obj runtime.Object) []string {
+	return maxRetentionLeaseWarning(obj.(*ipam.IPPool))
+}
+func (ipPoolStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
+func (ipPoolStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
+func (ipPoolStrategy) Canonicalize(_ runtime.Object)                   {}
+
+func maxRetentionLeaseWarning(p *ipam.IPPool) []string {
+	return ipamvalidation.RetentionLeaseWarning(p.Spec.MaxRetentionLease, field.NewPath("spec", "maxRetentionLease"))
+}
 
 func (ipPoolStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
 	n := obj.(*ipam.IPPool)
@@ -135,8 +141,8 @@ func (ipPoolStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object)
 	return allErrs
 }
 
-func (ipPoolStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string {
-	return nil
+func (ipPoolStrategy) WarningsOnUpdate(_ context.Context, obj, _ runtime.Object) []string {
+	return maxRetentionLeaseWarning(obj.(*ipam.IPPool))
 }
 
 func validateIPPool(p *ipam.IPPool) field.ErrorList {
@@ -202,6 +208,7 @@ func validateIPPool(p *ipam.IPPool) field.ErrorList {
 
 	allErrs = append(allErrs, ipamvalidation.Reservations(
 		p.Spec.Reservations, familyForValidation(p), specPath.Child("reservations"))...)
+	allErrs = append(allErrs, ipamvalidation.RetentionLease(p.Spec.MaxRetentionLease, specPath.Child("maxRetentionLease"))...)
 
 	switch p.Spec.Visibility {
 	case "", "platform", "consumer", "shared":
