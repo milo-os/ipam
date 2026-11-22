@@ -83,7 +83,7 @@ local allocThroughputPanel = common.tsPanel(
     },
   ],
   unit='reqps',
-  description='Allocation throughput. result=success|exhausted|error from internal/metrics/metrics.go.'
+  description='Allocation throughput. result=success|reclaimed|exhausted|error from internal/metrics/metrics.go; reclaimed is a recreated claim taking back its retained address.'
 );
 
 local allocFailureRatePanel = common.tsPanel(

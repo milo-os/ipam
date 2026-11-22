@@ -224,7 +224,7 @@
             "type": "datasource",
             "uid": "-- Mixed --"
          },
-         "description": "Allocation throughput. result=success|exhausted|error from internal/metrics/metrics.go.",
+         "description": "Allocation throughput. result=success|reclaimed|exhausted|error from internal/metrics/metrics.go; reclaimed is a recreated claim taking back its retained address.",
          "fieldConfig": {
             "defaults": {
                "custom": {
