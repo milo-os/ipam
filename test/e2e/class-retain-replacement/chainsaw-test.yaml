@@ -102,7 +102,8 @@ spec:
     - name: same-name-gets-the-same-address
       description: |
         The recreate is handed the retained address, through the IPAllocation
-        that held it: same object, claimRef set again.
+        that held it: same object, claimRef set again, and a Retained=False
+        condition saying it was reclaimed.
       try:
         - script:
             timeout: 150s
@@ -151,6 +152,11 @@ spec:
               fi
               if [ "$(printf '%s' "$json" | jq -r '.spec.claimRef.name // ""')" != "rr-web" ]; then
                 echo "FAIL: IPAllocation $alloc does not name the recreated claim"
+                exit 1
+              fi
+              reason=$(printf '%s' "$json" | jq -r '.status.conditions[]? | select(.type == "Retained") | "\(.status)/\(.reason)"')
+              if [ "$reason" != "False/Reclaimed" ]; then
+                echo "FAIL: IPAllocation $alloc Retained condition is '$reason', want False/Reclaimed"
                 exit 1
               fi
               echo "OK: rr-web took back $addr through $alloc"
