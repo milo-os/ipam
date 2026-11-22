@@ -118,7 +118,18 @@ budget (2000 rows), oldest deadline first, and the rest go on the following
 passes, one sweep interval apart. Each release deletes the IPAllocation and
 returns the address to its pool, where the next claim may be given it.
 
-Before switching, check what will be freed:
+### When the switch happens
+
+The switch comes with the release that makes enforce the default, not with a
+per-environment step. milo-os/infra deploys `./base` from the IPAM OCI
+artifact and does not set `RETENTION_SWEEP_*`, so the base value applies:
+staging switches to enforce on the first main build after that change merges,
+and production on the next release. Run the checks below against each
+environment before merging. To hold an environment in observe mode for
+longer, pin `RETENTION_SWEEP_MODE=observe` in its milo-os/infra overlay first,
+and remove the pin when it is ready to switch.
+
+### Before switching, check what will be freed
 
 - `ipam_retention_releases_total{mode="observe"}` counts each deadline once as
   it passes. Its increase over the observe period is how many addresses fell
@@ -130,7 +141,7 @@ Before switching, check what will be freed:
    WHERE claim_key IS NULL AND purpose = 'Claim'
      AND expires_at IS NOT NULL AND expires_at <= now()
    GROUP BY 1, 2, 3
-   ORDER BY 4 DESC;
+   ORDER BY oldest_deadline ASC;
   ```
 - Per project, `datumctl ipam allocation list --unclaimed` lists retained
   allocations, and `status.expiresAt` on each says whether its deadline has

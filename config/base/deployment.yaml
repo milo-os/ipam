@@ -178,9 +178,10 @@ spec:
             # "0" disables the sweeper; otherwise at least "1s".
             - name: RETENTION_SWEEP_INTERVAL
               value: "1m"
-            # Enforce releases a retained address once its lease runs out. An
-            # environment that wants to see what would be freed first sets
-            # "observe" and reads ipam_retention_releases_total{mode="observe"}.
+            # Enforce releases a retained address once its lease runs out. Every
+            # deployment of this base runs it unless its overlay sets "observe",
+            # which counts what would be freed in
+            # ipam_retention_releases_total{mode="observe"} and frees nothing.
             - name: RETENTION_SWEEP_MODE
               value: "enforce"
             # Empty disables tracing; the tracing component overrides this with
