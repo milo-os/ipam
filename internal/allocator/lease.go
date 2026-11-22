@@ -243,8 +243,8 @@ func (r RetainedAllocation) ExpiresAtTime() *metav1.Time {
 
 // RetainedCondition is the Retained condition an IPAllocation in this state
 // reports. The message says what will happen to the address without naming
-// the sweeper's mode: the condition outlives a change of mode, and whether
-// leases are enforced yet is the service's to say, in its docs and warnings.
+// the sweeper's mode: the condition outlives a change of mode, and which mode
+// a deployment runs is the operator's to say, in its configuration.
 func (r RetainedAllocation) RetainedCondition() metav1.Condition {
 	cond := metav1.Condition{
 		Type:               ipamv1alpha1.AllocationConditionRetained,
