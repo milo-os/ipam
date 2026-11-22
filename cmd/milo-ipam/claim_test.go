@@ -403,6 +403,9 @@ func TestClaimReleaseDeletesAndReportsRetention(t *testing.T) {
 	if !strings.Contains(ta.out.String(), "allocation release") {
 		t.Errorf("release did not say the address is still held:\n%s", ta.out.String())
 	}
+	if !strings.Contains(ta.out.String(), `Create claim "web-vip" again to take it back`) {
+		t.Errorf("release did not say a recreate takes the address back:\n%s", ta.out.String())
+	}
 	if _, err := cs.IpamV1alpha1().IPClaims("default").Get(t.Context(), "web-vip", metav1.GetOptions{}); err == nil {
 		t.Fatal("claim was not deleted")
 	}
@@ -414,6 +417,35 @@ func TestClaimReleaseNotFound(t *testing.T) {
 	err := cmd.RunE(cmd, []string{"nope"})
 	if err == nil || toCLIError(err).code != exitNotFound {
 		t.Fatalf("error = %v, want not found(%d)", err, exitNotFound)
+	}
+}
+
+// A recreate the server would not reclaim says which field differs and both
+// ways out; a refusal from an older server that reclaims nothing says how to
+// free the name.
+func TestRetainedRefusalFixIts(t *testing.T) {
+	ipclaims := ipamv1alpha1.Resource("ipclaims")
+
+	ce := retainedRefusalError(ipamerrors.NewRetainedAllocationMismatch(ipclaims, "web", "alloc-1", "spec.className", "held under class a"))
+	if ce == nil {
+		t.Fatal("a mismatch was not rendered as a retained refusal")
+	}
+	if ce.code != exitConflict {
+		t.Errorf("exit code = %d, want conflict(%d)", ce.code, exitConflict)
+	}
+	for _, want := range []string{"spec.className", "datumctl ipam allocation show alloc-1", "datumctl ipam allocation release alloc-1"} {
+		if !strings.Contains(ce.fix, want) {
+			t.Errorf("fix %q does not contain %q", ce.fix, want)
+		}
+	}
+
+	ce = retainedRefusalError(ipamerrors.NewRetainedAllocation(ipclaims, "web", "alloc-1", "retained"))
+	if ce == nil || !strings.Contains(ce.fix, "datumctl ipam allocation release alloc-1") {
+		t.Errorf("an AllocationRetained refusal rendered as %v, want the release command", ce)
+	}
+
+	if ce := retainedRefusalError(ipamerrors.NewClaimExists(ipclaims, "web", "exists")); ce != nil {
+		t.Errorf("a duplicate-claim refusal was rendered as a retained refusal: %v", ce)
 	}
 }
 
