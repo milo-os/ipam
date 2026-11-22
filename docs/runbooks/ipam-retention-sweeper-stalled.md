@@ -107,3 +107,36 @@ Claims are unaffected. The sweeper yields to them, never the other way round.
 - To stop the sweeper while you investigate, set `RETENTION_SWEEP_INTERVAL=0`.
   Nothing is lost: deadlines are stored on the rows, and the next pass after
   re-enabling acts on everything that fell due meanwhile.
+
+## Switching the sweeper from observe to enforce
+
+Enforce is the default. A deployment that ran `RETENTION_SWEEP_MODE=observe`
+and switches to `enforce` (or drops the override) releases, on its first
+enforce passes, every retained allocation whose deadline passed while it was
+observing. Nothing clamps that backlog: each pass releases at most its row
+budget (2000 rows), oldest deadline first, and the rest go on the following
+passes, one sweep interval apart. Each release deletes the IPAllocation and
+returns the address to its pool, where the next claim may be given it.
+
+Before switching, check what will be freed:
+
+- `ipam_retention_releases_total{mode="observe"}` counts each deadline once as
+  it passes. Its increase over the observe period is how many addresses fell
+  due, including any since reclaimed or released by hand.
+- The rows still due right now, per pool:
+  ```sql
+  SELECT pool_key, class_name, class_project, count(*), min(expires_at) AS oldest_deadline
+    FROM ipam_cidr_allocations
+   WHERE claim_key IS NULL AND purpose = 'Claim'
+     AND expires_at IS NOT NULL AND expires_at <= now()
+   GROUP BY 1, 2, 3
+   ORDER BY 4 DESC;
+  ```
+- Per project, `datumctl ipam allocation list --unclaimed` lists retained
+  allocations, and `status.expiresAt` on each says whether its deadline has
+  passed.
+
+An owner who still needs an address that is due can recreate the claim under
+the same name before the switch; that reclaims it and clears its deadline.
+After the switch, `ipam_retention_releases_total{mode="enforce"}` should jump
+by about the backlog and then settle to the observe rate.
