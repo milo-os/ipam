@@ -74,6 +74,24 @@ func EffectiveLease(classLease, poolCap *metav1.Duration) *time.Duration {
 	return out
 }
 
+// ErrRetentionLeaseRequired is returned for a claim whose Retain override
+// would retain its address with no lease (see RetainOverridesClass).
+var ErrRetentionLeaseRequired = errors.New("ipam: retaining this allocation would have no lease")
+
+// RetainOverridesClass reports whether a claim stating override asks to retain
+// what its class would delete. Only such a claim needs a lease to retain: a
+// class whose own default is Retain retains by its owner's decision, lease or
+// none, and a claim agreeing with it changes nothing.
+//
+// A claim may retain past its class's default only for as long as a lease
+// allows. Without one, a create-retain-delete loop holds addresses with no end
+// and, until quota counts retained addresses (milo-os/milo#1028), outside any
+// limit.
+func RetainOverridesClass(class *ipamv1alpha1.IPClass, override ipamv1alpha1.ReclaimPolicy) bool {
+	return override == ipamv1alpha1.ReclaimRetain &&
+		EffectiveReclaimPolicy(class, "") != ipamv1alpha1.ReclaimRetain
+}
+
 // retentionClassProject is the project whose class an allocation row was
 // handed out under, and whether that can be told from the row and its pool.
 //

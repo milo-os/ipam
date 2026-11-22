@@ -61,6 +61,9 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	if err != nil {
 		return "", err
 	}
+	if req.RequireRetentionCap && EffectiveLease(nil, pool.Spec.MaxRetentionLease) == nil {
+		return "", ErrRetentionLeaseRequired
+	}
 
 	parents, err := parsePoolCIDR(pool)
 	if err != nil {

@@ -405,6 +405,15 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	}
 	reclaimPolicy := allocator.EffectiveReclaimPolicy(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy))
 
+	// A Retain the class would not have chosen is allowed only under a lease.
+	// The class's own lease settles it before any pool is known. When the
+	// class sets none, the cap of the pool the claim lands in is the only lease
+	// there could be, and it is judged under that pool's lock: by AllocatePrefix
+	// for a fresh allocation, and by tryReclaim for the pool a retained one is
+	// in. Checking it any earlier would judge a pool the claim might not get.
+	requireRetentionCap := allocator.RetainOverridesClass(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy)) &&
+		allocator.EffectiveLease(class.Spec.RetentionLease, nil) == nil
+
 	// The address space this allocation must be unique in. A claim that does
 	// not carry a role its class names in uniqueWithin is refused by name
 	// rather than compared against a wider space: widening would look correct
@@ -430,6 +439,8 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		scopeDigest:  scopeDigest,
 		prefixLength: statedPrefixLength,
 		address:      claim.Spec.Address,
+
+		requireRetentionCap: requireRetentionCap,
 	}, uniqueScope, reclaimPolicy, generatedName, dryRun)
 	if reclaimed.handled {
 		if reclaimed.err != nil {
@@ -515,6 +526,8 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		AddressScope:  class.Spec.AddressScope,
 		ReclaimPolicy: reclaimPolicy,
 		Address:       claim.Spec.Address,
+
+		RequireRetentionCap: requireRetentionCap,
 	})
 	if err != nil {
 		if isClaimNameCollision(err) || isIdentityCollision(err) {
@@ -536,7 +549,11 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		default:
 			failSpan(tracing.ReasonTxError)
 		}
-		return nil, fail(mapAllocationError(err, poolName, claim.Name), reason)
+		apiErr := mapAllocationError(err, poolName, claim.Name)
+		if errors.Is(err, allocator.ErrRetentionLeaseRequired) {
+			apiErr = retentionLeaseRequired(claim.Name, class, poolName)
+		}
+		return nil, fail(apiErr, reason)
 	}
 
 	// Populate the claim status with the computed allocation up-front so both
@@ -648,7 +665,8 @@ func allocationFailureReason(err error) string {
 	case errors.Is(err, allocator.ErrAddressInUse), errors.Is(err, allocator.ErrAddressReserved):
 		return reasonConflict
 	case errors.Is(err, allocator.ErrAddressOutsidePool), errors.Is(err, allocation.ErrUnalignedAddress),
-		errors.Is(err, allocation.ErrInvalidAddress), errors.Is(err, allocation.ErrPrefixLenMismatch):
+		errors.Is(err, allocation.ErrInvalidAddress), errors.Is(err, allocation.ErrPrefixLenMismatch),
+		errors.Is(err, allocator.ErrRetentionLeaseRequired):
 		return reasonInvalid
 	default:
 		return reasonTxError
@@ -937,6 +955,21 @@ func retainedAllocationConflict(claimName, allocationName string) error {
 		allocationName,
 		fmt.Sprintf("an allocation under this identity already exists: IPAllocation %q, retained by an earlier claim of the same name; delete it to reuse the name", allocationName),
 	)
+}
+
+// retentionLeaseRequired is the refusal for a claim whose Retain override
+// would hold its address with no lease, under class in pool poolName. It names
+// both objects a lease could be set on, and the way out that needs neither.
+func retentionLeaseRequired(claimName string, class *allocator.ResolvedClass, poolName string) error {
+	named := fmt.Sprintf("class %q", class.LocalName)
+	if class.LocalName != class.Name {
+		named = fmt.Sprintf("class %q (defined as %q in project %q)", class.LocalName, class.Name, class.Project)
+	}
+	return ipamerrors.NewRetentionLeaseRequired(v1alpha1.Resource("ipclaims"), claimName, fmt.Sprintf(
+		"%s does not allow retaining addresses indefinitely: spec.reclaimPolicy Retain overrides its default of Delete, "+
+			"and neither the class's retentionLease nor pool %q's maxRetentionLease is set. "+
+			"Set retentionLease on the class or maxRetentionLease on the pool, or leave spec.reclaimPolicy unset",
+		named, poolName))
 }
 
 // resolvePoolError turns a failure to resolve a Block claim's pool into the

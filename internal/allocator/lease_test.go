@@ -5,6 +5,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
 func TestEffectiveLease(t *testing.T) {
@@ -28,5 +30,33 @@ func TestEffectiveLease(t *testing.T) {
 				t.Errorf("EffectiveLease = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// Only a Retain the class would not have chosen needs a lease. An unset class
+// policy is Delete.
+func TestRetainOverridesClass(t *testing.T) {
+	const (
+		none   = ipamv1alpha1.ReclaimPolicy("")
+		del    = ipamv1alpha1.ReclaimDelete
+		retain = ipamv1alpha1.ReclaimRetain
+	)
+	for _, tc := range []struct {
+		class, claim ipamv1alpha1.ReclaimPolicy
+		want         bool
+	}{
+		{none, retain, true},
+		{del, retain, true},
+		{retain, retain, false},
+		{retain, none, false},
+		{del, none, false},
+		{none, none, false},
+		{retain, del, false},
+		{del, del, false},
+	} {
+		class := &ipamv1alpha1.IPClass{Spec: ipamv1alpha1.IPClassSpec{ReclaimPolicy: tc.class}}
+		if got := RetainOverridesClass(class, tc.claim); got != tc.want {
+			t.Errorf("class %q, claim %q: RetainOverridesClass = %v, want %v", tc.class, tc.claim, got, tc.want)
+		}
 	}
 }

@@ -3,6 +3,7 @@ package ipclaim
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -40,6 +41,12 @@ func locationScope(name string) map[string]ipam.ScopeRef {
 // rather than handed an address from the first.
 func TestReclaimRefusesAnotherPoolPerLocation(t *testing.T) {
 	r, db := newTenantREST(t)
+	// The endpoint class defaults to Delete, so the claim's Retain needs a
+	// lease to retain under.
+	seedNamedClass(t, db, "tenant-endpoint", ipamv1alpha1.IPClassSpec{
+		IPFamily: ipamv1alpha1.IPv6, ParentClassName: "tenant-subnet", DefaultPrefixLength: 96,
+		RetentionLease: &metav1.Duration{Duration: 24 * time.Hour},
+	})
 	ctx := claimCtx(testProject)
 
 	retained := endpointClaim("ep-1", "net-a", "ams")

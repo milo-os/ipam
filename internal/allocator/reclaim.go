@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
@@ -34,6 +35,10 @@ type ClaimAllocation struct {
 	ClassRecorded bool
 	ClassProject  string
 	AddressScope  ipamv1alpha1.AddressScope
+
+	// PoolMaxRetentionLease is the maxRetentionLease of the row's pool, read
+	// under its lock: the cap a reclaiming claim would be retained under.
+	PoolMaxRetentionLease *metav1.Duration
 }
 
 // RowQuerier is the slice of a connection pool a single-row read outside any
@@ -113,6 +118,9 @@ func (a *PostgresPrefixAllocator) LockClaimAllocation(ctx context.Context, tx pg
 		row.ClaimKey = *claimKey
 	}
 	row.ReclaimPolicy = ipamv1alpha1.ReclaimPolicy(policy)
+	if pool := pools[row.PoolKey]; pool != nil {
+		row.PoolMaxRetentionLease = pool.Spec.MaxRetentionLease
+	}
 	if classProject != nil {
 		row.ClassRecorded = true
 		row.ClassProject = *classProject

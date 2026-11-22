@@ -97,6 +97,14 @@ type PrefixRequest struct {
 	// free block, and an address that is not the start of its block is never
 	// rounded down to it.
 	Address string
+
+	// RequireRetentionCap refuses the allocation with ErrRetentionLeaseRequired
+	// unless the pool sets a maxRetentionLease. The caller sets it for a claim
+	// whose Retain override needs a lease (RetainOverridesClass) and whose
+	// class sets none, so the pool's cap is the only lease there could be. It
+	// is read under the pool's lock, so the cap judged is the one the
+	// allocation is retained under.
+	RequireRetentionCap bool
 }
 
 // PrefixAllocator atomically reserves a sub-CIDR from an IPPool.

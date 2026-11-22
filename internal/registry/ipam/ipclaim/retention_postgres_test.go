@@ -24,6 +24,16 @@ func withClassLease(t *testing.T, db *pgxpool.Pool, lease *metav1.Duration) {
 	})
 }
 
+// withLeasedDeleteClass rewrites the lifecycle fixture's "standard" class as a
+// Delete class with a lease, which is what lets a claim override it to Retain.
+func withLeasedDeleteClass(t *testing.T, db *pgxpool.Pool) {
+	t.Helper()
+	seedNamedClass(t, db, "standard", ipamv1alpha1.IPClassSpec{
+		IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 24,
+		ReclaimPolicy: ipamv1alpha1.ReclaimDelete, RetentionLease: &metav1.Duration{Duration: 24 * time.Hour},
+	})
+}
+
 func getAllocation(t *testing.T, allocREST *ipallocation.ReleasingREST, ctx context.Context, claim *ipam.IPClaim) *ipam.IPAllocation {
 	t.Helper()
 	obj, err := allocREST.Get(ctx, allocationNameFor(claim.Namespace, claim.Name), &metav1.GetOptions{})

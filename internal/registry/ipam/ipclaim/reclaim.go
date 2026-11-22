@@ -42,6 +42,11 @@ type reclaimTerms struct {
 	// address stated; nil leaves the size to the retained allocation.
 	prefixLength *int32
 	address      string
+
+	// requireRetentionCap is set when the claim's Retain override needs a
+	// lease and its class sets none: the retained row's pool must cap
+	// retention, or the reclaim is refused as a fresh claim would be.
+	requireRetentionCap bool
 }
 
 // reclaimMismatch is a term the retained allocation does not share, by the
@@ -253,6 +258,16 @@ func (r *AllocatingREST) tryReclaim(
 		return refuse(mismatch)
 	}
 
+	// The reclaiming claim's policy is the row's from here on, so its Retain
+	// override needs a lease exactly as a fresh claim's does, judged against
+	// the cap of the pool the row is in, which is locked. The address stays
+	// retained under the lease it already had; recreating the claim without
+	// the override takes it back.
+	poolName := row.PoolKey[strings.LastIndex(row.PoolKey, "/")+1:]
+	if terms.requireRetentionCap && allocator.EffectiveLease(nil, row.PoolMaxRetentionLease) == nil {
+		return reclaimResult{handled: true, outcome: reasonInvalid, err: retentionLeaseRequired(claim.Name, terms.class, poolName)}
+	}
+
 	if err := r.allocator.ReclaimAllocation(ctx, tx, allocationKey, claimKey, reclaimPolicy); err != nil {
 		if isClaimNameCollision(err) {
 			return reclaimResult{handled: true, outcome: reasonConflict, err: duplicateClaimConflict(claim.Name)}
@@ -260,7 +275,6 @@ func (r *AllocatingREST) tryReclaim(
 		return reclaimResult{handled: true, outcome: reasonTxError, err: fmt.Errorf("reclaim allocation: %w", err)}
 	}
 
-	poolName := row.PoolKey[strings.LastIndex(row.PoolKey, "/")+1:]
 	span.SetAttributes(
 		attribute.String(tracing.AttrPoolName, poolName),
 		attribute.Bool(tracing.AttrReclaimed, true),
