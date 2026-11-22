@@ -164,12 +164,13 @@ type reclaimResult struct {
 // nothing is provisioned or re-resolved, and nothing is searched: a pool with
 // no free block left still hands back a block it is already holding.
 //
-// One transaction: lock the row's pool, then the row; refuse a row still
-// bound, or one held on terms the claim does not ask for, including a pool the
-// claim would not be placed in now; rebind the row by compare-and-set; point
-// the IPAllocation at the claim; write the claim as Bound. Capacity does not
-// move, because the address never left. A dry run runs all of it and rolls
-// back.
+// A create with nothing retained under its identity, which is nearly every
+// create, pays one indexed read outside any transaction. Otherwise, one
+// transaction: lock the row's pool, then the row; refuse a row still bound, or
+// one held on terms the claim does not ask for, including a pool the claim
+// would not be placed in now; rebind the row by compare-and-set; point the
+// IPAllocation at the claim; write the claim as Bound. Capacity does not move,
+// because the address never left. A dry run runs all of it and rolls back.
 //
 // A generated name that lands on a retained identity was not chosen by
 // anyone, so it is refused as a collision and drawn again rather than handed
@@ -187,6 +188,14 @@ func (r *AllocatingREST) tryReclaim(
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 	allocationName := allocationNameFor(claim.Namespace, claim.Name)
 	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
+
+	exists, err := allocator.HasClaimAllocation(ctx, r.db, allocationKey)
+	if err != nil {
+		return reclaimResult{handled: true, outcome: "tx_error", err: err}
+	}
+	if !exists {
+		return reclaimResult{}
+	}
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {

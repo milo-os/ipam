@@ -150,3 +150,26 @@ func deref(s *string) string {
 	}
 	return *s
 }
+
+// The existence check every create makes reads outside any transaction, and
+// sees only claim rows.
+func TestHasClaimAllocation(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "reclaim-exists", "10.59.0.0/16")
+	allocateWithPolicy(t, db, poolKey, "claim-a", "alloc-a", ipamv1alpha1.ReclaimRetain)
+	if _, err := db.Exec(ctx,
+		`INSERT INTO ipam_cidr_allocations (pool_key, allocated_cidr, claim_key, allocation_key, ip_family, purpose)
+		 VALUES ($1, '10.59.255.0/32', NULL, 'reservation-0', 'IPv4', 'Reservation')`, poolKey); err != nil {
+		t.Fatalf("seed reservation: %v", err)
+	}
+	for key, want := range map[string]bool{"alloc-a": true, "alloc-missing": false, "reservation-0": false} {
+		got, err := HasClaimAllocation(ctx, db, key)
+		if err != nil {
+			t.Fatalf("HasClaimAllocation(%q): %v", key, err)
+		}
+		if got != want {
+			t.Errorf("HasClaimAllocation(%q) = %v, want %v", key, got, want)
+		}
+	}
+}

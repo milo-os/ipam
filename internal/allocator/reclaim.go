@@ -36,6 +36,29 @@ type ClaimAllocation struct {
 	AddressScope  ipamv1alpha1.AddressScope
 }
 
+// Querier is the slice of a connection pool a read outside any transaction
+// needs.
+type Querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// HasClaimAllocation reports whether a claim allocation row exists under
+// allocationKey. It takes no lock and needs no transaction: it is the cheap
+// miss every create pays, and a hit is re-read under the pool's lock by
+// LockClaimAllocation before anything is decided from it.
+func HasClaimAllocation(ctx context.Context, db Querier, allocationKey string) (bool, error) {
+	defer metrics.ObserveQuery("has_claim_allocation", time.Now())
+	var exists bool
+	err := db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM ipam_cidr_allocations
+		                 WHERE allocation_key = $1 AND purpose = 'Claim')`, allocationKey,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("look up allocation %q: %w", allocationKey, err)
+	}
+	return exists, nil
+}
+
 // LockClaimAllocation implements PrefixAllocator.LockClaimAllocation.
 //
 // The pool is found with an unlocked read and locked before the row is read

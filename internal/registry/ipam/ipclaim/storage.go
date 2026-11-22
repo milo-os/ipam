@@ -124,9 +124,12 @@ type AllocatingREST struct {
 
 // txBeginner is the minimal slice of *pgxpool.Pool the allocation handlers
 // depend on. Narrowing the field to this interface lets unit tests inject a
-// fake transaction without a live Postgres.
+// fake transaction without a live Postgres. QueryRow is the one read made
+// outside a transaction: the check for a retained allocation every create
+// makes, which is nearly always a miss.
 type txBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // NewAllocatingStorage builds the IPClaim REST storage with synchronous
