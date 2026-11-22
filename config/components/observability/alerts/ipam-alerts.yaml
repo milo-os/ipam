@@ -482,30 +482,36 @@ spec:
           annotations:
             summary: "IPAM retention sweeper has not completed a pass for {{ $value | humanizeDuration }}"
             description: |
-              No replica has completed a retention sweep pass without error for more than five
-              sweep intervals. Retained allocations whose lease has run out are not being
-              released (enforce mode) or counted (observe mode), leases left unevaluated stay
-              unevaluated, and the ipam_retained_* gauges may be stale.
+              No replica has completed a retention sweep pass for more than five sweep
+              intervals. A pass that carries on past a failed pool or row still completes, so
+              this means passes are not running or are failing outright. Retained allocations
+              whose lease has run out are not being released (enforce mode) or counted
+              (observe mode), and leases left unevaluated stay unevaluated.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-sweeper-stalled.md"
 
         - alert: IPAMRetainedWithoutLeaseRising
           # lease="none" is the leak meter: retained addresses nothing will ever
           # release on a schedule. Every replica publishes the same count, so
-          # max() is the count, not a sum of copies. Sustained growth over a
-          # day is a class or pool that retains without a lease, not noise.
+          # max() is the count, not a sum of copies. Evaluated per family, so a
+          # fall in one cannot hide a rise in the other. The threshold is a
+          # tenth growth over a day, on at least 50 addresses, so ordinary
+          # Retain traffic on classes with no lease does not trip it; this is a
+          # capacity trend for business hours, not a page, and not an SLO.
           expr: |
-            sum(max by (ip_family) (ipam_retained_allocations{lease="none"}))
-            >
-            sum(max by (ip_family) (ipam_retained_allocations{lease="none"} offset 24h))
+            max by (ip_family) (ipam_retained_allocations{lease="none"})
+            > 1.1 * max by (ip_family) (ipam_retained_allocations{lease="none"} offset 24h)
+            and
+            max by (ip_family) (ipam_retained_allocations{lease="none"})
+            - max by (ip_family) (ipam_retained_allocations{lease="none"} offset 24h) >= 50
           for: 6h
           labels:
             severity: warning
             service: ipam
-            slo: retention
           annotations:
-            summary: "IPAM addresses retained with no lease have grown over the last 24h (now {{ $value }})"
+            summary: "IPAM {{ $labels.ip_family }} addresses retained with no lease grew over the last 24h (now {{ $value }})"
             description: |
-              The number of claim allocations retained with no retention lease is higher than it
-              was 24 hours ago, and has been for 6 hours. These addresses stay held until someone
-              releases them by hand; on a scarce range they are capacity that does not come back.
+              The number of {{ $labels.ip_family }} claim allocations retained with no retention
+              lease is more than a tenth, and at least 50, above what it was 24 hours ago, and
+              has been for 6 hours. These addresses stay held until someone releases them by
+              hand; on a scarce range they are capacity that does not come back.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-without-lease-rising.md"

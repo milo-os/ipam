@@ -6,8 +6,12 @@
 
 ## What this alert means
 
-No replica has completed a retention sweep pass without error for more than
-five sweep intervals. The sweeper runs in every apiserver replica as a
+No replica has completed a retention sweep pass for more than five sweep
+intervals. A pass that carries on past a pool or a row it could not act on
+still completes, and counts those in `ipam_retention_sweep_errors_total`,
+`ipam_retention_sweep_row_errors_total` and
+`ipam_retention_lease_unevaluable_total`. This alert therefore means passes
+are not running, or are failing outright. The sweeper runs in every apiserver replica as a
 post-start hook; each pass is taken by whichever replica gets the Postgres
 advisory lock `pg_try_advisory_lock(0x6970616d5f727377)` first, and only that
 replica stamps `ipam_retention_sweep_last_success_timestamp_seconds`.
@@ -27,8 +31,12 @@ Claims are unaffected. The sweeper yields to them, never the other way round.
 - `ipam_retention_sweep_last_success_timestamp_seconds` (max across replicas)
 - `ipam_retention_sweep_interval_seconds`: the configured interval; 0 means
   disabled, which this alert ignores
-- `ipam_retention_sweep_errors_total`: failures inside passes; any error keeps
-  a pass from counting as a success
+- `ipam_retention_sweep_errors_total`: a pass that failed outright, or one
+  pool's transaction within a pass
+- `ipam_retention_sweep_row_errors_total`: single allocations a pass could not
+  act on; each is undone alone and retried on a later pass
+- `ipam_retention_lease_unevaluable_total`: rows whose class could not be read;
+  they stay held and unevaluated, and passes page past them
 - `ipam_retention_sweep_pools_skipped_total`: pools left for the next pass
   because a claim held them; not an error
 - `ipam_retention_sweep_duration_seconds`
@@ -41,8 +49,9 @@ Claims are unaffected. The sweeper yields to them, never the other way round.
 ## Diagnose
 
 1. **Are passes failing, or not running?**
-   `rate(ipam_retention_sweep_errors_total[15m]) > 0` means passes run and
-   fail. Go to step 3. A flat error counter with no new
+   `rate(ipam_retention_sweep_errors_total[15m]) > 0` with no new
+   `ipam_retention_sweep_duration_seconds_count` means passes start and fail.
+   Go to step 3. A flat error counter with no new
    `ipam_retention_sweep_duration_seconds_count` means no replica is running a
    pass. Go to step 2.
 
@@ -58,12 +67,23 @@ Claims are unaffected. The sweeper yields to them, never the other way round.
    wedged pass: restart the replica it belongs to (match `client_addr` to the
    pod IP). No row and no passes means the loop is not running. Look for
    `Retention sweeper started` in the logs, and check that
-   `RETENTION_SWEEP_INTERVAL` is not `0`.
+   `RETENTION_SWEEP_INTERVAL` is not `0`. A pass that panics is recovered
+   and logged as `Retention sweep pass panicked`, and the loop retries after
+   a backoff of up to ten intervals.
+
+   The lock is a session-level advisory lock. A connection pooler between
+   IPAM and Postgres must run in session mode: in transaction mode the lock
+   lands on whichever server connection the statement got, and the lock and
+   the per-pool check that the session is still alive both stop meaning
+   anything. If the session holding the lock dies, the pass stops before its
+   next pool. Another replica may sweep meanwhile, which is safe, because
+   every write is made under the pool's row lock and only to rows still
+   retained and due.
 
 3. **What is failing?** Read the errors in the apiserver logs. Two common
    causes:
    - a class that cannot be decoded, which leaves its rows' leases
-     unevaluated and fails every pass that tries them. Find the rows:
+     unevaluated. Passes page past them, but they stay held. Find the rows:
      ```sql
      SELECT allocation_key, pool_key, class_name, class_project, retained_at
        FROM ipam_cidr_allocations

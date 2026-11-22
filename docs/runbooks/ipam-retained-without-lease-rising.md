@@ -6,8 +6,13 @@
 
 ## What this alert means
 
-More claim allocations are retained with no retention lease than 24 hours ago,
-and that has held for 6 hours. A retained allocation with no lease is held
+In one address family (the alert's `ip_family` label), the number of claim
+allocations retained with no retention lease is more than a tenth, and at
+least 50, above what it was 24 hours ago, and that has held for 6 hours. Each
+family is evaluated on its own, so a fall in one cannot hide a rise in the
+other. This is a capacity trend to look at in business hours, not a page:
+some classes retain without a lease by design, and the threshold is set to
+ignore their ordinary churn. A retained allocation with no lease is held
 until someone deletes its IPAllocation or a claim of the same name takes it
 back. Nothing releases it on a schedule. On a scarce range, such as public
 IPv4, that capacity does not come back on its own.

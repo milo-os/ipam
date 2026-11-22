@@ -1687,7 +1687,7 @@
             "type": "datasource",
             "uid": "-- Mixed --"
          },
-         "description": "Pass duration, failures inside passes, and pools left for the next pass because a live claim held their lock. Skips are the sweeper yielding to claims and are not errors; a pool skipped every pass is one that is never free.",
+         "description": "Pass duration; pool and row failures the pass carried on past; leases that could not be evaluated because their class could not be read; pools left for the next pass because a live claim held their lock; and pool updates whose cap the sweeper applied instead. Skips are the sweeper yielding to claims and are not errors; a pool skipped every pass is one that is never free.",
          "fieldConfig": {
             "defaults": {
                "custom": {
@@ -1745,9 +1745,33 @@
                },
                "expr": "sum(increase(ipam_retention_sweep_pools_skipped_total{job=\"$job\", instance=~\"$instance\"}[15m]))",
                "legendFormat": "pools skipped / 15m"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(increase(ipam_retention_sweep_row_errors_total{job=\"$job\", instance=~\"$instance\"}[15m]))",
+               "legendFormat": "row errors / 15m"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(increase(ipam_retention_lease_unevaluable_total{job=\"$job\", instance=~\"$instance\"}[15m]))",
+               "legendFormat": "unevaluable leases / 15m"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(increase(ipam_retention_cap_apply_failures_total{job=\"$job\", instance=~\"$instance\"}[15m]))",
+               "legendFormat": "caps left to the sweeper / 15m"
             }
          ],
-         "title": "Sweeper: pass p95, errors, skipped pools",
+         "title": "Sweeper: pass p95, failures, skipped pools",
          "type": "timeseries"
       },
       {
@@ -1755,7 +1779,7 @@
             "type": "datasource",
             "uid": "-- Mixed --"
          },
-         "description": "Time since any replica completed a sweep pass without error. IPAMRetentionSweeperStalled fires past five intervals.",
+         "description": "Time since any replica completed a sweep pass. IPAMRetentionSweeperStalled fires past five intervals.",
          "fieldConfig": {
             "defaults": {
                "unit": "s"

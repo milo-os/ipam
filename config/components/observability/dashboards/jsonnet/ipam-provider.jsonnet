@@ -511,7 +511,7 @@ local retentionReleasesPanel = common.tsPanel(
 );
 
 local retentionSweepPanel = common.tsPanel(
-  'Sweeper: pass p95, errors, skipped pools',
+  'Sweeper: pass p95, failures, skipped pools',
   [
     {
       expr: 'histogram_quantile(0.95, sum by (le) (rate(ipam_retention_sweep_duration_seconds_bucket{%(sel)s}[15m])))' % { sel: ipamSel },
@@ -525,16 +525,28 @@ local retentionSweepPanel = common.tsPanel(
       expr: 'sum(increase(ipam_retention_sweep_pools_skipped_total{%(sel)s}[15m]))' % { sel: ipamSel },
       legend: 'pools skipped / 15m',
     },
+    {
+      expr: 'sum(increase(ipam_retention_sweep_row_errors_total{%(sel)s}[15m]))' % { sel: ipamSel },
+      legend: 'row errors / 15m',
+    },
+    {
+      expr: 'sum(increase(ipam_retention_lease_unevaluable_total{%(sel)s}[15m]))' % { sel: ipamSel },
+      legend: 'unevaluable leases / 15m',
+    },
+    {
+      expr: 'sum(increase(ipam_retention_cap_apply_failures_total{%(sel)s}[15m]))' % { sel: ipamSel },
+      legend: 'caps left to the sweeper / 15m',
+    },
   ],
   unit='short',
-  description='Pass duration, failures inside passes, and pools left for the next pass because a live claim held their lock. Skips are the sweeper yielding to claims and are not errors; a pool skipped every pass is one that is never free.'
+  description='Pass duration; pool and row failures the pass carried on past; leases that could not be evaluated because their class could not be read; pools left for the next pass because a live claim held their lock; and pool updates whose cap the sweeper applied instead. Skips are the sweeper yielding to claims and are not errors; a pool skipped every pass is one that is never free.'
 );
 
 local retentionLastPassPanel = common.statPanel(
   'Since the last sweep pass',
   'time() - max(ipam_retention_sweep_last_success_timestamp_seconds{%(sel)s})' % { sel: ipamSel },
   unit='s',
-  description='Time since any replica completed a sweep pass without error. IPAMRetentionSweeperStalled fires past five intervals.'
+  description='Time since any replica completed a sweep pass. IPAMRetentionSweeperStalled fires past five intervals.'
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
