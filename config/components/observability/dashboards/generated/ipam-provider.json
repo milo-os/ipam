@@ -1510,6 +1510,286 @@
          ],
          "title": "Pool resolution p95 (before allocation)",
          "type": "timeseries"
+      },
+      {
+         "collapsed": false,
+         "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 107
+         },
+         "id": 36,
+         "title": "Retention leases",
+         "type": "row"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Claim allocations held with no claim bound, by what is known of their lease. finite: a deadline is fixed (status.expiresAt). none: nothing will release it on a schedule; this is the leak meter, and IPAMRetainedWithoutLeaseRising watches it. unevaluated: the sweeper has not resolved the lease yet, and should be zero outside a pass.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 30,
+                  "lineWidth": 1,
+                  "showPoints": "never",
+                  "stacking": {
+                     "mode": "normal"
+                  }
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 108
+         },
+         "id": 37,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "max by (ip_family, lease) (ipam_retained_allocations{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "{{ip_family}} / {{lease}}"
+            }
+         ],
+         "title": "Retained allocations by lease",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "How long the longest-retained allocation of each family has been held without a claim.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 108
+         },
+         "id": 38,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "max by (ip_family) (ipam_retained_oldest_age_seconds{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "{{ip_family}}"
+            }
+         ],
+         "title": "Oldest retained allocation",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Retained allocations released because their lease ran out. enforce: released. observe: would have been released; each deadline is counted once as it passes, so this is the rate enforce will have once it is turned on.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 10,
+            "x": 0,
+            "y": 116
+         },
+         "id": 39,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum by (mode) (increase(ipam_retention_releases_total{job=\"$job\", instance=~\"$instance\"}[1h]))",
+               "legendFormat": "{{mode}}"
+            }
+         ],
+         "title": "Lease releases by mode (per hour)",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Pass duration, failures inside passes, and pools left for the next pass because a live claim held their lock. Skips are the sweeper yielding to claims and are not errors; a pool skipped every pass is one that is never free.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 10,
+            "x": 10,
+            "y": 116
+         },
+         "id": 40,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "histogram_quantile(0.95, sum by (le) (rate(ipam_retention_sweep_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\"}[15m])))",
+               "legendFormat": "pass p95 (s)"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(increase(ipam_retention_sweep_errors_total{job=\"$job\", instance=~\"$instance\"}[15m]))",
+               "legendFormat": "errors / 15m"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(increase(ipam_retention_sweep_pools_skipped_total{job=\"$job\", instance=~\"$instance\"}[15m]))",
+               "legendFormat": "pools skipped / 15m"
+            }
+         ],
+         "title": "Sweeper: pass p95, errors, skipped pools",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Time since any replica completed a sweep pass without error. IPAMRetentionSweeperStalled fires past five intervals.",
+         "fieldConfig": {
+            "defaults": {
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 4,
+            "x": 20,
+            "y": 116
+         },
+         "id": 41,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "time() - max(ipam_retention_sweep_last_success_timestamp_seconds{job=\"$job\", instance=~\"$instance\"})"
+            }
+         ],
+         "title": "Since the last sweep pass",
+         "type": "stat"
       }
    ],
    "refresh": "30s",

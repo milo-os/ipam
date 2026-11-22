@@ -468,6 +468,76 @@ local cascadeLatencyPanel = common.tsPanel(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Row: Retention leases
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Every replica publishes the same retained-set count each pass, so max() is
+// the count rather than a sum of copies.
+local retainedByLeasePanel = common.tsPanel(
+  'Retained allocations by lease',
+  [
+    {
+      expr: 'max by (ip_family, lease) (ipam_retained_allocations{%(sel)s})' % { sel: ipamSel },
+      legend: '{{ip_family}} / {{lease}}',
+    },
+  ],
+  unit='short',
+  stack=true,
+  description='Claim allocations held with no claim bound, by what is known of their lease. finite: a deadline is fixed (status.expiresAt). none: nothing will release it on a schedule; this is the leak meter, and IPAMRetainedWithoutLeaseRising watches it. unevaluated: the sweeper has not resolved the lease yet, and should be zero outside a pass.'
+);
+
+local retainedOldestPanel = common.tsPanel(
+  'Oldest retained allocation',
+  [
+    {
+      expr: 'max by (ip_family) (ipam_retained_oldest_age_seconds{%(sel)s})' % { sel: ipamSel },
+      legend: '{{ip_family}}',
+    },
+  ],
+  unit='s',
+  description='How long the longest-retained allocation of each family has been held without a claim.'
+);
+
+local retentionReleasesPanel = common.tsPanel(
+  'Lease releases by mode (per hour)',
+  [
+    {
+      expr: 'sum by (mode) (increase(ipam_retention_releases_total{%(sel)s}[1h]))' % { sel: ipamSel },
+      legend: '{{mode}}',
+    },
+  ],
+  unit='short',
+  description='Retained allocations released because their lease ran out. enforce: released. observe: would have been released; each deadline is counted once as it passes, so this is the rate enforce will have once it is turned on.'
+);
+
+local retentionSweepPanel = common.tsPanel(
+  'Sweeper: pass p95, errors, skipped pools',
+  [
+    {
+      expr: 'histogram_quantile(0.95, sum by (le) (rate(ipam_retention_sweep_duration_seconds_bucket{%(sel)s}[15m])))' % { sel: ipamSel },
+      legend: 'pass p95 (s)',
+    },
+    {
+      expr: 'sum(increase(ipam_retention_sweep_errors_total{%(sel)s}[15m]))' % { sel: ipamSel },
+      legend: 'errors / 15m',
+    },
+    {
+      expr: 'sum(increase(ipam_retention_sweep_pools_skipped_total{%(sel)s}[15m]))' % { sel: ipamSel },
+      legend: 'pools skipped / 15m',
+    },
+  ],
+  unit='short',
+  description='Pass duration, failures inside passes, and pools left for the next pass because a live claim held their lock. Skips are the sweeper yielding to claims and are not errors; a pool skipped every pass is one that is never free.'
+);
+
+local retentionLastPassPanel = common.statPanel(
+  'Since the last sweep pass',
+  'time() - max(ipam_retention_sweep_last_success_timestamp_seconds{%(sel)s})' % { sel: ipamSel },
+  unit='s',
+  description='Time since any replica completed a sweep pass without error. IPAMRetentionSweeperStalled fires past five intervals.'
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Layout helper: place a panel on the grid.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -536,4 +606,11 @@ dashboard.new('IPAM — Provider')
   at(cascadeOutcomePanel, 0, 93, 12, 7),
   at(cascadeProvisionedPanel, 12, 93, 12, 7),
   at(cascadeLatencyPanel, 0, 100, 24, 7),
+
+  rowAt('Retention leases', 107),
+  at(retainedByLeasePanel, 0, 108, 12, 8),
+  at(retainedOldestPanel, 12, 108, 12, 8),
+  at(retentionReleasesPanel, 0, 116, 10, 7),
+  at(retentionSweepPanel, 10, 116, 10, 7),
+  at(retentionLastPassPanel, 20, 116, 4, 7),
 ])

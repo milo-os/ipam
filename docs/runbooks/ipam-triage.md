@@ -39,6 +39,8 @@ runbook, the on-call experience regresses.
 | `IPAMCascadeProvisioningFailing` | warning | [`ipam-cascade-provisioning.md`](ipam-cascade-provisioning.md) |
 | `IPAMCascadeProvisioningThrashing` | warning | [`ipam-cascade-provisioning.md`](ipam-cascade-provisioning.md) |
 | `IPAMCascadeResolutionLatencyHigh` | warning | [`ipam-cascade-provisioning.md`](ipam-cascade-provisioning.md) |
+| `IPAMRetentionSweeperStalled` | warning | [`ipam-retention-sweeper-stalled.md`](ipam-retention-sweeper-stalled.md) |
+| `IPAMRetainedWithoutLeaseRising` | warning | [`ipam-retained-without-lease-rising.md`](ipam-retained-without-lease-rising.md) |
 
 ## First 5 minutes — universal checklist
 

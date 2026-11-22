@@ -454,3 +454,58 @@ spec:
               of magnitude faster; this latency is charged to every claim before allocation
               starts, and consumes the claim latency SLO budget.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-cascade-provisioning.md"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Retention leases — the sweeper that evaluates and acts on retained
+    # allocations' leases, and the retained set it reports. Backed by
+    # internal/metrics/retention.go.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: ipam-retention
+      interval: 1m
+      rules:
+        - alert: IPAMRetentionSweeperStalled
+          # One replica takes each pass under an advisory lock, so only it
+          # stamps the success timestamp: take the max across replicas. The
+          # threshold scales with the configured interval, and a deployment
+          # that disables the sweeper (interval 0) is not alerted on.
+          expr: |
+            (
+              time() - max(ipam_retention_sweep_last_success_timestamp_seconds)
+              > 5 * max(ipam_retention_sweep_interval_seconds)
+            )
+            and on() max(ipam_retention_sweep_interval_seconds) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: retention
+          annotations:
+            summary: "IPAM retention sweeper has not completed a pass for {{ $value | humanizeDuration }}"
+            description: |
+              No replica has completed a retention sweep pass without error for more than five
+              sweep intervals. Retained allocations whose lease has run out are not being
+              released (enforce mode) or counted (observe mode), leases left unevaluated stay
+              unevaluated, and the ipam_retained_* gauges may be stale.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-sweeper-stalled.md"
+
+        - alert: IPAMRetainedWithoutLeaseRising
+          # lease="none" is the leak meter: retained addresses nothing will ever
+          # release on a schedule. Every replica publishes the same count, so
+          # max() is the count, not a sum of copies. Sustained growth over a
+          # day is a class or pool that retains without a lease, not noise.
+          expr: |
+            sum(max by (ip_family) (ipam_retained_allocations{lease="none"}))
+            >
+            sum(max by (ip_family) (ipam_retained_allocations{lease="none"} offset 24h))
+          for: 6h
+          labels:
+            severity: warning
+            service: ipam
+            slo: retention
+          annotations:
+            summary: "IPAM addresses retained with no lease have grown over the last 24h (now {{ $value }})"
+            description: |
+              The number of claim allocations retained with no retention lease is higher than it
+              was 24 hours ago, and has been for 6 hours. These addresses stay held until someone
+              releases them by hand; on a scarce range they are capacity that does not come back.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-without-lease-rising.md"
