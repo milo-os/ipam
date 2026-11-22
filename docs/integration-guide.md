@@ -104,6 +104,15 @@ With no lease on either, `expiresAt` is absent and the reason is `NoLease`.
 Recreating the claim before the deadline reclaims the address and clears both
 timestamps.
 
+A claim cannot retain indefinitely on its own say-so. Setting
+`reclaimPolicy: Retain` on a claim whose class defaults to `Delete` is refused
+with 422 and reason `RetentionLeaseRequired` unless the class sets
+`retentionLease` or the pool the claim lands in sets `maxRetentionLease`. The
+message names both. Ask the class or pool owner for a lease, or leave
+`reclaimPolicy` to the class. A recreate that would reclaim a retained address
+is held to the same rule against the pool holding it. A class whose own default
+is `Retain` is not affected.
+
 Leases are not yet enforced. Until they are, nothing is released at
 `expiresAt`, and an expired retained address stays held until its IPAllocation
 is deleted. Read `expiresAt` as the date the address will be released once
@@ -205,6 +214,10 @@ case ipamerrors.ReasonRetainedAllocationMismatch:
     // address back, or delete the IPAllocation to claim afresh.
     allocation, field, _ := ipamerrors.RetainedAllocationMismatch(err)
     ...
+case ipamerrors.ReasonRetentionLeaseRequired:
+    // The claim set reclaimPolicy Retain against a class that defaults to
+    // Delete, and no lease would bound the retention. Leave reclaimPolicy to
+    // the class, or have the class or pool owner set a lease.
 case ipamerrors.ReasonAllocationRetained:
     // Returned by IPAM releases that refused a recreate over a retained
     // allocation; current releases reclaim it instead. RetainedAllocation
@@ -219,3 +232,4 @@ Reasons are added over time, so treat an unrecognised one the same as
 - **400 Bad Request**: the request will not succeed unchanged on retry.
 - **403 Forbidden**: RBAC. Investigate role bindings.
 - **409 Conflict**: a name is taken.
+- **422 Unprocessable Entity**: a field is refused for its value; change it before retrying.

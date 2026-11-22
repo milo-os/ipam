@@ -277,7 +277,8 @@ type IPClassSpec struct {
 	Strategy PoolSelectionStrategy
 
 	// ReclaimPolicy is the default disposition of an allocation when its claim
-	// is deleted. A claim may override it.
+	// is deleted. A claim may override it, but overriding Delete with Retain
+	// needs a lease: RetentionLease, or the pool's MaxRetentionLease.
 	ReclaimPolicy ReclaimPolicy
 
 	// RetentionLease bounds how long an allocation of this class may stay
@@ -357,7 +358,8 @@ type IPPoolSpec struct {
 	// stay retained, whatever the class asks for. The cap lives here because
 	// the pool is the thing that runs out. Unset means the class's lease
 	// applies unchanged. Lowering it brings forward the deadlines of what the
-	// pool already retains; raising it moves none back. Not yet enforced.
+	// pool already retains; raising it moves none back. A cap also admits a
+	// claim's Retain over a Delete class that sets no lease. Not yet enforced.
 	MaxRetentionLease *metav1.Duration
 
 	Allocation AllocationSpec
@@ -575,7 +577,9 @@ type IPClaimSpec struct {
 	// Target selects what this claim binds. Empty means Block. Immutable.
 	Target ClaimTarget
 
-	// ReclaimPolicy overrides the class default for this claim.
+	// ReclaimPolicy overrides the class default for this claim. Retain over a
+	// class whose default is Delete is refused (RetentionLeaseRequired) unless
+	// the class or the pool the claim lands in sets a lease.
 	ReclaimPolicy ReclaimPolicy
 
 	// OwnerRef is the opaque consumer object this claim is made for.

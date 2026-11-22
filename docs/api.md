@@ -56,7 +56,7 @@ The claim's CREATE response body contains the allocated CIDR.
 | `spec.allocation.maxPrefixLength` | int | no | Largest prefix a claim may request from this pool. |
 | `spec.allocation.strategy` | Strategy | no | How free blocks are chosen. |
 | `spec.visibility` | `platform` \| `consumer` \| `shared` | no | Who may allocate from the pool. |
-| `spec.maxRetentionLease` | duration | no | Caps how long any allocation of this pool may stay retained, whatever its class asks for; see [Retention leases](#retention-leases). Positive, at most `8760h`. Lowering it brings forward the deadlines of allocations the pool already retains; raising or removing it moves none back. |
+| `spec.maxRetentionLease` | duration | no | Caps how long any allocation of this pool may stay retained, whatever its class asks for; see [Retention leases](#retention-leases). Positive, at most `8760h`. Lowering it brings forward the deadlines of allocations the pool already retains; raising or removing it moves none back. A cap also lets a claim override a Delete class that sets no lease to `Retain`. |
 | `status.phase` | PoolPhase | — | Lifecycle phase. |
 | `status.allocatedCIDR` | CIDR string | — | Effective CIDR (declared for root pools, carved for child pools). |
 | `status.ipFamily` | IPFamily | — | Effective family. |
@@ -75,7 +75,7 @@ The claim's CREATE response body contains the allocated CIDR.
 | `spec.prefixLength` | int (0–128) | yes | Requested sub-prefix size; must be valid for the family and within the pool's min/max. |
 | `spec.poolRef` | NamespacedRef | one of | Pin to a specific pool (optionally in another project via `projectRef`). |
 | `spec.poolSelector` | PoolSelector | one of | Pick a pool by labels (optionally scoped by `projectRef`). |
-| `spec.reclaimPolicy` | ReclaimPolicy | no | `Delete` (default) or `Retain` the allocation when the claim is deleted. A claim recreated under the same name, namespace and project takes a retained address back if it resolves to the same class (defining project and name), family and address scope, the same uniqueWithin address space, a pool it would be placed in now, and the same size and address; otherwise 409 `RetainedAllocationMismatch` naming the field. Scope refs match by apiGroup/kind/name, so a network recreated under the same name reclaims. A reclaim is a create and counts against claim quota (milo-os/milo#1028). Immutable. |
+| `spec.reclaimPolicy` | ReclaimPolicy | no | `Delete` (default) or `Retain` the allocation when the claim is deleted. A claim recreated under the same name, namespace and project takes a retained address back if it resolves to the same class (defining project and name), family and address scope, the same uniqueWithin address space, a pool it would be placed in now, and the same size and address; otherwise 409 `RetainedAllocationMismatch` naming the field. Scope refs match by apiGroup/kind/name, so a network recreated under the same name reclaims. A reclaim is a create and counts against claim quota (milo-os/milo#1028). `Retain` on a claim whose class defaults to `Delete` needs a finite lease, from the class's `retentionLease` or the `maxRetentionLease` of the pool the claim lands in (for a reclaim, the pool holding the address); otherwise 422 `RetentionLeaseRequired`. A class whose own default is `Retain` needs no lease. Immutable. |
 | `spec.ownerRef` | ObjectRef | no | Opaque `{apiGroup, kind, namespace, name}` consumer reference. |
 | `status.phase` | ClaimPhase | — | `Bound` after synchronous allocation. |
 | `status.allocatedCIDR` | CIDR string | — | Set on `Bound`. |
@@ -116,6 +116,18 @@ lowering the pool's cap does, straight after the update and, should that
 attempt fail, on the retention sweeper's next pass. With neither set there is
 no deadline.
 
+A claim may retain what its class would delete only under a lease. A claim
+setting `reclaimPolicy: Retain` against a class whose own default is `Delete`
+is refused with 422 `RetentionLeaseRequired` when neither the class's
+`retentionLease` nor the `maxRetentionLease` of the pool the claim lands in is
+set, because its address would be held with no end. The check is made under
+the pool's lock, against the pool the claim is actually placed in, and a
+reclaim is held to it against the pool holding the retained address; a refused
+reclaim leaves the address retained, and recreating the claim without the
+override takes it back. A dry run is refused the same way. A class whose own
+default is `Retain` is the operator's decision and is not checked: its
+allocations may be retained without a lease.
+
 **Leases are not yet enforced.** The apiserver's retention sweeper runs in
 observe mode: it evaluates leases, publishes `ipam_retained_allocations`, and
 counts each deadline as it passes in
@@ -135,6 +147,7 @@ returns to the pool.
 | 403 | RBAC denial |
 | 404 | No such pool/prefix, or not visible in the caller's project |
 | 409 | Conflict (name or block already exists) |
+| 422 | Invalid (an immutable field changed; `RetentionLeaseRequired`: a `Retain` override with no lease to bound it) |
 | 507 | Pool exhausted (Insufficient Storage) |
 
 The `datumctl ipam` CLI maps these to stable exit codes — see the

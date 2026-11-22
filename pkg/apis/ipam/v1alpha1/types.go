@@ -450,7 +450,10 @@ type IPClassSpec struct {
 	Strategy PoolSelectionStrategy `json:"strategy,omitempty"`
 
 	// ReclaimPolicy is the default disposition of an allocation when its claim
-	// is deleted. A claim may override it.
+	// is deleted. A claim may override it, but a claim overriding Delete with
+	// Retain is refused unless a lease bounds the retention: this class's
+	// RetentionLease, or the MaxRetentionLease of the pool the claim lands in.
+	// Retain set here is the class owner's decision and needs no lease.
 	// +optional
 	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
 
@@ -467,6 +470,10 @@ type IPClassSpec struct {
 	// letting the holder also set its own expiry hands the scarce-space
 	// decision back to the party that wants to consume it, and retention the
 	// holder can extend indefinitely is not a lease.
+	//
+	// On a class whose ReclaimPolicy is Delete, this is also what lets a claim
+	// override it to Retain: with no lease here and no cap on the pool, the
+	// override is refused with reason RetentionLeaseRequired.
 	//
 	// The effective lease is the shorter of this and the pool's
 	// MaxRetentionLease. It is fixed when the claim is deleted and shown as
@@ -617,6 +624,10 @@ type IPPoolSpec struct {
 	// owns the scarcity rather than on the one that wants to consume it.
 	//
 	// Unset means the class's lease applies unchanged.
+	//
+	// A cap here also admits claims that override a Delete class to Retain
+	// when the class sets no lease of its own; without one, such a claim is
+	// refused with reason RetentionLeaseRequired.
 	//
 	// Unlike a class's lease, lowering this applies to what the pool already
 	// retains: every deadline the new cap cuts short is brought forward to
@@ -1023,6 +1034,14 @@ type IPClaimSpec struct {
 	// same scope, and a claim naming it reclaims. Until quota counts retained
 	// addresses (milo-os/milo#1028), a reclaim is charged as a new claim, so a
 	// project at its claim quota cannot reclaim.
+	//
+	// Retain on a claim whose class defaults to Delete is allowed only under a
+	// finite lease: the class's retentionLease, or the maxRetentionLease of the
+	// pool the claim lands in (for a reclaim, the pool holding the address).
+	// Otherwise the create is refused with 422 and reason
+	// RetentionLeaseRequired, naming the class and the pool, because the
+	// address would be held indefinitely. A class whose own default is Retain
+	// needs no lease.
 	// +optional
 	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
 
