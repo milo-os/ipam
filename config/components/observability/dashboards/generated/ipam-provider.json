@@ -439,7 +439,7 @@
                   "type": "prometheus",
                   "uid": "$datasource"
                },
-               "expr": "histogram_quantile(0.95,\n  sum by (le) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=\"success\"}[5m]))\n)\n"
+               "expr": "histogram_quantile(0.95,\n  sum by (le) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=~\"success|reclaimed\"}[5m]))\n)\n"
             }
          ],
          "title": "p95 allocation latency",
@@ -450,7 +450,7 @@
             "type": "datasource",
             "uid": "-- Mixed --"
          },
-         "description": "SLO panel: p95 < 500ms target. Filtered to result=\"success\" so failures do not skew tail.",
+         "description": "SLO panel: p95 < 500ms target. Filtered to result=~\"success|reclaimed\", every create that bound an address, so failures do not skew tail.",
          "fieldConfig": {
             "defaults": {
                "custom": {
@@ -490,7 +490,7 @@
                   "type": "prometheus",
                   "uid": "$datasource"
                },
-               "expr": "histogram_quantile(0.50,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=\"success\"}[5m]))\n)\n",
+               "expr": "histogram_quantile(0.50,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=~\"success|reclaimed\"}[5m]))\n)\n",
                "legendFormat": "p50 {{resource}}"
             },
             {
@@ -498,7 +498,7 @@
                   "type": "prometheus",
                   "uid": "$datasource"
                },
-               "expr": "histogram_quantile(0.95,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=\"success\"}[5m]))\n)\n",
+               "expr": "histogram_quantile(0.95,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=~\"success|reclaimed\"}[5m]))\n)\n",
                "legendFormat": "p95 {{resource}}"
             },
             {
@@ -506,11 +506,11 @@
                   "type": "prometheus",
                   "uid": "$datasource"
                },
-               "expr": "histogram_quantile(0.99,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=\"success\"}[5m]))\n)\n",
+               "expr": "histogram_quantile(0.99,\n  sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{job=\"$job\", instance=~\"$instance\", result=~\"success|reclaimed\"}[5m]))\n)\n",
                "legendFormat": "p99 {{resource}}"
             }
          ],
-         "title": "Allocation latency quantiles (success only)",
+         "title": "Allocation latency quantiles (successful creates)",
          "type": "timeseries"
       },
       {

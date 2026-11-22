@@ -370,8 +370,9 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	if claim.Spec.Target == ipam.TargetScopeRange {
 		obj, outcome, err := r.createScopeRange(ctx, span, claim, class, id, dryRun)
 		if err != nil {
-			// The latency histogram's result is success | exhausted | error (reclaimed is Block-only),
-			// as on the block path; the reason goes on the failure counter.
+			// The latency histogram's result is success | exhausted | error,
+			// as on the block path, which alone adds reclaimed; the reason
+			// goes on the failure counter.
 			if failureReason(err, outcome) == reasonPoolExhausted {
 				result = "exhausted"
 			}

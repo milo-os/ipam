@@ -51,11 +51,13 @@ spec:
       rules:
         - alert: IPAMClaimLatencyHigh
           # SLO: p95 of synchronous (postgres-path) claim CREATE under 500ms.
-          # Filter to result="success" so failure-path latency does not skew
-          # the tail; failures are tracked separately via ErrorRate alerts.
+          # Filter to the creates that bound an address, result="success" and
+          # result="reclaimed" (a recreated claim taking back its retained
+          # address), so failure-path latency does not skew the tail; failures
+          # are tracked separately via ErrorRate alerts.
           expr: |
             histogram_quantile(0.95,
-              sum by (le) (rate(ipam_allocation_duration_seconds_bucket{result="success"}[5m]))
+              sum by (le) (rate(ipam_allocation_duration_seconds_bucket{result=~"success|reclaimed"}[5m]))
             ) > 0.5
           for: 5m
           labels:
