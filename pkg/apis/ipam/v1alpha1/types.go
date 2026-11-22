@@ -813,8 +813,10 @@ type IPAllocationStatus struct {
 	// +optional
 	RetainedAt *metav1.Time `json:"retainedAt,omitempty"`
 	// ExpiresAt is when the retention lease of a retained allocation runs
-	// out: RetainedAt plus the shorter of its class's retentionLease and its
-	// pool's maxRetentionLease, fixed at retention. Lowering the pool's
+	// out: retention plus the shorter of its class's retentionLease and its
+	// pool's maxRetentionLease, rounded up to the whole second and fixed at
+	// retention. It is exactly when a release would happen, and never before
+	// the full lease. Lowering the pool's
 	// maxRetentionLease later brings it forward; nothing pushes it back.
 	// Unset when no lease applies, and while a claim holds the allocation.
 	//
@@ -825,6 +827,9 @@ type IPAllocationStatus struct {
 	// Conditions include Retained, which is True while the allocation is
 	// held with no claim (reason LeaseActive, NoLease or LeasePending) and
 	// False once a recreated claim takes it back (reason Reclaimed).
+	//
+	// Status is written only by the server; the status subresource is
+	// read-only.
 	// +optional
 	// +listType=map
 	// +listMapKey=type

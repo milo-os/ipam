@@ -368,7 +368,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref common.ReferenceCallba
 					},
 					"expiresAt": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ExpiresAt is when the retention lease of a retained allocation runs out: RetainedAt plus the shorter of its class's retentionLease and its pool's maxRetentionLease, fixed at retention. Lowering the pool's maxRetentionLease later brings it forward; nothing pushes it back. Unset when no lease applies, and while a claim holds the allocation.\n\nLeases are not yet enforced: an allocation past this deadline is still held until its IPAllocation is deleted or a recreated claim reclaims it.",
+							Description: "ExpiresAt is when the retention lease of a retained allocation runs out: retention plus the shorter of its class's retentionLease and its pool's maxRetentionLease, rounded up to the whole second and fixed at retention. It is exactly when a release would happen, and never before the full lease. Lowering the pool's maxRetentionLease later brings it forward; nothing pushes it back. Unset when no lease applies, and while a claim holds the allocation.\n\nLeases are not yet enforced: an allocation past this deadline is still held until its IPAllocation is deleted or a recreated claim reclaims it.",
 							Ref:         ref(v1.Time{}.OpenAPIModelName()),
 						},
 					},
@@ -382,7 +382,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Description: "Conditions include Retained, which is True while the allocation is held with no claim (reason LeaseActive, NoLease or LeasePending) and False once a recreated claim takes it back (reason Reclaimed).",
+							Description: "Conditions include Retained, which is True while the allocation is held with no claim (reason LeaseActive, NoLease or LeasePending) and False once a recreated claim takes it back (reason Reclaimed).\n\nStatus is written only by the server; the status subresource is read-only.",
 							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{

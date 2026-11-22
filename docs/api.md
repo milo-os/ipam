@@ -96,11 +96,12 @@ block.
 | `status.phase` | AllocationPhase | Lifecycle phase. |
 | `status.allocatedCIDR` | CIDR string | The allocated block. |
 | `status.retainedAt` | timestamp | When the claim was deleted under `Retain`. Unset while a claim holds the allocation. |
-| `status.expiresAt` | timestamp | When the retention lease runs out: `retainedAt` plus the effective lease. Unset when no lease applies, and while a claim holds the allocation. Not yet enforced; see below. |
+| `status.expiresAt` | timestamp | When the retention lease runs out: retention plus the effective lease, rounded up to the whole second, so it is exactly when a release would happen and never before the full lease. Unset when no lease applies, and while a claim holds the allocation. Not yet enforced; see below. |
 | `status.conditions[type=Retained]` | Condition | `True` while retained, with reason `LeaseActive` (a deadline is set), `NoLease`, or `LeasePending` (the lease could not be evaluated at the delete; the sweeper evaluates it). `False`/`Reclaimed` once a recreated claim takes it back. |
 
 `IPAllocation` is namespace-scoped (`shortName: ipalloc`) and system-created; it
-records the block granted to an IPClaim. Its table output has an `Expires`
+records the block granted to an IPClaim. Its status is written only by the
+server: `ipallocations/status` serves get and nothing else. Its table output has an `Expires`
 column: the time left on the lease, `never` with no lease, `<pending>` while
 unevaluated, and `<none>` while a claim holds it.
 
@@ -111,7 +112,9 @@ An `IPClass` may set `spec.retentionLease` and an `IPPool`
 lease is the shorter of the two, and either alone applies if the other is
 unset. It is fixed at that moment and shown as `status.expiresAt` on the
 IPAllocation. Changing the class later does not move a deadline already set;
-lowering the pool's cap does. With neither set there is no deadline.
+lowering the pool's cap does, straight after the update and, should that
+attempt fail, on the retention sweeper's next pass. With neither set there is
+no deadline.
 
 **Leases are not yet enforced.** The apiserver's retention sweeper runs in
 observe mode: it evaluates leases, publishes `ipam_retained_allocations`, and

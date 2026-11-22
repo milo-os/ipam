@@ -12,7 +12,6 @@ import (
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/apiserver/pkg/storage/names"
-	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/fieldindex"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
@@ -36,17 +35,8 @@ type ipAllocationStrategy struct {
 	names.NameGenerator
 }
 
-type ipAllocationStatusStrategy struct {
-	runtime.ObjectTyper
-	names.NameGenerator
-}
-
 func NewStrategy(typer runtime.ObjectTyper) ipAllocationStrategy {
 	return ipAllocationStrategy{ObjectTyper: typer, NameGenerator: names.SimpleNameGenerator}
-}
-
-func NewStatusStrategy(typer runtime.ObjectTyper) ipAllocationStatusStrategy {
-	return ipAllocationStatusStrategy{ObjectTyper: typer, NameGenerator: names.SimpleNameGenerator}
 }
 
 func (ipAllocationStrategy) NamespaceScoped() bool { return true }
@@ -145,32 +135,4 @@ func SelectableFields(a *ipam.IPAllocation) fields.Set {
 
 func Match(label labels.Selector, fld fields.Selector) storage.SelectionPredicate {
 	return storage.SelectionPredicate{Label: label, Field: fld, GetAttrs: GetAttrs}
-}
-
-func (ipAllocationStatusStrategy) NamespaceScoped() bool { return true }
-
-func (ipAllocationStatusStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Object) {
-	n := obj.(*ipam.IPAllocation)
-	o := old.(*ipam.IPAllocation)
-	n.Spec = o.Spec
-	n.Labels = o.Labels
-	n.Annotations = o.Annotations
-}
-
-func (ipAllocationStatusStrategy) ValidateUpdate(_ context.Context, _, _ runtime.Object) field.ErrorList {
-	return nil
-}
-
-func (ipAllocationStatusStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Object) []string {
-	return nil
-}
-
-func (ipAllocationStatusStrategy) AllowCreateOnUpdate(_ context.Context) bool      { return false }
-func (ipAllocationStatusStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
-func (ipAllocationStatusStrategy) Canonicalize(_ runtime.Object)                   {}
-
-func (ipAllocationStatusStrategy) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
-	return map[fieldpath.APIVersion]*fieldpath.Set{
-		"ipam.miloapis.com/v1alpha1": fieldpath.NewSet(fieldpath.MakePathOrDie("spec")),
-	}
 }

@@ -22,7 +22,6 @@ import (
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/registry/ipam/tableconvertor"
@@ -31,7 +30,14 @@ import (
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
-// IPAllocationStatusStorage exposes the /status subresource.
+// IPAllocationStatusStorage exposes the /status subresource, read-only.
+//
+// An allocation's status is the server's record of what it holds: its
+// address, and while retained, when it was retained and when its lease runs
+// out. The retention sweeper acts on the row the status mirrors, not on the
+// status, so a client-written expiresAt would be a deadline that nothing
+// honours. Every write comes from the claim, retention and sweep paths, in the
+// transactions that change the row; the API offers get only.
 type IPAllocationStatusStorage struct {
 	store *genericregistry.Store
 }
@@ -41,14 +47,6 @@ func (s *IPAllocationStatusStorage) Destroy()            {}
 
 func (s *IPAllocationStatusStorage) Get(ctx context.Context, name string, options *metav1.GetOptions) (runtime.Object, error) {
 	return s.store.Get(ctx, name, options)
-}
-
-func (s *IPAllocationStatusStorage) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, _ bool, options *metav1.UpdateOptions) (runtime.Object, bool, error) {
-	return s.store.Update(ctx, name, objInfo, createValidation, updateValidation, false, options)
-}
-
-func (s *IPAllocationStatusStorage) GetResetFields() map[fieldpath.APIVersion]*fieldpath.Set {
-	return s.store.GetResetFields()
 }
 
 func (s *IPAllocationStatusStorage) ConvertToTable(ctx context.Context, obj runtime.Object, opts runtime.Object) (*metav1.Table, error) {
@@ -254,7 +252,6 @@ func allocationObjectKey(id tenant.Identity, namespace, name string) string {
 // holds.
 func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool) (*ReleasingREST, *IPAllocationStatusStorage, error) {
 	strategy := NewStrategy(scheme)
-	statusStrategy := NewStatusStrategy(scheme)
 
 	store := &genericregistry.Store{
 		NewFunc:                   func() runtime.Object { return &ipam.IPAllocation{} },
@@ -273,15 +270,11 @@ func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 		return nil, nil, err
 	}
 
-	statusStore := *store
-	statusStore.UpdateStrategy = statusStrategy
-	statusStore.ResetFieldsStrategy = statusStrategy
-
 	return &ReleasingREST{
 		allocationStore: store,
 		allocator:       alloc,
 		db:              db,
-	}, &IPAllocationStatusStorage{store: &statusStore}, nil
+	}, &IPAllocationStatusStorage{store: store}, nil
 }
 
 // Compile-time interface assertions.
@@ -290,4 +283,5 @@ var (
 	_ rest.GracefulDeleter   = (*ReleasingREST)(nil)
 	_ rest.CollectionDeleter = (*ReleasingREST)(nil)
 	_ rest.Storage           = (*IPAllocationStatusStorage)(nil)
+	_ rest.Getter            = (*IPAllocationStatusStorage)(nil)
 )
