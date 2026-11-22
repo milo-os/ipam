@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -348,6 +349,16 @@ func (r *AllocatingREST) bindRetainedAllocation(
 	alloc.Spec.ReclaimPolicy = ipam.ReclaimPolicy(reclaimPolicy)
 	alloc.Spec.OwnerRef = claim.Spec.OwnerRef
 	alloc.Status.Phase = ipam.AllocationReady
+	// Retention ends here, and the lease with it; the row's deadline was
+	// cleared by the rebind's trigger.
+	alloc.Status.RetainedAt = nil
+	alloc.Status.ExpiresAt = nil
+	meta.SetStatusCondition(&alloc.Status.Conditions, metav1.Condition{
+		Type:    v1alpha1.AllocationConditionRetained,
+		Status:  metav1.ConditionFalse,
+		Reason:  v1alpha1.RetainedReasonReclaimed,
+		Message: fmt.Sprintf("reclaimed by IPClaim %q, recreated under the name of the claim that retained it", claim.Name),
+	})
 
 	encoded, err := runtime.Encode(r.codec, alloc)
 	if err != nil {

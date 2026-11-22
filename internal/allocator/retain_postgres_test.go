@@ -50,7 +50,11 @@ func releaseReturningRetained(t *testing.T, db *pgxpool.Pool, claim string) []st
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit release: %v", err)
 	}
-	return retained
+	keys := make([]string, 0, len(retained))
+	for _, r := range retained {
+		keys = append(keys, r.AllocationKey)
+	}
+	return keys
 }
 
 // The default policy still frees the address, and the next claim reuses it.
