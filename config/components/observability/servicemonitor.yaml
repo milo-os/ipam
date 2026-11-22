@@ -21,4 +21,9 @@ spec:
       interval: 30s
       tlsConfig:
         insecureSkipVerify: true
-      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      # No bearer token, on purpose. The apiserver delegates authentication to
+      # Milo, which does not recognise the scraper's in-cluster service-account
+      # token, and a token that fails TokenReview is a 401 even on a path that
+      # is allowed anonymously. The scrape therefore goes unauthenticated and
+      # relies on the deployment listing /metrics in
+      # AUTHORIZATION_ALWAYS_ALLOW_PATHS (activity and openmeter do the same).

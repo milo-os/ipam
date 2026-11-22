@@ -17,3 +17,8 @@ spec:
             # quota plugin's informers don't block readyz on missing CRDs.
             - name: ENABLE_QUOTA
               value: "false"
+            # Mirror staging: /metrics is served without authentication so the
+            # scraper needs no token Milo would have to recognise. Nothing else
+            # beyond the probe paths is exempt from authn/authz.
+            - name: AUTHORIZATION_ALWAYS_ALLOW_PATHS
+              value: "/healthz,/readyz,/livez,/metrics"
