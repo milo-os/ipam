@@ -5,9 +5,12 @@ import (
 	"math/big"
 	"sort"
 	"strings"
+	"time"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/apiserver/pkg/registry/rest"
 
 	"go.miloapis.com/ipam/pkg/apis/ipam"
@@ -113,6 +116,7 @@ func IPAllocations() rest.TableConvertor {
 		{Name: "Class", Type: "string", Description: "Class the allocation was made under."},
 		{Name: "Purpose", Type: "string", Description: "Why the allocation exists."},
 		{Name: "Phase", Type: "string", Description: "Current lifecycle phase."},
+		{Name: "Expires", Type: "string", Description: "When a retained allocation's lease runs out: never if no lease applies, none while a claim holds it."},
 		ageColumn,
 		{Name: "Claim", Type: "string", Priority: wide, Description: "Claim holding this allocation, if any."},
 		{Name: "Reclaim", Type: "string", Priority: wide, Description: "What happens to the range when the claim goes."},
@@ -120,7 +124,7 @@ func IPAllocations() rest.TableConvertor {
 	}, func(obj runtime.Object, name, age string) []interface{} {
 		a, ok := obj.(*ipam.IPAllocation)
 		if !ok {
-			return []interface{}{name, "", "", "", "", "", age, "", "", ""}
+			return []interface{}{name, "", "", "", "", "", "", age, "", "", ""}
 		}
 		return []interface{}{
 			name,
@@ -129,6 +133,7 @@ func IPAllocations() rest.TableConvertor {
 			orEmpty(a.Spec.ClassName),
 			orEmpty(string(a.Spec.Purpose)),
 			orEmpty(string(a.Status.Phase)),
+			leaseExpiry(a, time.Now()),
 			age,
 			localRefName(a.Spec.ClaimRef),
 			orEmpty(string(a.Spec.ReclaimPolicy)),
@@ -246,6 +251,27 @@ func poolUtilization(p *ipam.IPPool) string {
 func allocatedAny(s string) bool {
 	n, ok := new(big.Int).SetString(s, 10)
 	return ok && n.Sign() > 0
+}
+
+// leaseExpiry renders when a retained allocation's lease runs out, relative to
+// now. A lease past its deadline reads as expired rather than as a negative
+// duration; while leases are not enforced the address is still held then.
+func leaseExpiry(a *ipam.IPAllocation, now time.Time) string {
+	switch {
+	case a.Status.ExpiresAt != nil:
+		at := a.Status.ExpiresAt.Time
+		if at.After(now) {
+			return duration.HumanDuration(at.Sub(now))
+		}
+		return "expired " + duration.HumanDuration(now.Sub(at)) + " ago"
+	case a.Status.RetainedAt == nil:
+		return "<none>"
+	}
+	if c := meta.FindStatusCondition(a.Status.Conditions, v1alpha1.AllocationConditionRetained); c != nil &&
+		c.Reason == v1alpha1.RetainedReasonLeasePending {
+		return "<pending>"
+	}
+	return "never"
 }
 
 func orEmpty(s string) string {

@@ -32,6 +32,10 @@ const (
 	SpanTenantResolve     = "ipam.tenant.resolve"
 	SpanAuthorizeCrossPrj = "ipam.pool.authorize_cross_project"
 	SpanFindBlock         = "ipam.allocate.find_block"
+	// SpanRetentionSweep is one retention sweep pass; SpanRetentionSweepPool
+	// is its transaction against one pool, a child of the pass.
+	SpanRetentionSweep     = "ipam.retention.sweep"
+	SpanRetentionSweepPool = "ipam.retention.sweep_pool"
 )
 
 // Attribute keys. Low-cardinality identity + decision signals only — never a
@@ -64,6 +68,15 @@ const (
 	AttrExistingCount = "existing_count"
 	AttrResultCIDR    = "result_cidr"
 	AttrExhausted     = "exhausted"
+
+	// retention.sweep / retention.sweep_pool
+	AttrSweepMode      = "ipam.retention.mode"  // observe | enforce
+	AttrSweepRan       = "ipam.retention.ran"   // false when another replica held the lock
+	AttrSweepPhase     = "ipam.retention.phase" // evaluate | release
+	AttrSweepEvaluated = "ipam.retention.evaluated"
+	AttrSweepDue       = "ipam.retention.due"
+	AttrSweepReleased  = "ipam.retention.released"
+	AttrSweepSkipped   = "ipam.retention.skipped"
 
 	// failure
 	AttrErrorReason = "ipam.error.reason" // pool_not_found | exhausted | cross_project_denied | namespace_not_live | tx_error

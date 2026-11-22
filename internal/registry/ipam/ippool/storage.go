@@ -434,5 +434,6 @@ var (
 	_ rest.Storage         = (*AllocatingIPPoolREST)(nil)
 	_ rest.Creater         = (*AllocatingIPPoolREST)(nil)
 	_ rest.GracefulDeleter = (*AllocatingIPPoolREST)(nil)
+	_ rest.Updater         = (*AllocatingIPPoolREST)(nil)
 	_ rest.Storage         = (*IPPoolStatusStorage)(nil)
 )

@@ -202,7 +202,22 @@ type IPAMServerOptions struct {
 	// resource-type informers cannot sync against a cluster that lacks the
 	// quota.miloapis.com CRDs, which would otherwise block readyz forever.
 	EnableQuota bool
+
+	// RetentionSweepInterval is how often the retention sweeper runs a pass.
+	// Zero disables it; anything else must be at least
+	// minRetentionSweepInterval.
+	RetentionSweepInterval time.Duration
+
+	// RetentionSweepMode is "observe", which counts what is due and releases
+	// nothing, or "enforce", which releases it.
+	RetentionSweepMode string
 }
+
+// minRetentionSweepInterval is the shortest interval between sweep passes. A
+// pass is a few short transactions, but every replica reads the retained set
+// for its gauges each pass, so a sub-second interval buys nothing and costs a
+// query loop.
+const minRetentionSweepInterval = time.Second
 
 func NewIPAMServerOptions() *IPAMServerOptions {
 	opts := &IPAMServerOptions{
@@ -210,8 +225,10 @@ func NewIPAMServerOptions() *IPAMServerOptions {
 			"/registry/ipam.miloapis.com",
 			ipamapiserver.Codecs.LegacyCodec(ipamapiserver.Scheme.PrioritizedVersionsAllGroups()...),
 		),
-		Logs:        logsapi.NewLoggingConfiguration(),
-		EnableQuota: true,
+		Logs:                   logsapi.NewLoggingConfiguration(),
+		EnableQuota:            true,
+		RetentionSweepInterval: time.Minute,
+		RetentionSweepMode:     string(allocator.SweepObserve),
 	}
 
 	// IPAM is a delegating aggregated apiserver — admission webhooks, policies,
@@ -239,6 +256,14 @@ func (o *IPAMServerOptions) AddFlags(fs *pflag.FlagSet) {
 		"Enforce Milo quota on resource creation (default true). Requires a reachable "+
 			"Milo quota backend via --kubeconfig; set false in environments without one "+
 			"(e.g. kind/dev, e2e) to avoid readyz blocking on quota informers.")
+
+	fs.DurationVar(&o.RetentionSweepInterval, "retention-sweep-interval", o.RetentionSweepInterval,
+		"How often the retention sweeper evaluates retained allocations' leases and acts on the ones that "+
+			"have run out. 0 disables it; otherwise at least 1s. One replica runs each pass.")
+	fs.StringVar(&o.RetentionSweepMode, "retention-sweep-mode", o.RetentionSweepMode,
+		"What the retention sweeper does with a retained allocation whose lease has run out: "+
+			"observe (count it in ipam_retention_releases_total{mode=\"observe\"} and release nothing) or "+
+			"enforce (release it).")
 }
 
 func (o *IPAMServerOptions) Complete() error { return nil }
@@ -246,6 +271,13 @@ func (o *IPAMServerOptions) Complete() error { return nil }
 func (o *IPAMServerOptions) Validate() error {
 	if o.PostgresDSN == "" {
 		return fmt.Errorf("--postgres-dsn is required")
+	}
+	if o.RetentionSweepInterval < 0 || (o.RetentionSweepInterval > 0 && o.RetentionSweepInterval < minRetentionSweepInterval) {
+		return fmt.Errorf("--retention-sweep-interval must be 0 (disabled) or at least %s, got %s",
+			minRetentionSweepInterval, o.RetentionSweepInterval)
+	}
+	if _, err := allocator.ParseSweepMode(o.RetentionSweepMode); err != nil {
+		return fmt.Errorf("--retention-sweep-mode: %w", err)
 	}
 	return nil
 }
@@ -421,14 +453,21 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		klog.InfoS("no client config: IPClaim namespace-liveness checking is disabled")
 	}
 
+	sweepMode, err := allocator.ParseSweepMode(o.RetentionSweepMode)
+	if err != nil {
+		return nil, fmt.Errorf("--retention-sweep-mode: %w", err)
+	}
+
 	return &ipamapiserver.Config{
 		GenericConfig: genericConfig,
 		ExtraConfig: ipamapiserver.ExtraConfig{
-			PrefixAllocator:  prefixAllocator,
-			AllocatorPool:    allocatorPool,
-			PoolChecker:      poolChecker,
-			ClassChecker:     classChecker,
-			NamespaceChecker: namespaceChecker,
+			PrefixAllocator:        prefixAllocator,
+			AllocatorPool:          allocatorPool,
+			PoolChecker:            poolChecker,
+			ClassChecker:           classChecker,
+			NamespaceChecker:       namespaceChecker,
+			RetentionSweepInterval: o.RetentionSweepInterval,
+			RetentionSweepMode:     sweepMode,
 		},
 	}, nil
 }

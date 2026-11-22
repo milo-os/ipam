@@ -406,8 +406,20 @@ func init() {
 		Reclaims,
 		CascadeLevels,
 		CascadeResolutionDuration,
+		RetainedAllocations,
+		RetainedOldestAge,
+		RetentionReleases,
+		RetentionSweepDuration,
+		RetentionSweepErrors,
+		RetentionSweepRowErrors,
+		RetentionLeaseUnevaluable,
+		RetentionCapApplyFailures,
+		RetentionSweepPoolsSkipped,
+		RetentionSweepLastSuccess,
+		RetentionSweepInterval,
 	)
 	legacyregistry.CustomMustRegister(poolGauges)
+	initRetentionSeries()
 }
 
 type dryRunKey struct{}

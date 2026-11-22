@@ -133,7 +133,11 @@ func humanDuration(t metav1.Time) string {
 	if t.IsZero() {
 		return "<unknown>"
 	}
-	d := time.Since(t.Time)
+	return shortDuration(time.Since(t.Time))
+}
+
+// shortDuration formats a span the way humanDuration formats an age.
+func shortDuration(d time.Duration) string {
 	if d < 0 {
 		d = 0
 	}

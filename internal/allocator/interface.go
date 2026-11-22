@@ -114,10 +114,11 @@ type PrefixAllocator interface {
 
 	// Release disposes of the allocations bound to claimKey according to the
 	// reclaim policy recorded on each row: Delete frees the address, Retain
-	// unbinds the claim and leaves the address held. It returns the
-	// allocation keys of the rows that were retained, so the caller can keep
-	// their IPAllocation objects instead of deleting them.
-	Release(ctx context.Context, tx pgx.Tx, claimKey string) ([]string, error)
+	// unbinds the claim, leaves the address held and fixes its retention
+	// lease. It returns the rows that were retained, so the caller can keep
+	// their IPAllocation objects instead of deleting them and publish each
+	// one's retention on it.
+	Release(ctx context.Context, tx pgx.Tx, claimKey string) ([]RetainedAllocation, error)
 
 	// ReleaseAllocation frees the allocation row identified by allocationKey
 	// whatever its claim binding. It is for server-side teardown that owns

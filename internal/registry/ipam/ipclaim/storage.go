@@ -813,8 +813,9 @@ func (r *AllocatingREST) releaseAndDelete(ctx context.Context, claim *ipam.IPCla
 	}
 	if claim.Status.BoundAllocationRef != nil && claim.Status.BoundAllocationRef.Name != "" {
 		allocationKey := allocationObjectKey(tenant.FromContext(ctx), claim.Namespace, claim.Status.BoundAllocationRef.Name)
-		if slices.Contains(retained, allocationKey) {
-			if err := r.unbindAllocation(ctx, tx, allocationKey); err != nil {
+		i := slices.IndexFunc(retained, func(ra allocator.RetainedAllocation) bool { return ra.AllocationKey == allocationKey })
+		if i >= 0 {
+			if err := r.unbindAllocation(ctx, tx, retained[i]); err != nil {
 				_ = tx.Rollback(ctx)
 				return false, err
 			}
@@ -833,11 +834,14 @@ func (r *AllocatingREST) releaseAndDelete(ctx context.Context, claim *ipam.IPCla
 	return len(retained) > 0, nil
 }
 
-// unbindAllocation clears spec.claimRef on a retained IPAllocation, in the
-// transaction that unbound its row. The update emits a MODIFIED event, so a
-// watcher sees the allocation become unbound rather than watching its claim
-// disappear and having to infer it.
-func (r *AllocatingREST) unbindAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error {
+// unbindAllocation clears spec.claimRef on a retained IPAllocation and
+// publishes its retention (retainedAt, expiresAt and the Retained condition),
+// in the transaction that unbound its row and fixed its lease. The update
+// emits a MODIFIED event, so a watcher sees the allocation become unbound, and
+// when it will be due for release, rather than watching its claim disappear
+// and having to infer it.
+func (r *AllocatingREST) unbindAllocation(ctx context.Context, tx pgx.Tx, retained allocator.RetainedAllocation) error {
+	allocationKey := retained.AllocationKey
 	data, err := r.allocator.GetObject(ctx, tx, allocationKey)
 	if err != nil {
 		if errors.Is(err, allocator.ErrObjectNotFound) {
@@ -856,6 +860,9 @@ func (r *AllocatingREST) unbindAllocation(ctx context.Context, tx pgx.Tx, alloca
 		return fmt.Errorf("expected *ipam.IPAllocation at %q, got %T", allocationKey, obj)
 	}
 	alloc.Spec.ClaimRef = nil
+	alloc.Status.RetainedAt = retained.RetainedAtTime()
+	alloc.Status.ExpiresAt = retained.ExpiresAtTime()
+	meta.SetStatusCondition(&alloc.Status.Conditions, retained.RetainedCondition())
 	unbound, err := runtime.Encode(r.codec, alloc)
 	if err != nil {
 		return fmt.Errorf("encode retained IPAllocation: %w", err)

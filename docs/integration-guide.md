@@ -83,6 +83,33 @@ Three consequences to plan around:
   retained addresses, so a reclaim is charged as a new claim: a project at its
   claim quota cannot reclaim until it deletes another claim.
 
+### Retention leases
+
+A retained address need not be held forever. The class's `retentionLease`, or
+the pool's `maxRetentionLease`, or the shorter of the two when both are set,
+bounds how long it stays retained. The deadline is fixed when the claim is
+deleted and is on the IPAllocation the moment the delete returns:
+
+```yaml
+status:
+  retainedAt: "2026-11-21T12:00:00Z"
+  expiresAt: "2026-11-21T13:00:00Z"
+  conditions:
+    - type: Retained
+      status: "True"
+      reason: LeaseActive
+```
+
+With no lease on either, `expiresAt` is absent and the reason is `NoLease`.
+Recreating the claim before the deadline reclaims the address and clears both
+timestamps.
+
+Leases are not yet enforced. Until they are, nothing is released at
+`expiresAt`, and an expired retained address stays held until its IPAllocation
+is deleted. Read `expiresAt` as the date the address will be released once
+enforcement is turned on (milo-os/ipam#107). Do not rely on it being held past
+that date.
+
 ## Hierarchical delegation
 
 When a consumer needs to delegate further (e.g. a regional block to be

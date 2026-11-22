@@ -56,6 +56,7 @@ The claim's CREATE response body contains the allocated CIDR.
 | `spec.allocation.maxPrefixLength` | int | no | Largest prefix a claim may request from this pool. |
 | `spec.allocation.strategy` | Strategy | no | How free blocks are chosen. |
 | `spec.visibility` | `platform` \| `consumer` \| `shared` | no | Who may allocate from the pool. |
+| `spec.maxRetentionLease` | duration | no | Caps how long any allocation of this pool may stay retained, whatever its class asks for; see [Retention leases](#retention-leases). Positive, at most `8760h`. Lowering it brings forward the deadlines of allocations the pool already retains; raising or removing it moves none back. |
 | `status.phase` | PoolPhase | — | Lifecycle phase. |
 | `status.allocatedCIDR` | CIDR string | — | Effective CIDR (declared for root pools, carved for child pools). |
 | `status.ipFamily` | IPFamily | — | Effective family. |
@@ -91,11 +92,40 @@ block.
 |-------|------|-------|
 | `spec.ipFamily` | IPFamily | Family of the allocated block. |
 | `spec.poolRef.name` | string | Pool the block was carved from. |
+| `spec.claimRef.name` | string | The claim holding the allocation; unset once its claim is deleted under `Retain`. |
 | `status.phase` | AllocationPhase | Lifecycle phase. |
 | `status.allocatedCIDR` | CIDR string | The allocated block. |
+| `status.retainedAt` | timestamp | When the claim was deleted under `Retain`. Unset while a claim holds the allocation. |
+| `status.expiresAt` | timestamp | When the retention lease runs out: retention plus the effective lease, rounded up to the whole second, so it is exactly when a release would happen and never before the full lease. Unset when no lease applies, and while a claim holds the allocation. Not yet enforced; see below. |
+| `status.conditions[type=Retained]` | Condition | `True` while retained, with reason `LeaseActive` (a deadline is set), `NoLease`, or `LeasePending` (the lease could not be evaluated at the delete; the sweeper evaluates it). `False`/`Reclaimed` once a recreated claim takes it back. |
 
 `IPAllocation` is namespace-scoped (`shortName: ipalloc`) and system-created; it
-records the block granted to an IPClaim.
+records the block granted to an IPClaim. Its status is written only by the
+server: `ipallocations/status` serves get and nothing else. Its table output has an `Expires`
+column: the time left on the lease, `never` with no lease, `<pending>` while
+unevaluated, and `<none>` while a claim holds it.
+
+## Retention leases
+
+An `IPClass` may set `spec.retentionLease` and an `IPPool`
+`spec.maxRetentionLease`. When a claim is deleted under `Retain`, the effective
+lease is the shorter of the two, and either alone applies if the other is
+unset. It is fixed at that moment and shown as `status.expiresAt` on the
+IPAllocation. Changing the class later does not move a deadline already set;
+lowering the pool's cap does, straight after the update and, should that
+attempt fail, on the retention sweeper's next pass. With neither set there is
+no deadline.
+
+**Leases are not yet enforced.** The apiserver's retention sweeper runs in
+observe mode: it evaluates leases, publishes `ipam_retained_allocations`, and
+counts each deadline as it passes in
+`ipam_retention_releases_total{mode="observe"}`, but releases nothing. A
+retained allocation past its `expiresAt` is still held until its IPAllocation
+is deleted or a recreated claim reclaims it. Creating or updating an object
+that sets a lease returns a warning saying so. Once enforcement is turned on
+(`--retention-sweep-mode=enforce`), an allocation whose lease has run out is
+released shortly after `expiresAt`: its IPAllocation is deleted and the address
+returns to the pool.
 
 ## Errors
 

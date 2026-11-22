@@ -457,10 +457,11 @@ type IPClassSpec struct {
 	// RetentionLease bounds how long an allocation of this class may stay
 	// retained after its claim is deleted, before the service releases it.
 	//
-	// Unset means no expiry: a retained address is held until something
-	// releases it explicitly. That is the default deliberately — shipping a
-	// lease that defaults to on would reclaim addresses in existing
-	// deployments that nobody asked to have reclaimed.
+	// Unset means no expiry: a retained address is held until its IPAllocation
+	// is deleted or a claim of the same name takes it back. That is the
+	// default deliberately — shipping a lease that defaults to on would
+	// reclaim addresses in existing deployments that nobody asked to have
+	// reclaimed.
 	//
 	// A claim cannot override this. A claim already overrides ReclaimPolicy;
 	// letting the holder also set its own expiry hands the scarce-space
@@ -468,7 +469,12 @@ type IPClassSpec struct {
 	// holder can extend indefinitely is not a lease.
 	//
 	// The effective lease is the shorter of this and the pool's
-	// MaxRetentionLease.
+	// MaxRetentionLease. It is fixed when the claim is deleted and shown as
+	// the IPAllocation's status.expiresAt; changing this field later does not
+	// move a deadline already set.
+	//
+	// Leases are not yet enforced: an allocation past its deadline is still
+	// held until it is released explicitly.
 	// +optional
 	RetentionLease *metav1.Duration `json:"retentionLease,omitempty"`
 
@@ -611,6 +617,13 @@ type IPPoolSpec struct {
 	// owns the scarcity rather than on the one that wants to consume it.
 	//
 	// Unset means the class's lease applies unchanged.
+	//
+	// Unlike a class's lease, lowering this applies to what the pool already
+	// retains: every deadline the new cap cuts short is brought forward to
+	// retention plus the cap. Raising or removing it moves no deadline back.
+	//
+	// Leases are not yet enforced: an allocation past its deadline is still
+	// held until it is released explicitly.
 	// +optional
 	MaxRetentionLease *metav1.Duration `json:"maxRetentionLease,omitempty"`
 
@@ -718,6 +731,7 @@ const (
 // +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.spec.poolRef.name`
 // +kubebuilder:printcolumn:name="Claim",type=string,JSONPath=`.spec.claimRef.name`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Expires",type=date,JSONPath=`.status.expiresAt`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +genclient
 
@@ -727,8 +741,10 @@ const (
 // An allocation may outlive the claim that created it: a claim released under
 // ReclaimPolicy Retain leaves its allocation in place with ClaimRef cleared,
 // still held and still counted against its holder. A claim created again under
-// the same name in the same namespace takes it back; otherwise it is held until
-// something releases it explicitly.
+// the same name in the same namespace takes it back. Its retention lease, if
+// its class or pool sets one, is fixed when the claim is deleted and shown as
+// status.expiresAt. Leases are not yet enforced: until they are, a retained
+// allocation is held past that deadline until it is released explicitly.
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type IPAllocation struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -791,11 +807,55 @@ type IPAllocationStatus struct {
 	// server — the value uniqueness is enforced on.
 	// +optional
 	ScopeDigest string `json:"scopeDigest,omitempty"`
+	// RetainedAt is when the claim this allocation was bound to was deleted
+	// under reclaimPolicy Retain. Unset while a claim holds the allocation,
+	// and cleared when a recreated claim reclaims it.
+	// +optional
+	RetainedAt *metav1.Time `json:"retainedAt,omitempty"`
+	// ExpiresAt is when the retention lease of a retained allocation runs
+	// out: retention plus the shorter of its class's retentionLease and its
+	// pool's maxRetentionLease, rounded up to the whole second and fixed at
+	// retention. It is exactly when a release would happen, and never before
+	// the full lease. Lowering the pool's
+	// maxRetentionLease later brings it forward; nothing pushes it back.
+	// Unset when no lease applies, and while a claim holds the allocation.
+	//
+	// Leases are not yet enforced: an allocation past this deadline is still
+	// held until its IPAllocation is deleted or a recreated claim reclaims it.
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+	// Conditions include Retained, which is True while the allocation is
+	// held with no claim (reason LeaseActive, NoLease or LeasePending) and
+	// False once a recreated claim takes it back (reason Reclaimed).
+	//
+	// Status is written only by the server; the status subresource is
+	// read-only.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
+
+// The condition an IPAllocation reports its retention by, and its reasons.
+const (
+	// AllocationConditionRetained is True while the allocation is held with
+	// no claim bound to it, and False once a recreated claim reclaims it.
+	AllocationConditionRetained = "Retained"
+
+	// RetainedReasonLeaseActive: retained, with a lease that runs out at
+	// status.expiresAt.
+	RetainedReasonLeaseActive = "LeaseActive"
+	// RetainedReasonNoLease: retained, and neither the class nor the pool
+	// sets a lease, so nothing will release it on a schedule.
+	RetainedReasonNoLease = "NoLease"
+	// RetainedReasonLeasePending: retained, but the lease could not be
+	// evaluated when the claim was deleted. The retention sweeper evaluates
+	// it on its next pass.
+	RetainedReasonLeasePending = "LeasePending"
+	// RetainedReasonReclaimed: a claim recreated under the retaining claim's
+	// name took the allocation back.
+	RetainedReasonReclaimed = "Reclaimed"
+)
 
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

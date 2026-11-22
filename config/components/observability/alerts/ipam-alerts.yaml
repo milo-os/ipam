@@ -454,3 +454,92 @@ spec:
               of magnitude faster; this latency is charged to every claim before allocation
               starts, and consumes the claim latency SLO budget.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-cascade-provisioning.md"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Retention leases — the sweeper that evaluates and acts on retained
+    # allocations' leases, and the retained set it reports. Backed by
+    # internal/metrics/retention.go.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: ipam-retention
+      interval: 1m
+      rules:
+        - alert: IPAMRetentionSweeperStalled
+          # One replica takes each pass under an advisory lock, so only it
+          # stamps the success timestamp: take the max across replicas. The
+          # threshold scales with the configured interval, and a deployment
+          # that disables the sweeper (interval 0) is not alerted on.
+          expr: |
+            (
+              time() - max(ipam_retention_sweep_last_success_timestamp_seconds)
+              > 5 * max(ipam_retention_sweep_interval_seconds)
+            )
+            and on() max(ipam_retention_sweep_interval_seconds) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: retention
+          annotations:
+            summary: "IPAM retention sweeper has not completed a pass for {{ $value | humanizeDuration }}"
+            description: |
+              No replica has completed a retention sweep pass for more than five sweep
+              intervals. A pass that carries on past a failed pool or row still completes, so
+              this means passes are not running or are failing outright. Retained allocations
+              whose lease has run out are not being released (enforce mode) or counted
+              (observe mode), and leases left unevaluated stay unevaluated.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-sweeper-stalled.md"
+
+        - alert: IPAMRetentionRowsStuck
+          # The stall alert only sees passes that do not complete. A pass that
+          # completes past rows it cannot act on (a release or a lease that
+          # fails, a class that cannot be read, a pool cap an update could not
+          # apply) counts them instead, and retries them every pass, so a
+          # count still rising after 30 minutes is a row that will not move
+          # on its own. "or vector(0)" keeps one absent counter from hiding
+          # the others.
+          expr: |
+            (
+              (sum(increase(ipam_retention_sweep_row_errors_total[30m])) or vector(0))
+              + (sum(increase(ipam_retention_lease_unevaluable_total[30m])) or vector(0))
+              + (sum(increase(ipam_retention_cap_apply_failures_total[30m])) or vector(0))
+            ) > 0
+          for: 30m
+          labels:
+            severity: warning
+            service: ipam
+          annotations:
+            summary: "IPAM retention sweeper keeps failing on some retained allocations ({{ $value | humanize }} in 30m)"
+            description: |
+              For the last 30 minutes the retention sweeper has kept counting retained
+              allocations it could not act on: releases or lease writes that failed, leases
+              whose class cannot be read, or pool caps an IPPool update could not apply. Those
+              allocations stay held, with their old deadline or none, and are retried every
+              pass; the rest of the retained set is swept normally.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-rows-stuck.md"
+
+        - alert: IPAMRetainedWithoutLeaseRising
+          # lease="none" is the leak meter: retained addresses nothing will ever
+          # release on a schedule. Every replica publishes the same count, so
+          # max() is the count, not a sum of copies. Evaluated per family, so a
+          # fall in one cannot hide a rise in the other. The threshold is a
+          # tenth growth over a day, on at least 50 addresses, so ordinary
+          # Retain traffic on classes with no lease does not trip it; this is a
+          # capacity trend for business hours, not a page, and not an SLO.
+          expr: |
+            max by (ip_family) (ipam_retained_allocations{lease="none"})
+            > 1.1 * max by (ip_family) (ipam_retained_allocations{lease="none"} offset 24h)
+            and
+            max by (ip_family) (ipam_retained_allocations{lease="none"})
+            - max by (ip_family) (ipam_retained_allocations{lease="none"} offset 24h) >= 50
+          for: 6h
+          labels:
+            severity: warning
+            service: ipam
+          annotations:
+            summary: "IPAM {{ $labels.ip_family }} addresses retained with no lease grew over the last 24h (now {{ $value }})"
+            description: |
+              The number of {{ $labels.ip_family }} claim allocations retained with no retention
+              lease is more than a tenth, and at least 50, above what it was 24 hours ago, and
+              has been for 6 hours. These addresses stay held until someone releases them by
+              hand; on a scarce range they are capacity that does not come back.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-without-lease-rising.md"

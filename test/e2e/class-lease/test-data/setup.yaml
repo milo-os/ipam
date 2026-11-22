@@ -1,0 +1,62 @@
+# The class asks for 2h; its pool caps retention at 1h, so the effective lease
+# is the pool's.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: cl-leased
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Retain
+  retentionLease: 2h
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: cl-capped
+spec:
+  cidr: 10.206.0.0/28
+  ipFamily: IPv4
+  visibility: consumer
+  maxRetentionLease: 1h
+  classNames:
+    - cl-leased
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+# Neither this class nor its pool sets a lease.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: cl-unleased
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: cl-open
+spec:
+  cidr: 10.206.1.0/28
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - cl-unleased
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
