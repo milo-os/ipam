@@ -270,3 +270,45 @@ func TestAChainedClassOverrideWithNoLeaseProvisionsNothing(t *testing.T) {
 		t.Errorf("override into the capped leaf: %v", err)
 	}
 }
+
+// A lease stored before validation refused one, 0s or negative, is no lease,
+// as it is when the retention is evaluated. An override under it is refused.
+func TestARetainOverrideUnderANonPositiveStoredLeaseIsRefused(t *testing.T) {
+	for name, lease := range map[string]time.Duration{"zero": 0, "negative": -time.Hour} {
+		t.Run(name, func(t *testing.T) {
+			r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimDelete)
+			seedNamedClass(t, db, "standard", ipamv1alpha1.IPClassSpec{
+				IPFamily: ipamv1alpha1.IPv4, DefaultPrefixLength: 24,
+				ReclaimPolicy: ipamv1alpha1.ReclaimDelete, RetentionLease: &metav1.Duration{Duration: lease},
+			})
+			claim := retainClaim("claim-1", ipam.ReclaimRetain)
+			_, err := r.Create(claimCtx(testProject), claim.DeepCopy(), nil, &metav1.CreateOptions{})
+			expectLeaseRequired(t, err, "us-east")
+			assertNothingAllocated(t, db, claim)
+		})
+	}
+}
+
+// A generated name is refused like any other: the guard is about the policy,
+// not the name, and a refusal is not a name collision to draw again.
+func TestAGeneratedNameWithAnUnleasedOverrideIsRefused(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimDelete)
+	ctx := claimCtx(testProject)
+	claim := retainClaim("", ipam.ReclaimRetain)
+	claim.GenerateName = "web-"
+
+	_, err := r.Create(ctx, claim.DeepCopy(), nil, &metav1.CreateOptions{})
+	expectLeaseRequired(t, err, "us-east")
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations WHERE purpose = 'Claim'`); n != 0 {
+		t.Errorf("a refused generated-name claim left %d allocation rows", n)
+	}
+
+	withLeasedDeleteClass(t, db)
+	obj, err := r.Create(ctx, claim.DeepCopy(), nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("generated-name override under a class lease: %v", err)
+	}
+	if got := obj.(*ipam.IPClaim).Name; !strings.HasPrefix(got, "web-") {
+		t.Errorf("claim name = %q, want one generated from web-", got)
+	}
+}
