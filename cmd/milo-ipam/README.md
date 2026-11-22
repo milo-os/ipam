@@ -142,7 +142,8 @@ Exit codes are a contract:
   different class or scope is refused rather than silently answered.
 - Releasing a claim under reclaim policy `Retain` leaves its allocation held.
   Creating the claim again under the same name takes the address back, if it
-  asks for the same class, scope and size. `allocation list --unclaimed` is the
+  resolves to the same class, scope and pool and asks for the same size;
+  `claim create` names the field that differs otherwise. `allocation list --unclaimed` is the
   leak check; `allocation release` is the deliberate hand-back.
 
 ## Plugin manifest

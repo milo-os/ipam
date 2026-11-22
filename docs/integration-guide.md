@@ -47,6 +47,38 @@ Releasing is just `kubectl delete ipprefixclaim my-service-prefix`. With
 `reclaimPolicy: Delete`, the underlying allocation row is removed and the
 CIDR returns to the parent's pool.
 
+### Reclaiming a retained address
+
+With `reclaimPolicy: Retain` the address stays held after the claim is deleted.
+Creating a claim of the same name in the same namespace and project takes it
+back, synchronously, even from a pool with no free block left. It is handed
+back only on the terms it was held under:
+
+- the same class: the same defining project and name, so a local class
+  replaced by a reference to another project's class of that name is another
+  class;
+- the same address family and the address scope the class had when the address
+  was handed out;
+- the same address space under the class's `uniqueWithin`;
+- a pool the claim would be placed in now: one that still offers the class and
+  serves the claim's scope, or for a chained class the pool its chain resolves
+  to for that scope (another `location`, for a class with `poolPer:
+  [location]`, is another pool);
+- the same prefix length, or none stated, and the same address if one is named.
+
+Anything else is a 409 with reason `RetainedAllocationMismatch`, naming the
+IPAllocation and the field. Recreate on the retained terms, or delete the
+IPAllocation to release the address and claim afresh.
+
+Two consequences to plan around:
+
+- Scope references match by `apiGroup`, `kind` and `name`. A network deleted and
+  recreated under the same name is the same scope, and a claim naming it
+  reclaims the address the old network's claim retained.
+- Until milo-os/milo#1028 lands, quota is charged on claims and not on
+  retained addresses, so a reclaim is charged as a new claim: a project at its
+  claim quota cannot reclaim until it deletes another claim.
+
 ## Hierarchical delegation
 
 When a consumer needs to delegate further (e.g. a regional block to be

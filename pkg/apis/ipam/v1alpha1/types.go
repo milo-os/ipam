@@ -947,12 +947,22 @@ type IPClaimSpec struct {
 	// ReclaimPolicy overrides the class default for this claim.
 	//
 	// Under Retain, deleting the claim leaves its address held. Creating a
-	// claim of the same name in the same namespace takes that address back,
-	// provided it asks for the same class, scope, address family, prefix length
-	// and, if it names one, address; a claim that states no prefix length takes
+	// claim of the same name in the same namespace and project takes that
+	// address back, provided it resolves to the same class (the same defining
+	// project and name), address family and address scope; its scope projects
+	// onto the class's uniqueWithin as before; the pool holding the address is
+	// one this claim would be placed in now; and its prefix length and, if it
+	// names one, its address agree. A claim that states no prefix length takes
 	// the retained one. A claim that differs on any of them is refused with
-	// reason RetainedAllocationMismatch rather than given a second address.
-	// The recreated claim's own reclaim policy applies from then on.
+	// reason RetainedAllocationMismatch naming the field, rather than given a
+	// second address. The recreated claim's own reclaim policy applies from
+	// then on.
+	//
+	// Scope references are compared by apiGroup, kind and name, not by object
+	// identity: a network deleted and recreated under the same name is the
+	// same scope, and a claim naming it reclaims. Until quota counts retained
+	// addresses (milo-os/milo#1028), a reclaim is charged as a new claim, so a
+	// project at its claim quota cannot reclaim.
 	// +optional
 	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
 

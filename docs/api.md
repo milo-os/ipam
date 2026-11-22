@@ -74,7 +74,7 @@ The claim's CREATE response body contains the allocated CIDR.
 | `spec.prefixLength` | int (0–128) | yes | Requested sub-prefix size; must be valid for the family and within the pool's min/max. |
 | `spec.poolRef` | NamespacedRef | one of | Pin to a specific pool (optionally in another project via `projectRef`). |
 | `spec.poolSelector` | PoolSelector | one of | Pick a pool by labels (optionally scoped by `projectRef`). |
-| `spec.reclaimPolicy` | ReclaimPolicy | no | `Delete` (default) or `Retain` the allocation when the claim is deleted. A claim recreated under the same name takes a retained address back if it asks for the same class, scope, family, size and address; otherwise 409 `RetainedAllocationMismatch`. Immutable. |
+| `spec.reclaimPolicy` | ReclaimPolicy | no | `Delete` (default) or `Retain` the allocation when the claim is deleted. A claim recreated under the same name, namespace and project takes a retained address back if it resolves to the same class (defining project and name), family and address scope, the same uniqueWithin address space, a pool it would be placed in now, and the same size and address; otherwise 409 `RetainedAllocationMismatch` naming the field. Scope refs match by apiGroup/kind/name, so a network recreated under the same name reclaims. A reclaim is a create and counts against claim quota (milo-os/milo#1028). Immutable. |
 | `spec.ownerRef` | ObjectRef | no | Opaque `{apiGroup, kind, namespace, name}` consumer reference. |
 | `status.phase` | ClaimPhase | — | `Bound` after synchronous allocation. |
 | `status.allocatedCIDR` | CIDR string | — | Set on `Bound`. |
