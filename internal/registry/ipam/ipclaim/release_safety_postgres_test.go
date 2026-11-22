@@ -211,3 +211,29 @@ func isDeadlock(err error) bool {
 	}
 	return strings.Contains(err.Error(), "40P01") || strings.Contains(err.Error(), "deadlock")
 }
+
+// An IPAllocation with no row behind it could take the name a future claim's
+// allocation needs, so the endpoint does not offer create: the installer
+// advertises and routes the verb only for storage that implements it.
+func TestTheAllocationEndpointOffersNoCreate(t *testing.T) {
+	_, allocREST, _ := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	if _, ok := any(allocREST).(rest.Creater); ok {
+		t.Error("IPAllocation storage implements rest.Creater; allocations must be written only by their claim")
+	}
+	for name, ok := range map[string]bool{
+		"Getter":          implements[rest.Getter](allocREST),
+		"Lister":          implements[rest.Lister](allocREST),
+		"Watcher":         implements[rest.Watcher](allocREST),
+		"Updater":         implements[rest.Updater](allocREST),
+		"GracefulDeleter": implements[rest.GracefulDeleter](allocREST),
+	} {
+		if !ok {
+			t.Errorf("IPAllocation storage no longer implements rest.%s", name)
+		}
+	}
+}
+
+func implements[T any](v any) bool {
+	_, ok := v.(T)
+	return ok
+}
