@@ -55,10 +55,14 @@ type RetainedAllocation struct {
 // The pool caps even a class that states no lease. The pool is the thing that
 // runs out, so an operator hardening a scarce range does not have to find and
 // edit every class that draws from it.
+//
+// A lease that is not positive counts as unset. Validation refuses one now,
+// but an object stored before it did may still hold one, and reading "0s" or
+// "-1h" as a lease would make every allocation it covers due at once.
 func EffectiveLease(classLease, poolCap *metav1.Duration) *time.Duration {
 	var out *time.Duration
 	for _, d := range []*metav1.Duration{classLease, poolCap} {
-		if d == nil {
+		if d == nil || d.Duration <= 0 {
 			continue
 		}
 		if out == nil || d.Duration < *out {
@@ -132,7 +136,12 @@ func leaseFor(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, poolKey
 }
 
 // writeLease stores the deadline lease gives a retained row and returns the
-// row's retention as stored. It writes only a row that is still retained and
+// row's retention as stored.
+//
+// The deadline is measured from the whole second of retention. The API reports
+// both instants to the second, so this makes status.expiresAt exactly the
+// instant the sweeper acts on, and expiresAt minus retainedAt exactly the
+// lease, rather than each a fraction of a second off. It writes only a row that is still retained and
 // not yet evaluated, so it can neither give a bound row a deadline nor move one
 // already fixed; changed is false when it wrote nothing. The caller holds the
 // row's pool locked.
@@ -149,7 +158,7 @@ func writeLease(ctx context.Context, tx pgx.Tx, allocationKey string, lease *tim
 	)
 	err := tx.QueryRow(ctx,
 		`UPDATE ipam_cidr_allocations
-		    SET expires_at = COALESCE(retained_at + $2::bigint * interval '1 microsecond', 'infinity')
+		    SET expires_at = COALESCE(date_trunc('second', retained_at) + $2::bigint * interval '1 microsecond', 'infinity')
 		  WHERE allocation_key = $1 AND claim_key IS NULL AND purpose = 'Claim'
 		    AND retained_at IS NOT NULL AND expires_at IS NULL
 		 RETURNING retained_at, expires_at`, allocationKey, micros,

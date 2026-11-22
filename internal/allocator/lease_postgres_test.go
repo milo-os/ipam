@@ -132,7 +132,7 @@ func TestRetentionFixesTheShorterLease(t *testing.T) {
 			if stored.Lease != LeaseFinite {
 				t.Fatalf("lease = %s, want finite", stored.Lease)
 			}
-			if d := stored.ExpiresAt.Sub(stored.RetainedAt); d != *tc.want {
+			if d := leaseOf(stored); d != *tc.want {
 				t.Errorf("expires_at - retained_at = %s, want %s", d, *tc.want)
 			}
 		})
@@ -140,6 +140,12 @@ func TestRetentionFixesTheShorterLease(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// leaseOf is the lease a stored deadline gives, measured as the API reports
+// it: from the whole second of retention.
+func leaseOf(r RetainedAllocation) time.Duration {
+	return r.ExpiresAt.Sub(r.RetainedAt.Truncate(time.Second))
+}
 
 // A class that cannot be read leaves the lease for the sweeper and does not
 // fail the delete: the claim goes either way.
@@ -196,7 +202,7 @@ func TestRebindingClearsTheDeadline(t *testing.T) {
 
 	// And the next retention is measured afresh.
 	second := releaseRetained(t, db, "claim-a2")
-	if len(second) != 1 || second[0].Lease != LeaseFinite || second[0].ExpiresAt.Sub(second[0].RetainedAt) != time.Hour {
+	if len(second) != 1 || second[0].Lease != LeaseFinite || leaseOf(second[0]) != time.Hour {
 		t.Errorf("second retention = %+v, want a fresh one-hour lease", second)
 	}
 }
