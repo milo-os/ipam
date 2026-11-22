@@ -109,7 +109,7 @@ IPAllocation releases its address, and it is refused with 409 while a claim is b
 | Has a lease deadline (`status.expiresAt` set, running or passed) | IPAM Consumer (`ipallocations.delete`) or IPAM Admin |
 | No lease deadline (`expiresAt` unset: reason `NoLease`, or `LeasePending` while unevaluated) | IPAM Admin only (`ipallocations.release-unleased`, on top of delete) |
 
-An address held with no deadline is held on purpose, typically because whatever owned it, such as a VPC or a subnet whose class retains by default with no lease, still uses it; freeing it would let the next claim take an address in use. The server checks `release-unleased` itself, against the row it is about to delete and under the locks it deletes it under, and refuses a caller without it with 403. A server with no authorizer configured refuses every such release. Its table output has an `Expires`
+An address held with no deadline is held on purpose, typically because whatever owned it, such as a VPC or a subnet whose class retains by default with no lease, still uses it; freeing it would let the next claim take an address in use. The server checks `release-unleased` itself, against the row it is about to delete and under the locks it deletes it under, and refuses a caller without it with 403. A server with no authorizer configured refuses every such release. The same permission is needed to take such an address back under `reclaimPolicy: Delete`: recreating the claim under its own name with a `Delete` policy, its own or its class's, would free the address when that claim is deleted. Without it the create is refused with 403 and the allocation stays retained; a reclaim under `Retain`, or of an address with a lease deadline, needs nothing more than creating the claim. A dry run is answered the same way. Its table output has an `Expires`
 column: the time left on the lease, `never` with no lease, `<pending>` while
 unevaluated, and `<none>` while a claim holds it.
 
@@ -165,7 +165,7 @@ returns to the pool.
 | HTTP | Reason |
 |------|--------|
 | 400 | Validation error (invalid CIDR, length out of bounds) |
-| 403 | RBAC denial, or releasing a retained IPAllocation that has no lease deadline without `ipallocations.release-unleased` |
+| 403 | RBAC denial, or releasing a retained IPAllocation that has no lease deadline, or reclaiming one under `reclaimPolicy: Delete`, without `ipallocations.release-unleased` |
 | 404 | No such pool/prefix, or not visible in the caller's project |
 | 409 | Conflict (name or block already exists) |
 | 422 | Invalid (an immutable field changed; `RetentionLeaseRequired`: a `Retain` override with no lease to bound it) |
