@@ -557,11 +557,15 @@ local retainedOverduePanel = common.tsPanel(
   [
     {
       expr: 'max by (ip_family) (ipam_retained_overdue_allocations{%(sel)s})' % { sel: ipamSel },
-      legend: '{{ip_family}}',
+      legend: '{{ip_family}} overdue',
+    },
+    {
+      expr: 'max by (ip_family) (ipam_retained_late_allocations{%(sel)s})' % { sel: ipamSel },
+      legend: '{{ip_family}} late (> 5 intervals)',
     },
   ],
   unit='short',
-  description='Retained allocations past their lease deadline and due for release. In enforce mode it should fall to zero within a pass or two of each deadline; after a switch from observe it falls by up to 2000 (the per-pass budget) each interval. In observe mode it only grows, since nothing is released.'
+  description='Retained allocations past their lease deadline and due for release (overdue), and those past it by more than five sweep intervals (late). In enforce mode overdue should fall to zero within a pass or two of each deadline and late should stay at zero; after a switch from observe both fall by up to 2000 (the per-pass budget) each interval. IPAMRetentionReleasesStalled fires when late stops falling. In observe mode both only grow, since nothing is released.'
 );
 
 local retainedOldestOverduePanel = common.tsPanel(
@@ -577,14 +581,14 @@ local retainedOldestOverduePanel = common.tsPanel(
     },
   ],
   unit='s',
-  description='How long the most overdue retained allocation of each family has been past its deadline; 0 when none is due. IPAMRetentionReleasesStalled fires in enforce mode when this stays above five intervals and the overdue count has not fallen in 30 minutes.'
+  description='How long the most overdue retained allocation of each family has been past its deadline; 0 when none is due. Above the threshold line, the row counts as late.'
 );
 
 local retentionModePanel = common.statPanel(
-  'Sweeper enforcing',
-  'min(ipam_retention_sweep_enforcing{%(sel)s})' % { sel: ipamSel },
-  unit='none',
-  description='1 when every replica runs the sweeper in enforce mode; 0 when any is in observe mode or the sweeper is disabled. Any replica that wins the sweep lock runs the pass in its own mode.'
+  'Replicas enforcing',
+  'sum(ipam_retention_sweep_enforcing{%(sel)s}) / count(ipam_retention_sweep_enforcing{%(sel)s})' % { sel: ipamSel },
+  unit='percentunit',
+  description='Share of replicas running the sweeper in enforce mode. 100%: all enforce. 0%: all observe, or the sweeper is disabled. In between: some replica is in observe mode, and any replica that wins the sweep lock runs the pass in its own mode. IPAMRetentionReleasesStalled is armed while any replica enforces.'
 );
 
 // ─────────────────────────────────────────────────────────────────────────────

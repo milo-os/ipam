@@ -152,7 +152,7 @@ and remove the pin when it is ready to switch.
 An owner who still needs an address that is due can recreate the claim under
 the same name before the switch; that reclaims it and clears its deadline.
 After the switch, `ipam_retention_releases_total{mode="enforce"}` should jump
-by about the backlog and then settle to the observe rate. `ipam_retained_overdue_allocations` should fall by up to
-2000 a pass until it reaches zero. If it stops falling while rows are still
-due, [`IPAMRetentionReleasesStalled`](ipam-retention-releases-stalled.md)
-fires.
+by about the backlog and then settle to the observe rate. `ipam_retained_overdue_allocations` and
+`ipam_retained_late_allocations` should fall by up to 2000 a pass until they
+reach zero. If the late count stops falling while rows are still late,
+[`IPAMRetentionReleasesStalled`](ipam-retention-releases-stalled.md) fires.

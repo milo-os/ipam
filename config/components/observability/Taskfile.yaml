@@ -10,7 +10,8 @@ version: '3'
 #                        is detected — wire into CI to enforce sources-of-truth.
 # - verify-alerts       : run `promtool check rules` against the PrometheusRule
 #                        manifest so we catch PromQL syntax errors before they
-#                        ship to Alertmanager.
+#                        ship to Alertmanager, then `promtool test rules` on
+#                        alerts/tests/ against the same extracted rules.
 # - verify-manifests    : kustomize build | kubeconform --strict — validates
 #                        every rendered Kubernetes manifest against its schema.
 #
@@ -27,6 +28,7 @@ vars:
   JSONNET_DIR: "dashboards/jsonnet"
   GENERATED_DIR: "dashboards/generated"
   ALERTS_FILE: "alerts/ipam-alerts.yaml"
+  ALERT_TESTS_DIR: "alerts/tests"
   COMPONENT_DIR: "."
   # Pin to go-jsonnet / jb installed under $GOPATH/bin to avoid surprises from
   # whatever the user has on $PATH (the C++ brew jsonnet hangs on grafonnet).
@@ -166,7 +168,7 @@ tasks:
         echo "Generated dashboards are up to date."
 
   verify-alerts:
-    desc: Validate PrometheusRule alert syntax with promtool
+    desc: Validate PrometheusRule alert syntax and run the alert unit tests with promtool
     deps: [install-tooling]
     cmds:
       - |
@@ -175,8 +177,12 @@ tasks:
         # promtool understands the inner `groups:` document but our alert
         # file is wrapped in a PrometheusRule CR. Strip the CR wrapper to
         # the spec, leaving promtool with the bare `groups:` it expects.
-        tmp=$(mktemp -t ipam-alerts.XXXXXX)
-        trap 'rm -f "$tmp"' EXIT
+        # The tests name the extracted file ipam-alerts.rules.yaml and are
+        # copied next to it, since promtool resolves rule_files from the
+        # test file's directory.
+        tmpdir=$(mktemp -d -t ipam-alerts.XXXXXX)
+        trap 'rm -rf "$tmpdir"' EXIT
+        tmp="$tmpdir/ipam-alerts.rules.yaml"
         # Use yq if available for robust extraction; otherwise fall back to
         # awk (the file is hand-curated and the layout is stable).
         if command -v yq >/dev/null 2>&1; then
@@ -189,6 +195,12 @@ tasks:
           ' "{{.ALERTS_FILE}}" > "$tmp"
         fi
         "{{.PROMTOOL_BIN}}" check rules "$tmp"
+        for test in {{.ALERT_TESTS_DIR}}/*.yaml; do
+          [ -f "$test" ] || continue
+          echo "promtool test rules $test"
+          cp "$test" "$tmpdir/"
+          "{{.PROMTOOL_BIN}}" test rules "$tmpdir/$(basename "$test")"
+        done
 
   verify-manifests:
     desc: Validate rendered Kubernetes manifests with kubeconform

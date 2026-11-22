@@ -7,16 +7,16 @@
 ## What this alert means
 
 The retention sweeper is in enforce mode and its passes complete. Even so,
-for 15 minutes:
-
-- a retained allocation of this family has been past its lease deadline for
-  more than five sweep intervals, and
-- the number of retained allocations past their deadline has not fallen over
-  the last 30 minutes.
+retained allocations of this family are **late**: more than five sweep
+intervals past their lease deadline. Their number has not fallen: the
+lowest late count of the last 15 minutes is no lower than the lowest of the
+15 minutes before. That has held for 30 minutes, so in practice rows have
+been late for about 45 minutes before it fires.
 
 A healthy enforcing sweep releases a row within about one interval of its
-deadline. Here, due rows are being left held while the sweeper reports that
-it is working. Their addresses do not go back to their pools.
+deadline, so the late count is zero however many rows fall due. Here, due
+rows are being left held while the sweeper reports that it is working. Their
+addresses do not go back to their pools.
 
 Two sibling alerts cover the other ways releases stop.
 [`IPAMRetentionSweeperStalled`](ipam-retention-sweeper-stalled.md) fires when
@@ -26,22 +26,48 @@ the sweeper counts rows it failed to act on; the two can fire together.
 
 This alert does not fire for a backlog that is draining. After a switch from
 observe to enforce, rows overdue by days are released at the pass's row
-budget (2000 rows), oldest deadline first, one interval apart. The overdue
-count falls on every pass, so the alert holds off however large the backlog
-is. If rows are left behind once the drain ends, it fires then.
+budget (2000 rows), oldest deadline first, one interval apart. The late count
+falls on every pass, so the alert holds off however large the backlog is. If
+rows are left behind once the drain ends, it fires about 45 minutes later.
 
 It never fires in observe mode, where due rows are counted and held by
 design, or when the sweeper is disabled.
 
+### Limits
+
+- **Rollouts.** Any replica that wins the sweep lock runs the pass in its own
+  mode, and the alert is armed while any replica enforces. A switch to
+  enforce whose rollout leaves an observe replica winning the lock for more
+  than about 30 minutes can fire it. Finish the rollout; the alert clears
+  as the backlog drains.
+- **Replicas whose read fails.** Each replica reads the retained set at the
+  start of every pass. If the read fails, the replica keeps its previous
+  gauges and its pass still completes; the failure is counted in
+  `ipam_retention_sweep_errors_total` and logged as `Could not read the
+  retained set; keeping the previous gauges`. The alert ignores a replica
+  whose `ipam_retained_gauges_last_success_timestamp_seconds` is more than
+  three intervals old (five minutes at least), so a frozen replica neither
+  fires it nor hides it. If every replica's read fails, the alert has no
+  data and stays silent; the database is then failing for the sweeper too,
+  and the error counter and the database alerts show it.
+- **Long intervals.** The two 15-minute windows each need a pass in them, so
+  the alert is meant for sweep intervals under 15 minutes. The default is 1m.
+
 ## Source signals
 
+- `ipam_retained_late_allocations{ip_family}`: retained allocations more
+  than five sweep intervals past their deadline. The alert is computed from
+  this count.
 - `ipam_retained_oldest_overdue_seconds{ip_family}`: how long the most
   overdue retained allocation has been past its deadline, by the database
-  clock; 0 when none is due (max across replicas)
-- `ipam_retained_overdue_allocations{ip_family}`: retained allocations past a
-  finite deadline, which the next enforcing pass should release
-- `ipam_retention_sweep_enforcing`: 1 in enforce mode, 0 in observe mode or
-  when disabled
+  clock; 0 when none is due. It is the alert's value.
+- `ipam_retained_overdue_allocations{ip_family}`: all retained allocations
+  past a finite deadline, which the next enforcing pass should release. It
+  churns as rows fall due between passes, so the alert does not use it.
+- `ipam_retained_gauges_last_success_timestamp_seconds`: per replica, when
+  its read of the retained set last succeeded
+- `ipam_retention_sweep_enforcing`: per replica, 1 in enforce mode, 0 in
+  observe mode or when disabled
 - `ipam_retention_sweep_interval_seconds`: the configured interval
 - `ipam_retention_releases_total{mode="enforce"}`: releases made
 - `ipam_retention_sweep_pools_skipped_total`: pools a pass left because a
@@ -51,9 +77,10 @@ design, or when the sweeper is disabled.
   `poolsSkipped`, `errors` and `rowErrors` per pass), `Retention sweep of a pool failed`
 - Traces: span `ipam.retention.sweep`, with an `ipam.retention.sweep_pool`
   child per pool transaction
-- Provider dashboard → "Retention leases" row, "Overdue retained allocations"
+- Provider dashboard → "Retention leases" row: "Overdue retained
+  allocations", "Most overdue retained allocation", "Replicas enforcing"
 
-All of these gauges come from the one read of the retained set that every
+The retained gauges come from the one read of the retained set that every
 replica makes at the start of each pass. They use the same predicate as the
 query the sweeper releases from: `claim_key IS NULL`, `purpose = 'Claim'`,
 `retained_at IS NOT NULL`, `expires_at <= now()`.
@@ -63,7 +90,7 @@ query the sweeper releases from: `claim_key IS NULL`, `purpose = 'Claim'`,
 1. **Is the sweeper releasing anything?**
    `sum(increase(ipam_retention_releases_total{mode="enforce"}[30m]))`.
    - Zero: no release is happening at all. Go to step 2.
-   - Non-zero, with the overdue count flat or rising: releases are happening
+   - Non-zero, with the late count flat or rising: releases are happening
      but not reaching every due row, or not keeping up. Go to step 3.
 
 2. **Is the replica that holds the lock in enforce mode?**
@@ -74,8 +101,8 @@ query the sweeper releases from: `claim_key IS NULL`, `purpose = 'Claim'`,
    kubectl -n ipam-system get pods -l app.kubernetes.io/name=ipam \
      -o custom-columns=POD:.metadata.name,MODE:'.spec.containers[0].env[?(@.name=="RETENTION_SWEEP_MODE")].value'
    ```
-   Also query `ipam_retention_sweep_enforcing` by `pod`: every replica should
-   read 1. If they all read 1 and no releases happen, read the `-v=2` pass
+   Also query `ipam_retention_sweep_enforcing` by `pod`, or read "Replicas
+   enforcing" on the dashboard: every replica should read 1. If they all read 1 and no releases happen, read the `-v=2` pass
    logs. `due=0` on passes while
    `ipam_retained_overdue_allocations` is non-zero means the release query
    is not finding the rows the gauges count, which is a bug; capture both and

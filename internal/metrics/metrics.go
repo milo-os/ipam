@@ -409,6 +409,8 @@ func init() {
 		RetainedAllocations,
 		RetainedOldestAge,
 		RetainedOverdue,
+		RetainedLate,
+		RetainedGaugesLastSuccess,
 		RetainedOldestOverdue,
 		RetentionReleases,
 		RetentionSweepDuration,

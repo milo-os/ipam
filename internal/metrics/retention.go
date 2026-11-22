@@ -54,6 +54,33 @@ var RetainedOverdue = metrics.NewGaugeVec(
 	[]string{"ip_family"},
 )
 
+// RetainedLate is the overdue rows whose deadline passed more than the late
+// grace ago: five sweep intervals, while an enforcing pass frees a row within
+// about one. It is zero on a healthy sweep however many rows fall due, so it
+// carries none of the churn RetainedOverdue does, and a row stuck past its
+// deadline shows up in it alone.
+var RetainedLate = metrics.NewGaugeVec(
+	&metrics.GaugeOpts{
+		Namespace:      "ipam",
+		Name:           "retained_late_allocations",
+		Help:           "Retained claim allocations more than five sweep intervals past their deadline, by address family",
+		StabilityLevel: metrics.ALPHA,
+	},
+	[]string{"ip_family"},
+)
+
+// RetainedGaugesLastSuccess is the Unix time this replica last read the
+// retained set. A failed read leaves the retained gauges as they were, so an
+// alert on them drops a replica whose read is older than a few intervals.
+var RetainedGaugesLastSuccess = metrics.NewGauge(
+	&metrics.GaugeOpts{
+		Namespace:      "ipam",
+		Name:           "retained_gauges_last_success_timestamp_seconds",
+		Help:           "Unix timestamp of the last successful read of the retained set by this replica",
+		StabilityLevel: metrics.ALPHA,
+	},
+)
+
 // RetainedOldestOverdue is how long the most overdue retained allocation of
 // each family has been past its deadline, by the database clock. Zero when
 // none is due. An enforcing sweeper keeps it under about one interval.
@@ -203,9 +230,10 @@ type RetainedFamily struct {
 	IPFamily                  string
 	Finite, None, Unevaluated int
 	OldestAgeSeconds          float64
-	// Overdue is rows past a finite deadline; OldestOverdueSeconds is how
-	// long the earliest of those deadlines has passed.
-	Overdue              int
+	// Overdue is rows past a finite deadline; Late is those past it by more
+	// than the late grace; OldestOverdueSeconds is how long the earliest of
+	// those deadlines has passed.
+	Overdue, Late        int
 	OldestOverdueSeconds float64
 }
 
@@ -227,6 +255,7 @@ func PublishRetained(families []RetainedFamily) {
 		RetainedAllocations.WithLabelValues(family, "unevaluated").Set(float64(f.Unevaluated))
 		RetainedOldestAge.WithLabelValues(family).Set(f.OldestAgeSeconds)
 		RetainedOverdue.WithLabelValues(family).Set(float64(f.Overdue))
+		RetainedLate.WithLabelValues(family).Set(float64(f.Late))
 		RetainedOldestOverdue.WithLabelValues(family).Set(f.OldestOverdueSeconds)
 	}
 }

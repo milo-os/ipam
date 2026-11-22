@@ -536,38 +536,75 @@ spec:
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-rows-stuck.md"
 
         - alert: IPAMRetentionReleasesStalled
-          # Passes complete, the sweeper enforces, and yet a retained
-          # allocation stays past its deadline. The stall alert covers passes
-          # that do not complete, so this one requires that they do; rows the
-          # sweeper counts as errors raise IPAMRetentionRowsStuck as well.
+          # Passes complete, the sweeper enforces, and yet retained allocations
+          # stay past their deadline. The stall alert covers passes that do not
+          # complete, so this one requires that they do; rows the sweeper
+          # counts as errors raise IPAMRetentionRowsStuck as well.
           #
-          # A healthy enforcing sweep frees a row within one interval of its
-          # deadline, so five intervals overdue is late. Overdue age alone
-          # cannot tell a stall from a backlog drain, though: after a switch
-          # from observe, rows overdue by days drain at the 2000-row budget a
-          # pass, and a backlog sharing one deadline (a bulk delete under one
-          # lease) keeps its oldest row as old as ever until the last pass.
-          # So the alert also needs the overdue count not to have fallen over
-          # 30 minutes. A drain lowers it every pass, so it holds off however
-          # large the backlog; once the drain ends, rows left behind fire it.
-          # Inflow above the budget also fires it, rightly: releases are not
-          # keeping up. The 30m window needs a pass inside it, so this holds
-          # for intervals up to about 15 minutes (the default is 1m).
+          # It watches ipam_retained_late_allocations: rows more than five
+          # sweep intervals past their deadline. An enforcing pass frees a row
+          # within about one, so on a healthy sweep the count is zero however
+          # many rows fall due; the plain overdue count carries that churn and
+          # cannot be compared from one pass to the next. A stuck row holds the
+          # late count at one or more.
           #
-          # Every replica publishes the same gauges. max() is the overdue age,
-          # as in the sibling alerts; min() of the per-replica change means
-          # one replica whose read is failing, and whose gauges are frozen,
-          # cannot make a drain look stalled. Observe mode (enforcing 0) and a
-          # disabled sweeper (enforcing 0, interval 0) are never alerted on;
-          # "for: 15m" covers a rollout where an old replica still holds the
-          # sweep lock in the old mode.
+          # A backlog draining is not a stall. After a switch from observe,
+          # rows overdue by days drain at the 2000-row budget a pass, oldest
+          # first, and the late count falls every pass. So the alert compares
+          # floors: the lowest late count of the last 15 minutes must be no
+          # lower than the lowest of the 15 minutes before. A drain makes the
+          # recent floor lower and holds it off however large the backlog is;
+          # rows left behind when it ends fire it; a brief spike cannot reset
+          # it. Inflow above the budget also fires it, rightly: releases are
+          # not keeping up. The windows need a pass in each, so this holds for
+          # intervals under 15 minutes (the default is 1m).
+          #
+          # A replica whose read of the retained set fails keeps its old
+          # gauges, and its pass still completes. Its gauges are dropped once
+          # its last successful read is three intervals old (five minutes at
+          # least, for scrape and evaluation delay), so a frozen replica can
+          # neither fire the alert nor hide one. The failed read is counted in
+          # ipam_retention_sweep_errors_total. Fresh replicas read the same
+          # database, so max() across them is the count.
+          #
+          # Any replica that wins the sweep lock runs the pass in its own mode.
+          # max(enforcing) == 1 lets a fleet that is part-way through a switch
+          # alert; "for: 30m" holds off a rollout in which an observe replica
+          # still wins the lock, unless it takes longer than that. Observe
+          # mode and a disabled sweeper (enforcing 0) are never alerted on.
+          # $value is how long the most overdue row has been past its deadline.
           expr: |
-            (
-              max by (ip_family) (ipam_retained_oldest_overdue_seconds)
-              > on() group_left() 5 * max(ipam_retention_sweep_interval_seconds)
+            max by (ip_family) (
+              ipam_retained_oldest_overdue_seconds
+              and ignoring(ip_family) (
+                time() - ipam_retained_gauges_last_success_timestamp_seconds
+                <= clamp_min(3 * ipam_retention_sweep_interval_seconds, 300)
+              )
             )
             and on(ip_family) (
-              min by (ip_family) (delta(ipam_retained_overdue_allocations[30m])) >= 0
+              min_over_time((max by (ip_family) (
+                ipam_retained_late_allocations
+                and ignoring(ip_family) (
+                  time() - ipam_retained_gauges_last_success_timestamp_seconds
+                  <= clamp_min(3 * ipam_retention_sweep_interval_seconds, 300)
+                )
+              ))[15m:1m]) > 0
+            )
+            and on(ip_family) (
+              min_over_time((max by (ip_family) (
+                ipam_retained_late_allocations
+                and ignoring(ip_family) (
+                  time() - ipam_retained_gauges_last_success_timestamp_seconds
+                  <= clamp_min(3 * ipam_retention_sweep_interval_seconds, 300)
+                )
+              ))[15m:1m])
+              >= min_over_time((max by (ip_family) (
+                ipam_retained_late_allocations
+                and ignoring(ip_family) (
+                  time() - ipam_retained_gauges_last_success_timestamp_seconds
+                  <= clamp_min(3 * ipam_retention_sweep_interval_seconds, 300)
+                )
+              ))[15m:1m] offset 15m)
             )
             and on() (max(ipam_retention_sweep_enforcing) == 1)
             and on() (max(ipam_retention_sweep_interval_seconds) > 0)
@@ -575,7 +612,7 @@ spec:
               time() - max(ipam_retention_sweep_last_success_timestamp_seconds)
               <= 5 * max(ipam_retention_sweep_interval_seconds)
             )
-          for: 15m
+          for: 30m
           labels:
             severity: warning
             service: ipam
@@ -584,9 +621,9 @@ spec:
             summary: "IPAM {{ $labels.ip_family }} retained allocations are not being released ({{ $value | humanizeDuration }} past their deadline)"
             description: |
               The retention sweeper is in enforce mode and its passes complete, but retained
-              {{ $labels.ip_family }} allocations have been past their lease deadline for more
-              than five sweep intervals, and their number has not fallen in 30 minutes. Those
-              addresses stay held instead of returning to their pools.
+              {{ $labels.ip_family }} allocations have been more than five sweep intervals past
+              their lease deadline for at least 45 minutes, and their number has not fallen.
+              Those addresses stay held instead of returning to their pools.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-releases-stalled.md"
 
         - alert: IPAMRetainedWithoutLeaseRising

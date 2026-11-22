@@ -307,7 +307,7 @@ func TestTheRetainedSetGauges(t *testing.T) {
 	}
 	allocateWithPolicy(t, db, poolKey, "claim-bound", "bound", ipamv1alpha1.ReclaimRetain)
 
-	if err := publishRetainedGauges(ctx, db); err != nil {
+	if err := publishRetainedGauges(ctx, db, 0); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	for lease, want := range map[string]float64{"finite": 1, "none": 2, "unevaluated": 1} {
@@ -328,10 +328,11 @@ func TestTheRetainedSetGauges(t *testing.T) {
 }
 
 // The overdue gauges count rows past a finite deadline by the database clock,
-// and age the most overdue by its deadline, not by when it was retained. A
-// deadline still ahead, 'infinity', an unevaluated lease, and a row retained
-// before retention was timestamped are not overdue; a family with nothing due
-// reads zero.
+// count as late only those past it by more than the grace, and age the most
+// overdue by its deadline, not by when it was retained. A deadline still
+// ahead, 'infinity', an unevaluated lease, and a row retained before retention
+// was timestamped are not overdue; a family with nothing due reads zero. A
+// successful read stamps the replica's freshness gauge.
 func TestTheOverdueRetainedGauges(t *testing.T) {
 	db := testdb.Pool(t)
 	ctx := context.Background()
@@ -358,11 +359,19 @@ func TestTheOverdueRetainedGauges(t *testing.T) {
 		t.Fatalf("seed legacy row: %v", err)
 	}
 
-	if err := publishRetainedGauges(ctx, db); err != nil {
+	before := time.Now().Unix()
+	if err := publishRetainedGauges(ctx, db, time.Hour); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedOverdue.WithLabelValues("IPv4")); got != 2 {
 		t.Errorf("ipam_retained_overdue_allocations{ip_family=IPv4} = %v, want 2", got)
+	}
+	// Only the row two hours overdue is past the one-hour grace.
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedLate.WithLabelValues("IPv4")); got != 1 {
+		t.Errorf("ipam_retained_late_allocations{ip_family=IPv4} = %v, want 1", got)
+	}
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedGaugesLastSuccess); got < float64(before) {
+		t.Errorf("ipam_retained_gauges_last_success_timestamp_seconds = %v, want at least %v", got, before)
 	}
 	// Two hours past its deadline, give or take the test's own runtime.
 	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedOldestOverdue.WithLabelValues("IPv4")); got < 7200 || got > 7200+600 {
@@ -370,6 +379,7 @@ func TestTheOverdueRetainedGauges(t *testing.T) {
 	}
 	for name, gauge := range map[string]*k8smetrics.GaugeVec{
 		"ipam_retained_overdue_allocations":    metrics.RetainedOverdue,
+		"ipam_retained_late_allocations":       metrics.RetainedLate,
 		"ipam_retained_oldest_overdue_seconds": metrics.RetainedOldestOverdue,
 	} {
 		if got, err := testutil.GetGaugeMetricValue(gauge.WithLabelValues("IPv6")); err != nil || got != 0 {
@@ -382,7 +392,7 @@ func TestTheOverdueRetainedGauges(t *testing.T) {
 	if res := sweep(t, db, SweepEnforce); res.Released != 2 {
 		t.Fatalf("enforce released %d, want 2", res.Released)
 	}
-	if err := publishRetainedGauges(ctx, db); err != nil {
+	if err := publishRetainedGauges(ctx, db, time.Hour); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedOverdue.WithLabelValues("IPv4")); got != 0 {
@@ -390,6 +400,9 @@ func TestTheOverdueRetainedGauges(t *testing.T) {
 	}
 	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedOldestOverdue.WithLabelValues("IPv4")); got != 0 {
 		t.Errorf("oldest overdue after enforce = %vs, want 0", got)
+	}
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedLate.WithLabelValues("IPv4")); got != 0 {
+		t.Errorf("late after enforce = %v, want 0", got)
 	}
 }
 
