@@ -274,19 +274,18 @@ func (a *app) resolveAllocation(cs clientset.Interface, ns, arg string) ([]*ipam
 	return []*ipamv1alpha1.IPAllocation{al}, nil
 }
 
-// leaseText says what will happen to a retained allocation and when. Leases
-// are recorded but not yet enforced, and the text says so: a deadline read as
-// a promise of release, or of being held until then, is wrong both ways.
+// leaseText says what will happen to a retained allocation and when. Once its
+// lease runs out the server releases it on the next retention sweep, so a
+// deadline already passed reads as due rather than as still held.
 func leaseText(al *ipamv1alpha1.IPAllocation, now time.Time) string {
 	if al.Status.ExpiresAt != nil {
 		at := al.Status.ExpiresAt.Time
-		when := "runs out " + at.UTC().Format(time.RFC3339)
 		if at.After(now) {
-			when += " (in " + shortDuration(at.Sub(now)) + ")"
-		} else {
-			when = "ran out " + at.UTC().Format(time.RFC3339) + " (" + shortDuration(now.Sub(at)) + " ago)"
+			return "runs out " + at.UTC().Format(time.RFC3339) + " (in " + shortDuration(at.Sub(now)) +
+				"); released back to the pool then"
 		}
-		return when + "; not yet enforced, so it stays held until released"
+		return "ran out " + at.UTC().Format(time.RFC3339) + " (" + shortDuration(now.Sub(at)) +
+			" ago); due for release on the next retention sweep"
 	}
 	if c := meta.FindStatusCondition(al.Status.Conditions, ipamv1alpha1.AllocationConditionRetained); c != nil &&
 		c.Reason == ipamv1alpha1.RetainedReasonLeasePending {
@@ -343,12 +342,14 @@ func newAllocationReleaseCommand(a *app) *cobra.Command {
 		Short:   "Release a held allocation back to its pool",
 		Long: `Release an allocation. This is the deliberate hand-back that reclaim policy
 Retain defers to: an allocation whose claim is gone stays held until a claim of
-the same name is created again, which takes it back, or until it is released
-here. Release it to give the address to a claim of another name or terms.
+the same name is created again, which takes it back, until its retention lease
+runs out, or until it is released here. Release it to give the address to a
+claim of another name or terms.
 
-A retained allocation may show a lease deadline (allocation show). Leases are
-not yet enforced, so an allocation past its deadline is still held until it is
-released here.
+A retained allocation may show a lease deadline (allocation show). Once it
+passes, the server releases the allocation on its next retention sweep, and
+the address may be given to another claim. Release it here to hand it back
+sooner.
 
 Releasing an allocation that still has a claim bound to it is refused — release
 the claim instead, so the claim and its address do not disagree.

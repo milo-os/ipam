@@ -147,7 +147,7 @@ Exit codes are a contract:
   leak check; `allocation release` is the deliberate hand-back, open to the IPAM
   Consumer role and refused for an allocation a claim still holds. `allocation show`
   prints a retained allocation's lease deadline, if its class or pool sets one;
-  leases are not yet enforced, so it stays held past that until released.
+  once it passes, the server releases the address back to the pool.
 
 ## Plugin manifest
 
