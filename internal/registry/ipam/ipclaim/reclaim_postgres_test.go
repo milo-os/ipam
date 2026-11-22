@@ -19,8 +19,14 @@ import (
 	"go.miloapis.com/ipam/pkg/ipamerrors"
 )
 
-// seedNamedClass writes an IPClass into the test project under name.
+// seedNamedClass writes an IPClass into the test project under name,
+// replacing any class of that name.
 func seedNamedClass(t *testing.T, db *pgxpool.Pool, name string, spec ipamv1alpha1.IPClassSpec) {
+	t.Helper()
+	seedClassIn(t, db, testProject, name, spec)
+}
+
+func seedClassIn(t *testing.T, db *pgxpool.Pool, project, name string, spec ipamv1alpha1.IPClassSpec) {
 	t.Helper()
 	class := &ipamv1alpha1.IPClass{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "ipam.miloapis.com/v1alpha1", Kind: "IPClass"},
@@ -34,8 +40,8 @@ func seedNamedClass(t *testing.T, db *pgxpool.Pool, name string, spec ipamv1alph
 	if _, err := db.Exec(context.Background(),
 		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ($1,'IPClass',$2,$3)
 		 ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data`,
-		tenant.Identity{Name: testProject}.ResourceKey("ipclasses", name), name, data); err != nil {
-		t.Fatalf("seed class %s: %v", name, err)
+		tenant.Identity{Name: project}.ResourceKey("ipclasses", name), name, data); err != nil {
+		t.Fatalf("seed class %s in %s: %v", name, project, err)
 	}
 }
 
@@ -43,10 +49,19 @@ func seedNamedClass(t *testing.T, db *pgxpool.Pool, name string, spec ipamv1alph
 // project.
 func seedNamedPool(t *testing.T, db *pgxpool.Pool, name, cidr string, classNames ...string) {
 	t.Helper()
+	seedPoolIn(t, db, testProject, name, cidr, nil, classNames...)
+}
+
+// seedPoolIn writes a ready IPv4 IPPool into project, replacing any pool of
+// that name. poolScope is the pool's own declared scope.
+func seedPoolIn(t *testing.T, db *pgxpool.Pool, project, name, cidr string, poolScope map[string]ipamv1alpha1.ScopeRef, classNames ...string) {
+	t.Helper()
 	pool := &ipamv1alpha1.IPPool{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "ipam.miloapis.com/v1alpha1", Kind: "IPPool"},
 		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Spec:       ipamv1alpha1.IPPoolSpec{CIDR: cidr, IPFamily: ipamv1alpha1.IPv4, ClassNames: classNames},
+		Spec: ipamv1alpha1.IPPoolSpec{
+			CIDR: cidr, IPFamily: ipamv1alpha1.IPv4, ClassNames: classNames, Scope: poolScope,
+		},
 		Status: ipamv1alpha1.IPPoolStatus{
 			Phase: ipamv1alpha1.PoolReady, AllocatedCIDR: cidr, IPFamily: ipamv1alpha1.IPv4,
 		},
@@ -56,9 +71,10 @@ func seedNamedPool(t *testing.T, db *pgxpool.Pool, name, cidr string, classNames
 		t.Fatalf("marshal pool %s: %v", name, err)
 	}
 	if _, err := db.Exec(context.Background(),
-		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ($1,'IPPool',$2,$3)`,
-		tenant.Identity{Name: testProject}.ResourceKey("ippools", name), name, data); err != nil {
-		t.Fatalf("seed pool %s: %v", name, err)
+		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ($1,'IPPool',$2,$3)
+		 ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data`,
+		tenant.Identity{Name: project}.ResourceKey("ippools", name), name, data); err != nil {
+		t.Fatalf("seed pool %s in %s: %v", name, project, err)
 	}
 }
 

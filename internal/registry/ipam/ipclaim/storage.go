@@ -421,12 +421,11 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	// its pool, and a reclaim provisions nothing and searches nothing.
 	reclaimed := r.tryReclaim(ctx, span, claim, id, reclaimTerms{
 		claimName:    claim.Name,
-		className:    class.Name,
-		ipFamily:     string(class.Spec.IPFamily),
+		class:        class,
+		scope:        claim.Spec.Scope,
 		scopeDigest:  scopeDigest,
 		prefixLength: statedPrefixLength,
 		address:      claim.Spec.Address,
-		class:        class.IPClass,
 	}, uniqueScope, reclaimPolicy, generatedName, dryRun)
 	if reclaimed.handled {
 		if reclaimed.err != nil {

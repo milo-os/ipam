@@ -31,15 +31,16 @@ import (
 // create path resolves it before choosing a pool. A retained allocation is
 // handed back only on these terms.
 type reclaimTerms struct {
-	claimName   string
-	className   string
-	ipFamily    string
+	claimName string
+	class     *allocator.ResolvedClass
+	// scope is the claim's whole scope, which placement is decided on;
+	// scopeDigest is its projection onto the class's uniqueWithin.
+	scope       map[string]ipam.ScopeRef
 	scopeDigest string
 	// prefixLength is the length the claim stated, or the one its CIDR-form
 	// address stated; nil leaves the size to the retained allocation.
 	prefixLength *int32
 	address      string
-	class        *v1alpha1.IPClass
 }
 
 // reclaimMismatch is a term the retained allocation does not share, by the
@@ -49,42 +50,76 @@ type reclaimMismatch struct {
 	message string
 }
 
-// agreeWithRetained decides whether a retained allocation can be handed back
-// to a claim asking for terms, and at what prefix length. A mismatch is the
-// first term, in field order, that differs.
+// Identity is what entitles a claim to a retained address — the allocation's
+// name is derived from the claim's — but identity is not consent to different
+// terms. Handing a /28 back to a claim that asked for a /29, or an address held
+// under one class to a claim of another, would bind something the claim never
+// asked for, and silently answering with a fresh block instead would leave the
+// retained one held under a name that now names something else. So every term
+// is checked, and the first that differs, in field order, is the refusal:
 //
-// Identity is what entitles the claim to the address — the allocation's name
-// is derived from the claim's — but identity is not consent to different
-// terms. Handing a /28 back to a claim that asked for a /29, or an address
-// held under one class to a claim of another, would bind something the claim
-// never asked for, and silently answering with a fresh block instead would
-// leave the retained one held under a name that now names something else.
-//
-// The size is the one term a claim may leave out. A claim that states no
-// length takes the retained one, if its class still allows it; a fresh claim
-// would take the class default, but the retained block is the claim's own.
-func agreeWithRetained(row *allocator.ClaimAllocation, terms reclaimTerms) (int, *reclaimMismatch) {
-	_, block, err := net.ParseCIDR(row.CIDR)
-	if err != nil {
-		return 0, &reclaimMismatch{field: "spec.address", message: fmt.Sprintf("the retained block %q does not parse", row.CIDR)}
-	}
-	retainedLen, _ := block.Mask.Size()
+//	agreeOnClass   which class, family, address scope and address space
+//	placement      the pool the claim would be placed in now (tryReclaim)
+//	agreeOnBlock   the block's size and, if named, its address
 
-	if row.ClassName != terms.className {
-		return 0, &reclaimMismatch{field: "spec.className", message: fmt.Sprintf(
-			"it is held under class %q and this claim resolves to class %q", row.ClassName, terms.className)}
+// agreeOnClass checks the terms that do not depend on the pool.
+//
+// The class is its defining project and name, not the name alone: two projects
+// can each define a class of one name, and a claim naming a reference resolves
+// to the definition the reference points at. A row written before IPAM
+// recorded the project leaves that half to placement (allocator.ReclaimPlacement).
+//
+// The address scope is compared with what the row recorded at allocation, not
+// with the class alone: a class may gain one it did not have. A row that
+// recorded none cannot prove it was handed out under the scope the class now
+// states, and is refused.
+func agreeOnClass(row *allocator.ClaimAllocation, terms reclaimTerms) *reclaimMismatch {
+	class := terms.class
+	if row.ClassName != class.Name || (row.ClassRecorded && row.ClassProject != class.Project) {
+		held := fmt.Sprintf("class %q", row.ClassName)
+		if row.ClassRecorded {
+			held = fmt.Sprintf("class %q defined in project %q", row.ClassName, row.ClassProject)
+		}
+		return &reclaimMismatch{field: "spec.className", message: fmt.Sprintf(
+			"it is held under %s and this claim resolves to class %q defined in project %q",
+			held, class.Name, class.Project)}
 	}
-	if row.IPFamily != terms.ipFamily {
-		return 0, &reclaimMismatch{field: "spec.ipFamily", message: fmt.Sprintf(
-			"it holds an %s block and this claim is for %s", row.IPFamily, terms.ipFamily)}
+	if row.IPFamily != string(class.Spec.IPFamily) {
+		return &reclaimMismatch{field: "spec.ipFamily", message: fmt.Sprintf(
+			"it holds an %s block and this claim is for %s", row.IPFamily, class.Spec.IPFamily)}
+	}
+	if row.ClassRecorded && row.AddressScope != class.Spec.AddressScope {
+		return &reclaimMismatch{field: "spec.addressScope", message: fmt.Sprintf(
+			"it was handed out with addressScope %q and class %q now has addressScope %q",
+			row.AddressScope, class.Name, class.Spec.AddressScope)}
+	}
+	if !row.ClassRecorded && class.Spec.AddressScope != "" {
+		return &reclaimMismatch{field: "spec.addressScope", message: fmt.Sprintf(
+			"it was allocated before IPAM recorded address scopes, and class %q now has addressScope %q",
+			class.Name, class.Spec.AddressScope)}
 	}
 	digest := terms.scopeDigest
 	if digest == "" {
 		digest = scope.EmptyAddressSpaceDigest()
 	}
 	if row.ScopeDigest != digest {
-		return 0, &reclaimMismatch{field: "spec.scope", message: "it is held in another address space than this claim's scope names"}
+		return &reclaimMismatch{field: "spec.scope", message: "it is held in another address space than this claim's scope names"}
 	}
+	return nil
+}
+
+// agreeOnBlock checks the block itself and returns the prefix length the claim
+// binds at.
+//
+// The size is the one term a claim may leave out. A claim that states no
+// length takes the retained one, if its class still allows it; a fresh claim
+// would take the class default, but the retained block is the claim's own.
+func agreeOnBlock(row *allocator.ClaimAllocation, terms reclaimTerms) (int, *reclaimMismatch) {
+	_, block, err := net.ParseCIDR(row.CIDR)
+	if err != nil {
+		return 0, &reclaimMismatch{field: "spec.address", message: fmt.Sprintf("the retained block %q does not parse", row.CIDR)}
+	}
+	retainedLen, _ := block.Mask.Size()
 
 	length := retainedLen
 	if terms.prefixLength != nil {
@@ -94,9 +129,9 @@ func agreeWithRetained(row *allocator.ClaimAllocation, terms reclaimTerms) (int,
 		}
 	} else {
 		want := int32(retainedLen)
-		if _, err := allocator.EffectivePrefixLength(terms.class, &want); err != nil {
+		if _, err := allocator.EffectivePrefixLength(terms.class.IPClass, &want); err != nil {
 			return 0, &reclaimMismatch{field: "spec.prefixLength", message: fmt.Sprintf(
-				"it holds a /%d, which class %q no longer allows: %v", retainedLen, terms.className, err)}
+				"it holds a /%d, which class %q no longer allows: %v", retainedLen, terms.class.Name, err)}
 		}
 	}
 
@@ -130,10 +165,11 @@ type reclaimResult struct {
 // no free block left still hands back a block it is already holding.
 //
 // One transaction: lock the row's pool, then the row; refuse a row still
-// bound, or one held on terms the claim does not ask for; rebind the row by
-// compare-and-set; point the IPAllocation at the claim; write the claim as
-// Bound. Capacity does not move, because the address never left. A dry run
-// runs all of it and rolls back.
+// bound, or one held on terms the claim does not ask for, including a pool the
+// claim would not be placed in now; rebind the row by compare-and-set; point
+// the IPAllocation at the claim; write the claim as Bound. Capacity does not
+// move, because the address never left. A dry run runs all of it and rolls
+// back.
 //
 // A generated name that lands on a retained identity was not chosen by
 // anyone, so it is refused as a collision and drawn again rather than handed
@@ -179,12 +215,31 @@ func (r *AllocatingREST) tryReclaim(
 		return reclaimResult{handled: true, outcome: "conflict", err: retainedAllocationConflict(claim.Name, allocationName)}
 	}
 
-	prefixLen, mismatch := agreeWithRetained(row, terms)
-	if mismatch != nil {
+	refuse := func(m *reclaimMismatch) reclaimResult {
 		if !dryRun {
 			metrics.RecordReclaim("mismatch")
 		}
-		return reclaimResult{handled: true, outcome: "conflict", err: retainedMismatchConflict(claim.Name, allocationName, mismatch)}
+		return reclaimResult{handled: true, outcome: "conflict", err: retainedMismatchConflict(claim.Name, allocationName, m)}
+	}
+	if m := agreeOnClass(row, terms); m != nil {
+		return refuse(m)
+	}
+	// Read under the pool's lock, so the pool judged is the pool bound into.
+	placement, err := allocator.ReclaimPlacement(ctx, tx, terms.class, terms.scope, row)
+	if err != nil {
+		var missing *scope.MissingRoleError
+		if errors.As(err, &missing) {
+			return reclaimResult{handled: true, outcome: "internal", err: ipamerrors.NewScopeRolesMissing(missing.Roles,
+				fmt.Sprintf("%s (class %q)", missing.Error(), terms.class.Name))}
+		}
+		return reclaimResult{handled: true, outcome: "tx_error", err: fmt.Errorf("check the retained allocation's placement: %w", err)}
+	}
+	if placement != nil {
+		return refuse(&reclaimMismatch{field: placement.Field, message: placement.Reason})
+	}
+	prefixLen, mismatch := agreeOnBlock(row, terms)
+	if mismatch != nil {
+		return refuse(mismatch)
 	}
 
 	if err := r.allocator.ReclaimAllocation(ctx, tx, allocationKey, claimKey, reclaimPolicy); err != nil {
