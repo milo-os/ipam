@@ -401,8 +401,11 @@ spec:
         the operator cannot tell what is holding it.
 
         Deleting the claim stays the supported route; reclaimPolicy decides
-        from there. The refusal is read off the allocation row, not the
-        object, so it holds however the object reads.
+        from there. This step goes through an honest object, so it shows the
+        refusal and its message, not where the decision is made. That the
+        release reads the allocation row and refuses even when the object
+        reads as unbound is covered by TestReleaseOfABoundRowIsRefusedWhateverTheObjectSays
+        in internal/registry/ipam/ipclaim.
       try:
         - script:
             timeout: 90s
