@@ -92,8 +92,10 @@ spec:
               IPAM allocation failure ratio is {{ $value | humanizePercentage }} over the last 5m,
               exceeding the 5% error budget. Sustained for 2m.
               Break down by `reason` label to determine cause:
-              pool_exhausted (capacity), tx_error (postgres),
-              pool_not_found (config drift), or internal (bug).
+              internal (bug) and tx_error (postgres) are server faults;
+              every other reason is a refused request: pool_exhausted
+              (capacity), pool_not_found / class_not_found (config drift),
+              invalid / conflict / forbidden (caller or admission).
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-allocation-error-rate-high.md"
 
         - alert: IPAMAllocationErrorRateAbsolute

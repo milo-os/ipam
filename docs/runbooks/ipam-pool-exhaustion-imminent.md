@@ -40,9 +40,10 @@ The alert label set identifies the affected pool:
 4. **Check for wide allocations.** A single `/24` claim against a `/16` pool
    eats 1/256 of capacity. Wide claims are common during initial bringup;
    they may need to be replaced with narrower claims.
-5. **Confirm the metric.** If the metric reads 100% but `pg_stat_activity`
-   shows the pool isn't actually full, the gauge may be stale — check the
-   apiserver logs for `klog.ErrorS(...)` around pool capacity calculations.
+5. **Confirm the metric.** The gauge is read back from the pool's committed
+   `status.capacity` every 15s, so it matches `kubectl get ippool` within one
+   interval. If it does not, the read is failing and the gauge holds its last
+   values: look for `Failed to refresh pool gauges` in the apiserver logs.
 
 ## Mitigate
 

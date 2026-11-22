@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"testing"
@@ -22,8 +23,8 @@ var unboundedLabels = []string{
 // The cascade metrics describe work done per claim, so an unbounded label on
 // one of them multiplies by request volume.
 func TestCascadeMetricsCarryOnlyBoundedLabels(t *testing.T) {
-	RecordCascadeLevel("example", levelReused)
-	ObserveCascadeResolution("success", false, time.Now())
+	RecordCascadeLevel(context.Background(), "example", levelReused)
+	ObserveCascadeResolution(context.Background(), "success", false, time.Now())
 
 	want := map[string][]string{
 		"ipam_cascade_levels_total":                {"class", "outcome"},
@@ -67,7 +68,7 @@ func TestLostRacesAndReusesShareTheProvisioningCounter(t *testing.T) {
 	const class = "TestLostRacesAndReusesShareTheProvisioningCounter"
 
 	for _, outcome := range []string{levelReused, levelProvisioned, levelLost, levelError} {
-		RecordCascadeLevel(class, outcome)
+		RecordCascadeLevel(context.Background(), class, outcome)
 	}
 
 	got := map[string]bool{}
@@ -96,8 +97,8 @@ func TestLostRacesAndReusesShareTheProvisioningCounter(t *testing.T) {
 // The provisioned label must stay a two-valued flag; anything derived from the
 // chain itself would be unbounded.
 func TestResolutionDurationProvisionedLabelIsABoolean(t *testing.T) {
-	ObserveCascadeResolution("success", true, time.Now())
-	ObserveCascadeResolution("success", false, time.Now())
+	ObserveCascadeResolution(context.Background(), "success", true, time.Now())
+	ObserveCascadeResolution(context.Background(), "success", false, time.Now())
 
 	for _, mf := range gather(t) {
 		if mf.GetName() != "ipam_cascade_resolution_duration_seconds" {

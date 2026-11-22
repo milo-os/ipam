@@ -73,7 +73,7 @@ func ResolveScopeRange(ctx context.Context, db TxBeginner, leaf *ResolvedClass, 
 
 	start := time.Now()
 	result, provisioned := "error", false
-	defer func() { metrics.ObserveCascadeResolution(result, provisioned, start) }()
+	defer func() { metrics.ObserveCascadeResolution(ctx, result, provisioned, start) }()
 
 	planTx, err := db.Begin(ctx)
 	if err != nil {
@@ -369,7 +369,7 @@ func PlaceScopeRange(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimS
 
 	start := time.Now()
 	result, provisioned := "error", false
-	defer func() { metrics.ObserveCascadeResolution(result, provisioned, start) }()
+	defer func() { metrics.ObserveCascadeResolution(ctx, result, provisioned, start) }()
 
 	levels, err := PlanScopeRangeCascade(ctx, tx, leaf, claimScope)
 	if err != nil {
@@ -457,7 +457,7 @@ func levelBlocks(levels []CascadeLevel, want net.IPNet) ([]net.IPNet, error) {
 // want.
 func placeLevel(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKey string, block, want net.IPNet, leaf bool) (poolKey string, provisioned bool, err error) {
 	outcome := levelError
-	defer func() { metrics.RecordCascadeLevel(level.Class.Name, outcome) }()
+	defer func() { metrics.RecordCascadeLevel(ctx, level.Class.Name, outcome) }()
 
 	existing, err := lookupPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest)
 	if err != nil {

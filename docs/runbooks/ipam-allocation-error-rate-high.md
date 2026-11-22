@@ -20,10 +20,18 @@ The `reason` label distinguishes root causes:
 
 | `reason` | Meaning | First step |
 |---|---|---|
-| `pool_exhausted` | The target pool is full | See `ipam-pool-exhaustion-imminent.md` |
-| `pool_not_found` | The claim references a pool that doesn't exist | Config drift; check claim's `spec.poolRef` |
+| `pool_exhausted` | The target pool, or an ancestor the cascade provisions from, is full (507) | See `ipam-pool-exhaustion-imminent.md` |
+| `pool_not_found` | No pool offers the claim's class | Config drift; check the class's offering pools |
+| `class_not_found` | The class, or the default class, does not exist | Config drift; check `spec.className` |
+| `invalid` | The request was refused as malformed (400/422): bad `spec.address`, wrong family, unaligned or out-of-pool address, missing scope role, unplaced range | Caller error; find the caller in audit logs |
+| `conflict` | The name or the address is taken (409) | Caller error, or a retained allocation under the name |
+| `forbidden` | Admission refused the claim (403): quota, policy | Check the project's quota |
+| `namespace_not_live` | The claim's namespace is missing or terminating | Caller error |
+| `class_holds_no_range` | A ScopeRange claim under a class with no `poolPer` | Caller error |
 | `tx_error` | postgres transaction failed (rollback, deadlock, conn loss) | Database health |
 | `internal` | Bug — should never occur in steady state | Open a P1; capture klog output |
+
+Only `tx_error` and `internal` are server faults. Every other reason is a request the server refused, which this alert also counts: a caller sending malformed claims can fire it with the service healthy, so check the split before paging the database or the service owner.
 
 ## Diagnose
 

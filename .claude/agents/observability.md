@@ -15,7 +15,7 @@ Use `k8s.io/component-base/metrics` (Prometheus-compatible). Register everything
 |------|------|--------|-------------|
 | `ipam_allocation_duration_seconds` | Histogram | `resource`, `ip_family`, `outcome` | End-to-end latency for claim CREATE (postgres path). Buckets: 5ms–2s. |
 | `ipam_allocation_total` | Counter | `resource`, `ip_family`, `outcome` | Total allocation attempts. `outcome`: `success`, `pool_exhausted`, `conflict`, `error`. |
-| `ipam_pool_capacity_total` | Gauge | `pool_key`, `resource`, `ip_family` | Total addresses/prefixes in a pool. Updated on pool write. |
+| `ipam_pool_capacity_total` | Gauge | `pool_key`, `resource`, `ip_family` | Total addresses/prefixes in a pool. Read from committed pool status every 15s, never set from a write path: a dry-run or rolled-back write must not reach it, and a deleted pool must drop out on every replica. |
 | `ipam_pool_allocated_total` | Gauge | `pool_key`, `resource`, `ip_family` | Currently allocated addresses/prefixes. |
 | `ipam_pool_utilization_ratio` | Gauge | `pool_key`, `resource`, `ip_family` | `allocated / capacity`. Alert fires at 0.80. |
 | `ipam_watch_lag_seconds` | Gauge | — | Age of oldest unprocessed `ipam_changelog` row. |

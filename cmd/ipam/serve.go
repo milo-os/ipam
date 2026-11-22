@@ -46,6 +46,16 @@ import (
 // overhead.
 const pgxpoolStatsInterval = 15 * time.Second
 
+// poolGaugeInterval is how often the per-pool gauges are re-read from the
+// database. It bounds how long a gauge trails a committed change, including a
+// deleted pool's series disappearing. The pool alerts hold for a minute or
+// more, so 15s does not delay them meaningfully.
+const poolGaugeInterval = 15 * time.Second
+
+// poolGaugeTimeout bounds one read, so a slow database delays the next
+// refresh rather than piling reads up behind it.
+const poolGaugeTimeout = 10 * time.Second
+
 // allocatorPoolRetrySchedule controls the back-off between attempts to open
 // the allocator pgxpool at startup. With the postgres component installed
 // in the same overlay, the IPAM apiserver pod may start before the
@@ -128,6 +138,41 @@ func startPgxpoolStatsSampler(ctx context.Context, pool *pgxpool.Pool) {
 			case <-ticker.C:
 				metrics.ObservePgxpoolStat(pool.Stat())
 				metrics.PgxpoolSamplerLastRunSeconds.Set(float64(time.Now().Unix()))
+			}
+		}
+	}()
+}
+
+// startPoolGaugeSampler launches a goroutine that periodically replaces the
+// per-pool gauges with the pools the database holds, so a pool that a
+// rolled-back transaction placed is never exported and a deleted pool stops
+// being exported within one interval, whichever replica deleted it. A failed
+// read keeps the previous set rather than exporting none: an outage should
+// not read as every pool vanishing. The goroutine exits when ctx is cancelled.
+func startPoolGaugeSampler(ctx context.Context, pool *pgxpool.Pool) {
+	if pool == nil {
+		return
+	}
+	refresh := func() {
+		readCtx, cancel := context.WithTimeout(ctx, poolGaugeTimeout)
+		defer cancel()
+		gauges, err := allocator.LoadPoolGauges(readCtx, pool)
+		if err != nil {
+			klog.ErrorS(err, "Failed to refresh pool gauges; keeping the previous values")
+			return
+		}
+		metrics.ReplacePoolGauges(gauges)
+	}
+	go func() {
+		refresh()
+		ticker := time.NewTicker(poolGaugeInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refresh()
 			}
 		}
 	}()
@@ -446,6 +491,7 @@ func Run(o *IPAMServerOptions, ctx context.Context) error {
 	// Background sampler that publishes pgxpool.Stat() into the
 	// ipam_pgxpool_* gauges.
 	startPgxpoolStatsSampler(ctx, cfg.ExtraConfig.AllocatorPool)
+	startPoolGaugeSampler(ctx, cfg.ExtraConfig.AllocatorPool)
 
 	klog.InfoS("starting IPAM server", "storageBackend", "postgres")
 	return server.Run(ctx)
