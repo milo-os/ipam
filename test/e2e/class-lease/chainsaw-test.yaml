@@ -16,10 +16,15 @@ spec:
          Retained=True/NoLease
       c. recreating the claim reclaims the address: both timestamps go, and
          Retained=False/Reclaimed
+      d. a 10s class lease: the allocation is held until its deadline, then
+         the sweeper releases it, the IPAllocation is gone, and the next
+         claim from that pool is given the same address
+      e. the allocation from b, with no lease, is still held after the
+         sweeper has released d: no lease means no release
 
-    The sweeper ships in observe mode, which releases nothing, so this suite
-    does not wait for a lease to run out. The release itself is covered by the
-    Postgres-backed tests in internal/allocator/retention_postgres_test.go.
+    d needs the sweeper in enforce mode, the default, at a short interval.
+    The dev and test-infra overlays sweep every 2s; against a deployment
+    sweeping once a minute, d's wait for the release has to be raised.
 
   # Every claim resolves its class, and resolving a class needs a project, so
   # the suite drives the apiserver as a project tenant. `task e2e` generates the
@@ -42,11 +47,11 @@ spec:
             timeout: 60s
             content: |
               . ../lib/ipam.sh
-              # The lease warnings go to stderr; an apply failure is still seen.
               kubectl apply -f test-data/setup.yaml >/dev/null
               wait_pool_ready cl-capped
               wait_pool_ready cl-open
-              for p in cl-capped cl-open; do
+              wait_pool_ready cl-short
+              for p in cl-capped cl-open cl-short; do
                 used=$(kubectl get ippool "$p" -o jsonpath='{.status.capacity.allocated}')
                 if [ -n "$used" ] && [ "$used" != "0" ]; then
                   echo "FAIL: $p already holds $used address(es); clean up the earlier run first"
@@ -77,15 +82,16 @@ spec:
               # are released explicitly, and only then can their pools go.
               release_pool_allocations "$NAMESPACE" cl-capped
               release_pool_allocations "$NAMESPACE" cl-open
-              kubectl delete ippool cl-capped cl-open --ignore-not-found >/dev/null 2>&1
-              kubectl delete ipclass cl-leased cl-unleased --ignore-not-found >/dev/null 2>&1
+              release_pool_allocations "$NAMESPACE" cl-short
+              kubectl delete ippool cl-capped cl-open cl-short --ignore-not-found >/dev/null 2>&1
+              kubectl delete ipclass cl-leased cl-unleased cl-brief --ignore-not-found >/dev/null 2>&1
 
               # A leftover here is a leak into the project every suite shares,
               # so it fails the suite rather than passing quietly.
               left=$(kubectl get ipallocation -n "$NAMESPACE" -o json 2>/dev/null | jq -r \
-                '.items[] | select(.spec.poolRef.name == "cl-capped" or .spec.poolRef.name == "cl-open") | .metadata.name')
-              pools=$(kubectl get ippool cl-capped cl-open --ignore-not-found -o name 2>/dev/null)
-              classes=$(kubectl get ipclass cl-leased cl-unleased --ignore-not-found -o name 2>/dev/null)
+                '.items[] | select(.spec.poolRef.name == "cl-capped" or .spec.poolRef.name == "cl-open" or .spec.poolRef.name == "cl-short") | .metadata.name')
+              pools=$(kubectl get ippool cl-capped cl-open cl-short --ignore-not-found -o name 2>/dev/null)
+              classes=$(kubectl get ipclass cl-leased cl-unleased cl-brief --ignore-not-found -o name 2>/dev/null)
               if [ -n "$left$pools$classes" ]; then
                 echo "FAIL: class-lease cleanup left behind:" $left $pools $classes
                 exit 1
@@ -244,3 +250,145 @@ spec:
             check:
               ($error == null): true
               "(contains($stdout, 'OK: cl-web reclaimed'))": true
+
+    - name: an-expired-lease-is-released
+      description: |
+        A claim of the 10s class is deleted. Its IPAllocation is held, and
+        checked every second, until its deadline; after it, the sweeper's next
+        pass deletes it and the address goes back to the pool. A claim of
+        another name, so that a reclaim cannot be what returns it, is then
+        given the same address: the first free one in an otherwise empty pool.
+      try:
+        - script:
+            timeout: 150s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: cl-brief-a
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-lease
+              spec:
+                className: cl-brief
+              EOF
+              wait_claim_bound "$NAMESPACE" cl-brief-a 60
+              addr=$(claim_cidr "$NAMESPACE" cl-brief-a)
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" cl-brief-a -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$addr" ] || [ -z "$alloc" ]; then
+                echo "FAIL: cl-brief-a is Bound but reports address='$addr' allocation='$alloc'"
+                exit 1
+              fi
+
+              kubectl delete ipclaim -n "$NAMESPACE" cl-brief-a --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" cl-brief-a 60
+              if ! json=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o json 2>&1); then
+                echo "FAIL: IPAllocation $alloc is gone straight after its claim was deleted: $json"
+                exit 1
+              fi
+              expires=$(printf '%s' "$json" | jq -r '.status.expiresAt // ""')
+              if [ -z "$expires" ]; then
+                echo "FAIL: retained IPAllocation $alloc has no expiresAt under a 10s lease: $(printf '%s' "$json" | jq -c .status)"
+                exit 1
+              fi
+              deadline=$(printf '%s' "$json" | jq -r '.status.expiresAt | fromdateiso8601')
+
+              # Held before the deadline. The last two seconds are left out:
+              # the deadline is on the server's clock, and the loop reads this
+              # one, which under a local VM can drift a little from it.
+              held=0
+              while [ "$(date -u +%s)" -lt $((deadline - 2)) ]; do
+                if ! kubectl get ipallocation -n "$NAMESPACE" "$alloc" >/dev/null 2>&1; then
+                  echo "FAIL: IPAllocation $alloc was released $((deadline - $(date -u +%s)))s before its deadline $expires"
+                  exit 1
+                fi
+                held=$((held + 1))
+                sleep 1
+              done
+              if [ "$held" -lt 2 ]; then
+                echo "FAIL: only $held check(s) of $alloc fell before its deadline $expires; the 10s lease left no window to see it held"
+                exit 1
+              fi
+
+              # Released after it: one sweep interval (2s in the dev and
+              # test-infra overlays) plus slack.
+              released=""
+              for _ in $(seq 1 60); do
+                if ! kubectl get ipallocation -n "$NAMESPACE" "$alloc" >/dev/null 2>&1; then
+                  released=yes
+                  break
+                fi
+                sleep 1
+              done
+              if [ -z "$released" ]; then
+                echo "FAIL: IPAllocation $alloc still held 60s after its deadline $expires; is the sweeper in enforce mode at a short interval?"
+                kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o json 2>&1 | jq -c .status | sed 's/^/    /'
+                exit 1
+              fi
+              used=$(kubectl get ippool cl-short -o jsonpath='{.status.capacity.allocated}')
+              if [ -n "$used" ] && [ "$used" != "0" ]; then
+                echo "FAIL: cl-short still counts $used allocated address(es) after $alloc was released"
+                exit 1
+              fi
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: cl-brief-b
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-lease
+              spec:
+                className: cl-brief
+              EOF
+              wait_claim_bound "$NAMESPACE" cl-brief-b 60
+              again=$(claim_cidr "$NAMESPACE" cl-brief-b)
+              if [ "$again" != "$addr" ]; then
+                echo "FAIL: cl-brief-b was given $again, want $addr, the address released from $alloc"
+                exit 1
+              fi
+              echo "OK: $alloc held until $expires, then released, and $addr handed to cl-brief-b"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: '))": true
+
+    - name: an-unleased-retention-is-not-released
+      description: |
+        The allocation cl-plain retained with no lease has been through every
+        sweep pass since, including the one that released the leased
+        allocation above. It is still held, and still says why.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              json=$(kubectl get ipallocation -n "$NAMESPACE" -o json | jq -c \
+                '[.items[] | select(.spec.poolRef.name == "cl-open")]')
+              if [ "$(printf '%s' "$json" | jq 'length')" != "1" ]; then
+                echo "FAIL: cl-open holds $(printf '%s' "$json" | jq 'length') allocation(s), want the one cl-plain retained"
+                exit 1
+              fi
+              alloc=$(printf '%s' "$json" | jq -r '.[0].metadata.name')
+              if [ -n "$(printf '%s' "$json" | jq -r '.[0].spec.claimRef.name // ""')" ]; then
+                echo "FAIL: IPAllocation $alloc is bound again; want it retained"
+                exit 1
+              fi
+              cond=$(printf '%s' "$json" | jq -r '.[0].status.conditions[]? | select(.type == "Retained") | "\(.status)/\(.reason)"')
+              if [ "$cond" != "True/NoLease" ]; then
+                echo "FAIL: Retained condition on $alloc is '$cond', want True/NoLease"
+                exit 1
+              fi
+              age=$(( $(date -u +%s) - $(printf '%s' "$json" | jq -r '.[0].status.retainedAt | fromdateiso8601') ))
+              echo "OK: $alloc still retained with no lease, ${age}s after its claim was deleted"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: '))": true

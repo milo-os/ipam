@@ -35,10 +35,9 @@ spec:
     class-retain-replacement's; every claim here that must not get a retained
     address carries a different name.
 
-    The only lease set here, rc-delete's 720h, outlives every step, so no
-    retained address runs out during the suite whether the retention sweeper
-    enforces leases or only observes them. Release at the deadline is
-    class-lease's and the allocator tests'.
+    The one lease here is rc-delete's 720h, so the retention sweeper releases
+    nothing during the suite: a retained address is held until its allocation
+    is deleted. class-lease covers a lease running out.
 
   # Every claim resolves its class, and resolving a class needs a project, so
   # the suite drives the apiserver as a project tenant. `task e2e` generates the
