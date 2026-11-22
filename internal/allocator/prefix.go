@@ -725,13 +725,23 @@ func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, c
 	if policy == "" {
 		policy = ipamv1alpha1.ReclaimDelete
 	}
+	// The class identity is recorded as a pair or not at all, so a NULL
+	// class_project always means address_scope is unknown too.
+	var classProject, addressScope *string
+	if req.ClassProject != "" {
+		classProject = &req.ClassProject
+		s := string(req.AddressScope)
+		addressScope = &s
+	}
 	_, err := tx.Exec(ctx,
 		`INSERT INTO ipam_cidr_allocations
 		    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family,
-		     purpose, class_name, scope_digest, reclaim_policy, owner_project)
-		 VALUES ($1, $2, $3, $4, $5, 'Claim', $6, $7, $8, $9)`,
+		     purpose, class_name, scope_digest, reclaim_policy, owner_project,
+		     class_project, address_scope)
+		 VALUES ($1, $2, $3, $4, $5, 'Claim', $6, $7, $8, $9, $10, $11)`,
 		req.PoolKey, cidr, req.ClaimKey, allocationKey, req.IPFamily,
 		req.ClassName, req.ScopeDigest, string(policy), req.OwnerProject,
+		classProject, addressScope,
 	)
 	if err != nil {
 		// A named block was checked free under the pool's lock, so this

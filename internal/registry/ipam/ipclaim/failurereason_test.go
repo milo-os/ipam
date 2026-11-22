@@ -51,6 +51,7 @@ func TestFailureReasonLabelsRefusalsByWhatTheCallerIsTold(t *testing.T) {
 		{"NoProjectScope", ipamerrors.New(ipamerrors.ReasonNoProjectScope, "x"), reasonClassNotFound, reasonInvalid},
 		{"ClaimExists", duplicateClaimConflict("c"), reasonTxError, reasonConflict},
 		{"AllocationRetained", retainedAllocationConflict("c", "a"), reasonTxError, reasonConflict},
+		{"RetainedAllocationMismatch", retainedMismatchConflict("c", "a", &reclaimMismatch{field: "spec.className", message: "x"}), reasonTxError, reasonConflict},
 		{"RangeUnplaced", ipamerrors.New(ipamerrors.ReasonRangeUnplaced, "x"), reasonTxError, reasonInvalid},
 		{"SharedPoolUnplaced", ipamerrors.New(ipamerrors.ReasonSharedPoolUnplaced, "x"), reasonTxError, reasonInvalid},
 		{"AddressUnaligned", ipamerrors.New(ipamerrors.ReasonAddressUnaligned, "x"), reasonTxError, reasonInvalid},

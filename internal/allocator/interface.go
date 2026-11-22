@@ -82,6 +82,13 @@ type PrefixRequest struct {
 	ClassName     string
 	ReclaimPolicy ipamv1alpha1.ReclaimPolicy
 
+	// ClassProject is the project holding the definition of the class, and
+	// AddressScope that class's spec.addressScope. With ClassName they are the
+	// terms a retained allocation is reclaimed on. They are recorded together
+	// and only when ClassProject is set.
+	ClassProject string
+	AddressScope ipamv1alpha1.AddressScope
+
 	// Address names the exact block to bind, as a bare address (the block of
 	// PrefixLen bits starting at it) or a CIDR of PrefixLen bits. Empty lets
 	// the pool's strategy choose.
@@ -124,6 +131,18 @@ type PrefixAllocator interface {
 	// reaches, which must not be able to free an address a claim still holds.
 	// No row at all is not an error: there is nothing left to free.
 	ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error
+
+	// LockClaimAllocation locks the pool of the claim allocation identified by
+	// allocationKey, then the row itself, and returns it; nil when there is no
+	// such row. It is the first half of a reclaim: what the caller decides
+	// from the row stays true until the transaction ends.
+	LockClaimAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) (*ClaimAllocation, error)
+
+	// ReclaimAllocation binds the retained allocation identified by
+	// allocationKey to claimKey and records policy as its reclaim policy. It
+	// returns an *AllocationBoundError if the row is bound to a claim already.
+	// The caller holds the locks LockClaimAllocation took.
+	ReclaimAllocation(ctx context.Context, tx pgx.Tx, allocationKey, claimKey string, policy ipamv1alpha1.ReclaimPolicy) error
 
 	// ReleasePoolReservations frees the rows a pool holds for its own
 	// reserved edge positions. They belong to no claim, so no claim-driven

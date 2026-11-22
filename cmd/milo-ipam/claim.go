@@ -424,6 +424,9 @@ func (a *app) claimCreateError(err error, o *claimOptions, cs clientset.Interfac
 	if ce := addressRefusalError(err, o); ce != nil {
 		return ce
 	}
+	if ce := retainedRefusalError(err); ce != nil {
+		return ce
+	}
 	switch httpStatusCode(err) {
 	case 507:
 		return exhaustionError(o.class, formatScope(mustScope(o.scope)), classPoolLines(cs, o.class), err)
@@ -440,6 +443,32 @@ func (a *app) claimCreateError(err error, o *claimOptions, cs clientset.Interfac
 	return classifyError(err)
 }
 
+// retainedRefusalError renders the refusals of a claim recreated under the
+// name of one whose address was retained, or returns nil for any other error.
+// The server takes the address back when the claim agrees with what was
+// retained, so what reaches here is a disagreement, or an older server that
+// refused every recreate. The allocation is in the claim's namespace, so the
+// commands it suggests need no namespace of their own.
+func retainedRefusalError(err error) *cliError {
+	if alloc, field, ok := ipamerrors.RetainedAllocationMismatch(err); ok {
+		return newCLIError(exitConflict, fmt.Sprintf("the address this name retained cannot be reclaimed: %s", apiMessage(err))).
+			withFix(fmt.Sprintf("an earlier claim of this name retained its address, and this claim differs on %s.\n"+
+				"       Recreate it with the retained terms to take the address back; they are on:\n"+
+				"       datumctl ipam allocation show %s\n\n"+
+				"       Or release the retained address and claim afresh:\n"+
+				"       datumctl ipam allocation release %s", field, alloc, alloc)).
+			withCause(err)
+	}
+	if alloc, ok := ipamerrors.RetainedAllocation(err); ok {
+		return newCLIError(exitConflict, fmt.Sprintf("conflict: %s", apiMessage(err))).
+			withFix(fmt.Sprintf("an earlier claim of this name retained its address, and this server does not\n"+
+				"       hand it back to a recreated claim. Release it to reuse the name:\n"+
+				"       datumctl ipam allocation release %s", alloc)).
+			withCause(err)
+	}
+	return nil
+}
+
 // addressRefusalError renders the refusals of a claim that named its address,
 // or returns nil for any other error. Each says what to do next, because the
 // HTTP code alone cannot: a held address and a reserved one are both 409s and
@@ -453,7 +482,8 @@ func addressRefusalError(err error, o *claimOptions) *cliError {
 		case holder.Retained && holder.Name != "":
 			// Retain is what keeps it held: nothing will release it on its own.
 			fix := "the address is held by an allocation retained after its claim was deleted.\n" +
-				"       Release it to free the address, then claim again:\n" +
+				"       Recreating that claim under its own name takes the address back. To give it\n" +
+				"       to this claim instead, release it, then claim again:\n" +
 				"       datumctl ipam allocation release " + holder.Name
 			if holder.Namespace != "" {
 				fix += " --namespace " + holder.Namespace
@@ -782,7 +812,8 @@ func newClaimReleaseCommand(a *app) *cobra.Command {
 		Long: `Release a claim. What happens to the address depends on the effective reclaim
 policy: Delete frees it back to the pool, Retain leaves the allocation in place
 with its claim reference cleared, still held and still counted against its
-owner, until something releases it explicitly.`,
+owner. Creating a claim of the same name again takes a retained address back;
+otherwise it is held until something releases it explicitly.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -834,7 +865,8 @@ owner, until something releases it explicitly.`,
 			_, _ = fmt.Fprintf(a.io.Out, "%s Released claim %q\n", successPrefix(a.color), name)
 			if retained {
 				_, _ = fmt.Fprintf(a.io.Out,
-					"  %s is retained and still held; release it with `datumctl ipam allocation release`.\n", addr)
+					"  %s is retained and still held. Create claim %q again to take it back, or\n"+
+						"  release it with `datumctl ipam allocation release`.\n", addr, name)
 			}
 			return nil
 		},

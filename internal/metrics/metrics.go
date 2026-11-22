@@ -51,7 +51,11 @@ var (
 			StabilityLevel: metrics.ALPHA,
 		},
 		// resource:  "ipclaims" | "asnclaims"
-		// result:    "success" | "exhausted" | "error"
+		// result:    "success" | "reclaimed" | "exhausted" | "error".
+		//            "reclaimed" is a claim recreated under the name of one
+		//            whose address was retained, bound back to that address
+		//            without a block search, so it is kept apart from
+		//            "success" rather than pulling its latency down.
 		// ip_family: "IPv4" | "IPv6" | "ASN" — derived from the claim spec or
 		//            the resolved CIDR for prefix/address claims, hardcoded
 		//            to "ASN" for asnclaim. Bounded cardinality (3 values).
@@ -299,6 +303,30 @@ var (
 		[]string{"resource"},
 	)
 
+	// Reclaims counts claims recreated under the name of one whose address was
+	// retained, by what came of the attempt to take that address back.
+	//
+	// result:
+	//   reclaimed — the retained address was bound to the new claim.
+	//   mismatch  — the new claim asked for another class, scope, family, size
+	//               or address than the retained allocation holds, and was
+	//               refused. A sustained rate means a consumer recreates
+	//               claims on terms that no longer match what it retained.
+	//
+	// Paired with retentions_total: retentions minus reclaims is roughly the
+	// retained set a recreate never came back for. Dry runs are not counted;
+	// their latency is, as result="reclaimed" on allocation_duration_seconds,
+	// like every other request-level metric.
+	Reclaims = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Namespace:      "ipam",
+			Name:           "reclaims_total",
+			Help:           "Claims recreated over a retained allocation, by whether the address was taken back",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"result"},
+	)
+
 	// CascadeLevels counts the levels of a class chain a claim walked, by what
 	// the claim had to do at each one.
 	//
@@ -375,6 +403,7 @@ func init() {
 		WatcherDrainCycles,
 		Releases,
 		Retentions,
+		Reclaims,
 		CascadeLevels,
 		CascadeResolutionDuration,
 	)
@@ -466,6 +495,17 @@ func RecordRetention(resource string) {
 	Retentions.WithLabelValues(resource).Inc()
 }
 
+// RecordReclaim records the outcome of a recreated claim meeting a retained
+// allocation under its name. result is "reclaimed" or "mismatch". Nothing is
+// recorded under a dry-run (see WithDryRun): the counter describes retained
+// addresses taken back or left held, and a dry-run takes none back.
+func RecordReclaim(ctx context.Context, result string) {
+	if IsDryRun(ctx) {
+		return
+	}
+	Reclaims.WithLabelValues(result).Inc()
+}
+
 // ObserveQuery records a Postgres query duration. Intended for use as
 //
 //	defer metrics.ObserveQuery("select_pool_for_update", time.Now())
@@ -519,8 +559,8 @@ func ObservePgxpoolStat(stat PgxpoolStatLike) {
 //	    metrics.ObserveAllocationDuration("ipclaims", result, ipFamily, project, org, start)
 //	}()
 //
-// where the surrounding code mutates `result` ("success" | "exhausted" |
-// "error") and `ipFamily` ("IPv4" | "IPv6" | "ASN") just before each return so
+// where the surrounding code mutates `result` ("success" | "reclaimed" |
+// "exhausted" | "error") and `ipFamily` ("IPv4" | "IPv6" | "ASN") just before each return so
 // the observation lands in the right bucket. ipFamily defaults to "" until
 // the address-family-aware code path is reached; that yields a brief window
 // where validation/permission failures land in the empty-string label, which

@@ -6,17 +6,20 @@
 
 ## What this alert means
 
-The 95th percentile of successful (`result="success"`) IPAM claim allocation
+The 95th percentile of successful (`result=~"success|reclaimed"`) IPAM claim allocation
 latency exceeded 500ms for at least 5 minutes. This is the headline write-path
 SLO; sustained breach causes consumer k6 throughput tests to fail and degrades
 every namespace that creates claims.
 
-The histogram is filtered to `result="success"` so failure-path latency does
-not skew the tail. If failures dominate, see `ipam-allocation-error-rate-high.md`.
+The histogram is filtered to the creates that bound an address so failure-path
+latency does not skew the tail: `success` is a block allocated by search, and
+`reclaimed` a recreated claim taking back the address it retained, which skips
+pool resolution and the search. To tell them apart, split the query by
+`result`. If failures dominate, see `ipam-allocation-error-rate-high.md`.
 
 ## Source signals
 
-- `ipam_allocation_duration_seconds_bucket{result="success"}` — primary
+- `ipam_allocation_duration_seconds_bucket{result=~"success|reclaimed"}` — primary
 - `ipam_allocation_duration_seconds_count` — denominator for failure ratio
 - Provider dashboard → "Allocation latency" row → "Allocation latency quantiles"
 
@@ -24,7 +27,7 @@ not skew the tail. If failures dominate, see `ipam-allocation-error-rate-high.md
 
 1. **Confirm scope.** Is the latency spike on every `resource` value
    (`ipprefixclaim`, `ipaddressclaim`, `asnclaim`) or one? Per-resource panel:
-   `histogram_quantile(0.95, sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{result="success"}[5m])))`
+   `histogram_quantile(0.95, sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{result=~"success|reclaimed"}[5m])))`
 2. **Correlate with throughput.** Is the cluster doing more work, or the same
    work slower? Provider dashboard → "Allocation throughput" row.
 3. **Check postgres.** The synchronous allocation transaction holds

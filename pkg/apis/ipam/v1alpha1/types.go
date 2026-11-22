@@ -726,8 +726,9 @@ const (
 //
 // An allocation may outlive the claim that created it: a claim released under
 // ReclaimPolicy Retain leaves its allocation in place with ClaimRef cleared,
-// still held and still counted against its holder, until something releases it
-// explicitly.
+// still held and still counted against its holder. A claim created again under
+// the same name in the same namespace takes it back; otherwise it is held until
+// something releases it explicitly.
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type IPAllocation struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -754,6 +755,7 @@ type IPAllocationSpec struct {
 	// ClaimRef names the claim currently bound to this allocation. Nil on
 	// reservations, and nil on a retained allocation whose claim has been
 	// deleted — which is what makes retention visible rather than inferred.
+	// Set again when a claim of the same name is recreated and reclaims it.
 	// +optional
 	ClaimRef *LocalRef `json:"claimRef,omitempty"`
 
@@ -943,6 +945,24 @@ type IPClaimSpec struct {
 	Target ClaimTarget `json:"target,omitempty"`
 
 	// ReclaimPolicy overrides the class default for this claim.
+	//
+	// Under Retain, deleting the claim leaves its address held. Creating a
+	// claim of the same name in the same namespace and project takes that
+	// address back, provided it resolves to the same class (the same defining
+	// project and name), address family and address scope; its scope projects
+	// onto the class's uniqueWithin as before; the pool holding the address is
+	// one this claim would be placed in now; and its prefix length and, if it
+	// names one, its address agree. A claim that states no prefix length takes
+	// the retained one. A claim that differs on any of them is refused with
+	// reason RetainedAllocationMismatch naming the field, rather than given a
+	// second address. The recreated claim's own reclaim policy applies from
+	// then on.
+	//
+	// Scope references are compared by apiGroup, kind and name, not by object
+	// identity: a network deleted and recreated under the same name is the
+	// same scope, and a claim naming it reclaims. Until quota counts retained
+	// addresses (milo-os/milo#1028), a reclaim is charged as a new claim, so a
+	// project at its claim quota cannot reclaim.
 	// +optional
 	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
 

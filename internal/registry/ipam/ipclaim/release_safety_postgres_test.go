@@ -138,10 +138,10 @@ func TestReclaimPolicyCannotBeChangedAfterCreate(t *testing.T) {
 // every run. With every path taking the pool first, the first in the queue
 // simply wins:
 //
-//   - recreate first: it finds the retained row and is refused with 409
-//     AllocationRetained, and the release then frees the address;
-//   - release first: it frees the address, and the recreate is handed a new
-//     allocation.
+//   - recreate first: it reclaims the retained row, and the release then finds
+//     it bound and is refused with 409;
+//   - release first: it frees the address, and the recreate, finding no row
+//     left to reclaim, is handed a new allocation.
 func TestReleasingARetainedAllocationAndRecreatingItsClaimSerialiseOnThePool(t *testing.T) {
 	r, allocREST, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
 	ctx := claimCtx(testProject)
@@ -210,14 +210,14 @@ func TestReleasingARetainedAllocationAndRecreatingItsClaimSerialiseOnThePool(t *
 				t.Fatalf("round %d (recreate first: %v): %s deadlocked: %v", round, recreateFirst, what, err)
 			}
 		}
-		if releaseErr != nil {
-			t.Fatalf("round %d (recreate first: %v): release failed: %v", round, recreateFirst, releaseErr)
+		if claimErr != nil {
+			t.Fatalf("round %d (recreate first: %v): recreate returned %v, want the claim bound", round, recreateFirst, claimErr)
 		}
-		if recreateFirst && !apierrors.IsConflict(claimErr) {
-			t.Fatalf("round %d: recreate queued first returned %v, want 409 over the retained row", round, claimErr)
+		if recreateFirst && !apierrors.IsConflict(releaseErr) {
+			t.Fatalf("round %d: release queued after the reclaim returned %v, want 409 over the bound row", round, releaseErr)
 		}
-		if !recreateFirst && claimErr != nil {
-			t.Fatalf("round %d: recreate queued after the release returned %v, want a fresh allocation", round, claimErr)
+		if !recreateFirst && releaseErr != nil {
+			t.Fatalf("round %d: release queued first failed: %v", round, releaseErr)
 		}
 	}
 }
@@ -243,7 +243,7 @@ func TestReleasingARetainedAllocationRacingItsClaimsRecreateNeverDeadlocks(t *te
 		}
 	}
 
-	var recreated, refused int
+	var released, reclaimed int
 	for i := 0; i < rounds; i++ {
 		retain()
 
@@ -275,19 +275,19 @@ func TestReleasingARetainedAllocationRacingItsClaimsRecreateNeverDeadlocks(t *te
 				t.Fatalf("round %d: %s returned %d: %v", i, what, status.Status().Code, err)
 			}
 		}
-		if releaseErr != nil {
-			t.Fatalf("round %d: release of the retained allocation failed: %v", i, releaseErr)
+		if claimErr != nil {
+			t.Fatalf("round %d: recreate returned %v, want the claim bound either way", i, claimErr)
 		}
 		switch {
-		case claimErr == nil:
-			recreated++
-		case apierrors.IsConflict(claimErr):
-			refused++
+		case releaseErr == nil:
+			released++
+		case apierrors.IsConflict(releaseErr):
+			reclaimed++
 		default:
-			t.Fatalf("round %d: recreate returned %v, want success or 409", i, claimErr)
+			t.Fatalf("round %d: release returned %v, want success or 409", i, releaseErr)
 		}
 	}
-	t.Logf("%d rounds: recreate won after the release %d times, was refused %d times", rounds, recreated, refused)
+	t.Logf("%d rounds: the release won %d times, the reclaim won %d times", rounds, released, reclaimed)
 }
 
 // isDeadlock reports whether err carries SQLSTATE 40P01, wrapped or flattened

@@ -1,0 +1,257 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: class-retain-replacement
+spec:
+  description: |
+    A claim released under reclaimPolicy Retain leaves its address held. A
+    claim created again under the same name in the same namespace derives the
+    same allocation identity, and takes that address back rather than being
+    refused or handed a second one (milo-os/ipam#107).
+
+      a. same name, same terms: the same address, and the same IPAllocation
+         object, now pointing at the new claim
+      b. same name, another class: refused with 409 RetainedAllocationMismatch
+         naming spec.className, and the address stays retained
+      c. a pool with no free block left: the recreate still succeeds, because
+         it takes back a block the pool already holds for it. Before reclaim
+         the block search ran first and answered 507.
+
+    The other mismatch terms (family, scope, prefix length, requested address)
+    and the concurrency cases are covered by the Postgres-backed tests in
+    internal/registry/ipam/ipclaim/reclaim_postgres_test.go.
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    - name: setup
+      description: |
+        Classes and pools are applied by script rather than by a chainsaw
+        create, so chainsaw's own teardown does not try to delete a pool while
+        the retained allocations inside it still hold addresses. The cleanup
+        below runs when the test ends, whichever step it ended on, so a failed
+        step cannot leave retained allocations, pools or classes behind in the
+        shared project.
+      try:
+        - script:
+            timeout: 60s
+            content: |
+              . ../lib/ipam.sh
+              kubectl apply -f test-data/setup.yaml >/dev/null
+              wait_pool_ready rr-pool
+              wait_pool_ready rr-tiny
+              # The full-pool step needs rr-tiny empty, and the same-address
+              # step reads what rr-pool hands out. A pool still holding
+              # something was left by an earlier run.
+              for p in rr-pool rr-tiny; do
+                used=$(kubectl get ippool "$p" -o jsonpath='{.status.capacity.allocated}')
+                if [ -n "$used" ] && [ "$used" != "0" ]; then
+                  echo "FAIL: $p already holds $used address(es); clean up the earlier run first"
+                  exit 1
+                fi
+              done
+              echo "OK: pools Ready and empty"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: pools Ready and empty'))": true
+      cleanup:
+        - script:
+            # Explicit, like every script here: CI runs chainsaw without
+            # test/e2e/chainsaw-config.yaml, so the default exec timeout is
+            # 5s, and releasing two pools' retained allocations takes longer.
+            timeout: 180s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              set +e
+              # Claims first and synchronously: an allocation still bound to a
+              # live claim is refused, by design.
+              kubectl delete ipclaim -n "$NAMESPACE" -l suite=class-retain-replacement \
+                --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1
+              # Retained allocations survive their claims by design, so they
+              # are released explicitly, and only then can their pools go.
+              release_pool_allocations "$NAMESPACE" rr-tiny
+              release_pool_allocations "$NAMESPACE" rr-pool
+              kubectl delete ippool rr-tiny rr-pool --ignore-not-found >/dev/null 2>&1
+              kubectl delete ipclass rr-retain rr-other rr-tiny-cls --ignore-not-found >/dev/null 2>&1
+
+              # A leftover here is a leak into the project every suite shares,
+              # so it fails the suite rather than passing quietly.
+              left=$(kubectl get ipallocation -n "$NAMESPACE" -o json 2>/dev/null | jq -r \
+                '.items[] | select(.spec.poolRef.name == "rr-pool" or .spec.poolRef.name == "rr-tiny") | .metadata.name')
+              pools=$(kubectl get ippool rr-pool rr-tiny --ignore-not-found -o name 2>/dev/null)
+              classes=$(kubectl get ipclass rr-retain rr-other rr-tiny-cls --ignore-not-found -o name 2>/dev/null)
+              if [ -n "$left$pools$classes" ]; then
+                echo "FAIL: class-retain-replacement cleanup left behind:" $left $pools $classes
+                exit 1
+              fi
+              echo "class-retain-replacement cleanup done"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'class-retain-replacement cleanup done'))": true
+
+    - name: same-name-gets-the-same-address
+      description: |
+        The recreate is handed the retained address, through the IPAllocation
+        that held it: same object, claimRef set again.
+      try:
+        - script:
+            timeout: 150s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              web() {
+                kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rr-web
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-retain-replacement
+              spec:
+                className: rr-retain
+              EOF
+                wait_claim_bound "$NAMESPACE" rr-web 60
+              }
+
+              web
+              addr=$(claim_cidr "$NAMESPACE" rr-web)
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" rr-web -o jsonpath='{.status.boundAllocationRef.name}')
+              uid=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o jsonpath='{.metadata.uid}')
+
+              kubectl delete ipclaim -n "$NAMESPACE" rr-web --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rr-web 60
+              claimref=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o json | jq -r '.spec.claimRef // "none"')
+              if [ "$claimref" != "none" ]; then
+                echo "FAIL: setup: $alloc was not retained (claimRef $claimref)"
+                exit 1
+              fi
+
+              web
+              got=$(claim_cidr "$NAMESPACE" rr-web)
+              assert_equal_addr "$got" "$addr" "recreated claim holds:"
+
+              json=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o json)
+              if [ "$(printf '%s' "$json" | jq -r '.metadata.uid')" != "$uid" ]; then
+                echo "FAIL: IPAllocation $alloc was replaced rather than rebound"
+                exit 1
+              fi
+              if [ "$(printf '%s' "$json" | jq -r '.spec.claimRef.name // ""')" != "rr-web" ]; then
+                echo "FAIL: IPAllocation $alloc does not name the recreated claim"
+                exit 1
+              fi
+              echo "OK: rr-web took back $addr through $alloc"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: rr-web took back'))": true
+
+    - name: another-class-is-a-mismatch
+      description: |
+        Identity entitles the claim to the address, not to the address on new
+        terms. A recreate naming another class is refused by reason and field,
+        and binds nothing.
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" rr-web -o jsonpath='{.status.boundAllocationRef.name}')
+              kubectl delete ipclaim -n "$NAMESPACE" rr-web --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rr-web 60
+
+              expect_refusal "$NAMESPACE" 409 RetainedAllocationMismatch 'spec\.className' "recreate under another class" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rr-web
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-retain-replacement
+              spec:
+                className: rr-other
+              EOF
+
+              if kubectl get ipclaim -n "$NAMESPACE" rr-web >/dev/null 2>&1; then
+                echo "FAIL: the refused recreate left a claim rr-web behind"
+                exit 1
+              fi
+              claimref=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o json | jq -r '.spec.claimRef // "none"')
+              if [ "$claimref" != "none" ]; then
+                echo "FAIL: the refused recreate bound $alloc to $claimref"
+                exit 1
+              fi
+              echo "OK: another class refused; $alloc still retained"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: another class refused'))": true
+
+    - name: a-full-pool-hands-the-retained-address-back
+      description: |
+        Fill a two-address pool, retain one address through its claim's
+        deletion, show the pool refuses any other name with 507, then recreate
+        the retaining name and get the address back.
+      try:
+        - script:
+            timeout: 180s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              tiny() {
+                kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: $1
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-retain-replacement
+              spec:
+                className: rr-tiny-cls
+              EOF
+                wait_claim_bound "$NAMESPACE" "$1" 60
+              }
+
+              tiny rr-tiny-1
+              tiny rr-tiny-2
+              held=$(claim_cidr "$NAMESPACE" rr-tiny-1)
+
+              kubectl delete ipclaim -n "$NAMESPACE" rr-tiny-1 --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rr-tiny-1 60
+
+              expect_507 "$NAMESPACE" "" "another name while the last address is retained" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rr-tiny-other
+                namespace: $NAMESPACE
+              spec:
+                className: rr-tiny-cls
+              EOF
+
+              tiny rr-tiny-1
+              got=$(claim_cidr "$NAMESPACE" rr-tiny-1)
+              assert_equal_addr "$got" "$held" "recreate in the full pool holds:"
+              echo "OK: the full pool handed $held back to rr-tiny-1"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the full pool handed'))": true

@@ -32,7 +32,7 @@ positions at its own edges.
 An allocation can outlive the claim that created it. A claim released under
 reclaim policy Retain leaves its allocation in place with no claim reference —
 still held, still counted against its owner — which is the case this group
-exists for.`,
+exists for. Creating a claim of the same name again takes the address back.`,
 		RunE: func(c *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return c.Help()
@@ -315,8 +315,9 @@ func newAllocationReleaseCommand(a *app) *cobra.Command {
 		Aliases: []string{"rm", "delete"},
 		Short:   "Release a held allocation back to its pool",
 		Long: `Release an allocation. This is the deliberate hand-back that reclaim policy
-Retain defers to: an allocation whose claim is gone stays held until something
-releases it here.
+Retain defers to: an allocation whose claim is gone stays held until a claim of
+the same name is created again, which takes it back, or until it is released
+here. Release it to give the address to a claim of another name or terms.
 
 Releasing an allocation that still has a claim bound to it is refused — release
 the claim instead, so the claim and its address do not disagree.`,
@@ -606,7 +607,8 @@ func (a *app) renderAddressAnswer(arg string, al *ipamv1alpha1.IPAllocation, cs 
 		_, _ = fmt.Fprintf(a.io.Out, "  claimed by: claim %s\n", al.Spec.ClaimRef.Name)
 		_, _ = fmt.Fprintf(a.io.Out, "              project %s\n", a.scopeLine(al.Namespace))
 	default:
-		_, _ = fmt.Fprintf(a.io.Out, "  claimed by: nothing — retained after its claim was deleted\n")
+		_, _ = fmt.Fprintf(a.io.Out, "  claimed by: nothing — retained after its claim was deleted;\n")
+		_, _ = fmt.Fprintf(a.io.Out, "              recreating that claim takes it back\n")
 	}
 
 	for _, role := range sortedScopeRoles(al.Spec.Scope) {

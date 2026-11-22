@@ -83,7 +83,7 @@ local allocThroughputPanel = common.tsPanel(
     },
   ],
   unit='reqps',
-  description='Allocation throughput. result=success|exhausted|error from internal/metrics/metrics.go.'
+  description='Allocation throughput. result=success|reclaimed|exhausted|error from internal/metrics/metrics.go; reclaimed is a recreated claim taking back its retained address.'
 );
 
 local allocFailureRatePanel = common.tsPanel(
@@ -119,12 +119,12 @@ local allocFailureRatioPanel = common.tsPanel(
 // ─────────────────────────────────────────────────────────────────────────────
 
 local latencyQuantilesPanel = common.tsPanel(
-  'Allocation latency quantiles (success only)',
+  'Allocation latency quantiles (successful creates)',
   [
     {
       expr: |||
         histogram_quantile(0.50,
-          sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{%(sel)s, result="success"}[5m]))
+          sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{%(sel)s, result=~"success|reclaimed"}[5m]))
         )
       ||| % { sel: ipamSel },
       legend: 'p50 {{resource}}',
@@ -132,7 +132,7 @@ local latencyQuantilesPanel = common.tsPanel(
     {
       expr: |||
         histogram_quantile(0.95,
-          sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{%(sel)s, result="success"}[5m]))
+          sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{%(sel)s, result=~"success|reclaimed"}[5m]))
         )
       ||| % { sel: ipamSel },
       legend: 'p95 {{resource}}',
@@ -140,14 +140,14 @@ local latencyQuantilesPanel = common.tsPanel(
     {
       expr: |||
         histogram_quantile(0.99,
-          sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{%(sel)s, result="success"}[5m]))
+          sum by (le, resource) (rate(ipam_allocation_duration_seconds_bucket{%(sel)s, result=~"success|reclaimed"}[5m]))
         )
       ||| % { sel: ipamSel },
       legend: 'p99 {{resource}}',
     },
   ],
   unit='s',
-  description='SLO panel: p95 < 500ms target. Filtered to result="success" so failures do not skew tail.'
+  description='SLO panel: p95 < 500ms target. Filtered to result=~"success|reclaimed", every create that bound an address, so failures do not skew tail.'
 );
 
 local latencyHeatmapPanel = common.heatPanel(
@@ -161,7 +161,7 @@ local p95StatPanel = common.statPanel(
   'p95 allocation latency',
   |||
     histogram_quantile(0.95,
-      sum by (le) (rate(ipam_allocation_duration_seconds_bucket{%(sel)s, result="success"}[5m]))
+      sum by (le) (rate(ipam_allocation_duration_seconds_bucket{%(sel)s, result=~"success|reclaimed"}[5m]))
     )
   ||| % { sel: ipamSel },
   unit='s',

@@ -76,6 +76,7 @@ func ipamReasonLabel(err error) (string, bool) {
 	case ipamerrors.ReasonNoOfferingPool:
 		return reasonPoolNotFound, true
 	case ipamerrors.ReasonClaimExists, ipamerrors.ReasonAllocationRetained,
+		ipamerrors.ReasonRetainedAllocationMismatch,
 		ipamerrors.ReasonAddressInUse, ipamerrors.ReasonAddressReserved:
 		return reasonConflict, true
 	case ipamerrors.ReasonPrefixLengthRejected, ipamerrors.ReasonFamilyMismatch,
