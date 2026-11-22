@@ -355,8 +355,12 @@ the claim instead, so the claim and its address do not disagree.
 
 Releasing needs the IPAM Consumer role in the project, the role claims are
 filed with, or IPAM Admin. A consumer can give back what its own claims
-retained without an admin; the refusal above is the server's, so no role can
-release an address a claim still holds.`,
+retained without an admin, as long as the allocation has a lease deadline: the
+release only brings that deadline forward. An allocation held with no deadline
+(lease "none" in allocation show, or still pending) is held on purpose, often
+by something that still uses the address, and only IPAM Admin can release it;
+a consumer is refused. The refusal of a bound allocation is the server's, so no
+role can release an address a claim still holds.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -388,6 +392,12 @@ release an address a claim still holds.`,
 				return newCLIError(exitAborted, "aborted")
 			}
 			if err := cs.IpamV1alpha1().IPAllocations(ns).Delete(context.Background(), name, metav1.DeleteOptions{}); err != nil {
+				if httpStatusCode(err) == 403 && al.Status.ExpiresAt == nil {
+					return newCLIError(exitForbidden, fmt.Sprintf("not authorized: %s", apiMessage(err))).
+						withFix("an allocation with no lease deadline can be released only by an IPAM Admin;\n" +
+							"ask one to run:\n       datumctl ipam allocation release " + name).
+						withCause(err)
+				}
 				return classifyError(err)
 			}
 			if a.opts.output == outputName {

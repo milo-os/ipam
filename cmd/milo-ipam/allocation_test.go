@@ -1,10 +1,14 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8stesting "k8s.io/client-go/testing"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -133,6 +137,29 @@ func TestAllocationReleaseFreesARetainedAddress(t *testing.T) {
 	}
 	if _, err := cs.IpamV1alpha1().IPAllocations("default").Get(t.Context(), "alloc-1", metav1.GetOptions{}); err == nil {
 		t.Fatal("allocation was not deleted")
+	}
+}
+
+// A consumer refused the release of an allocation with no lease deadline is
+// told an admin can release it, not to check pool sharing.
+func TestAllocationReleaseOfAnUnleasedAllocationPointsAtAnAdmin(t *testing.T) {
+	cs := newFakeClientset(newAllocation("alloc-1", "c", "10.0.0.0/26", "us-west-v4", ""))
+	cs.PrependReactor("delete", "ipallocations", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(ipamv1alpha1.Resource("ipallocations"), "alloc-1",
+			errors.New("the retained address has no lease deadline; only an IPAM admin can release it"))
+	})
+	ta := newTestApp(cs, nil)
+	cmd := newAllocationReleaseCommand(ta.app)
+	err := cmd.RunE(cmd, []string{"alloc-1"})
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	ce := toCLIError(err)
+	if ce.code != exitForbidden {
+		t.Fatalf("code = %d, want forbidden(%d)", ce.code, exitForbidden)
+	}
+	if !strings.Contains(ce.msg, "no lease deadline") || !strings.Contains(ce.fix, "IPAM Admin") {
+		t.Errorf("refusal %q / fix %q does not explain that an admin must release it", ce.msg, ce.fix)
 	}
 }
 

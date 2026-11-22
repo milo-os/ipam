@@ -9,7 +9,9 @@ prefixes and ASNs.
 - A `ClusterRoleBinding` granting your service `ipam.miloapis.com` claim verbs
   (typically: `ipam-consumer` from `config/milo/rbac.yaml`). The consumer role
   also grants deleting an IPAllocation, which is how your service releases an
-  address its claim retained; a bound allocation is refused with 409.
+  address its claim retained under a lease; a bound allocation is refused with
+  409, and one retained with no lease deadline with 403 (only IPAM Admin can
+  release that; see [Retention leases](#retention-leases)).
 
 ## Claiming a prefix
 
@@ -71,7 +73,8 @@ back only on the terms it was held under:
 Anything else is a 409 with reason `RetainedAllocationMismatch`, naming the
 IPAllocation and the field. Recreate on the retained terms, or delete the
 IPAllocation to release the address and claim afresh. Deleting it needs only
-the consumer role, and is refused with 409 while a claim is bound to it.
+the consumer role if the retained address has a lease deadline, and is refused
+with 409 while a claim is bound to it. One with no deadline needs IPAM Admin.
 
 Three consequences to plan around:
 
@@ -106,6 +109,16 @@ status:
 With no lease on either, `expiresAt` is absent and the reason is `NoLease`.
 Recreating the claim before the deadline reclaims the address and clears both
 timestamps.
+
+The deadline also decides who can release the address early. With an
+`expiresAt`, the consumer role can delete the IPAllocation: the release only
+brings the deadline forward. With none (`NoLease`, or `LeasePending` until the
+sweeper evaluates it), the address is held until someone releases it, usually
+because what owned it, such as a VPC block under a class that retains by
+default, still uses it. Deleting that IPAllocation is refused with 403 unless
+the caller has `ipam.miloapis.com/ipallocations.release-unleased`, which only
+the IPAM Admin role grants. If your service needs to give such an address
+back, ask an admin to release it.
 
 A claim cannot retain indefinitely on its own say-so. Setting
 `reclaimPolicy: Retain` on a claim whose class defaults to `Delete` is refused
@@ -240,6 +253,6 @@ Reasons are added over time, so treat an unrecognised one the same as
 
 - **507 Insufficient Storage**: no space. Fall back to a different pool or back off.
 - **400 Bad Request**: the request will not succeed unchanged on retry.
-- **403 Forbidden**: RBAC. Investigate role bindings.
+- **403 Forbidden**: RBAC. Investigate role bindings. Deleting a retained IPAllocation with no lease deadline is also 403 for anyone but an IPAM Admin.
 - **409 Conflict**: a name is taken.
 - **422 Unprocessable Entity**: a field is refused for its value; change it before retrying.
