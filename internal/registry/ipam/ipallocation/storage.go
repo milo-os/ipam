@@ -98,9 +98,12 @@ type allocationStore interface {
 }
 
 // txBeginner is the minimal slice of *pgxpool.Pool the release path depends
-// on, so tests can inject a fake transaction.
+// on, so tests can inject a fake transaction. QueryRow is the one read made
+// outside the transaction: whether the row has a lease deadline, read before
+// the authorizer is asked, so a slow authorizer holds no connection.
 type txBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // Delete frees a retained allocation: the ipam_cidr_allocations row and the
@@ -118,12 +121,14 @@ type txBeginner interface {
 // back.
 //
 // An allocation retained with no finite lease deadline is released only for a
-// caller with the release-unleased permission, and refused with 403 otherwise.
-// The allocator decides that from the row under the locks it deletes it
-// under. The permission is asked about before those locks are taken when an
-// unlocked read already shows no deadline, so the authorizer's round trip does
-// not hold up every claim on the pool; it is asked under them only if the row
-// lost its deadline in between.
+// caller with the release-unleased permission, or deletecollection as the
+// namespace controller has, and refused with 403 otherwise. The allocator
+// decides that from the row under the locks it deletes it under. When an
+// unlocked read made before the transaction already shows no deadline, the
+// permission is asked about then, so the authorizer's round trip holds no
+// connection and no lock, and a caller without it is refused at once rather
+// than queueing on the pool. It is asked under the locks only if the row lost
+// its deadline in between.
 func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
 	existing, err := r.Get(ctx, name, &metav1.GetOptions{})
 	if err != nil {
@@ -147,6 +152,21 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 	}
 
 	key := allocationObjectKey(tenant.FromContext(ctx), alloc.Namespace, alloc.Name)
+	ask := access.NewUnleasedReleaseAsk(r.releaseChecker, alloc.Namespace, name)
+	unleased, err := allocator.RetainedWithoutDeadline(ctx, r.db, key)
+	if err != nil {
+		return nil, false, err
+	}
+	if unleased {
+		allowed, err := ask.Allowed(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		if !allowed {
+			return nil, false, unleasedForbidden(name)
+		}
+	}
+
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, false, fmt.Errorf("begin allocation delete transaction: %w", err)
@@ -158,11 +178,7 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 		}
 	}()
 
-	guard, err := r.unleasedReleaseGuard(ctx, tx, key, alloc.Namespace, name)
-	if err != nil {
-		return nil, false, err
-	}
-	if err := r.allocator.ReleaseRetainedAllocation(ctx, tx, key, guard); err != nil {
+	if err := r.allocator.ReleaseRetainedAllocation(ctx, tx, key, ask.Allowed); err != nil {
 		var unleased *allocator.UnleasedReleaseError
 		if errors.As(err, &unleased) {
 			return nil, false, unleasedForbidden(name)
@@ -208,48 +224,13 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 	return alloc, true, nil
 }
 
-// unleasedReleaseGuard returns the guard ReleaseRetainedAllocation runs for a
-// row with no lease deadline. It asks the release checker at most once per
-// request, and asks it now, before any lock is taken, if an unlocked read of
-// the row already shows no deadline.
-func (r *ReleasingREST) unleasedReleaseGuard(ctx context.Context, tx pgx.Tx, key, namespace, name string) (allocator.UnleasedReleaseGuard, error) {
-	var (
-		asked   bool
-		allowed bool
-	)
-	ask := func(ctx context.Context) (bool, error) {
-		if asked {
-			return allowed, nil
-		}
-		asked = true
-		if r.releaseChecker == nil {
-			return false, nil
-		}
-		ok, err := r.releaseChecker.CanReleaseUnleased(ctx, namespace, name)
-		if err != nil {
-			return false, apierrors.NewInternalError(fmt.Errorf("authorize release of unleased IPAllocation: %w", err))
-		}
-		allowed = ok
-		return allowed, nil
-	}
-	unleased, err := allocator.RetainedWithoutDeadline(ctx, tx, key)
-	if err != nil {
-		return nil, err
-	}
-	if unleased {
-		if _, err := ask(ctx); err != nil {
-			return nil, err
-		}
-	}
-	return ask, nil
-}
-
 // unleasedForbidden is the refusal to release an allocation retained with no
 // lease deadline to a caller without the release-unleased permission.
 func unleasedForbidden(name string) error {
 	return apierrors.NewForbidden(v1alpha1.Resource("ipallocations"), name, fmt.Errorf(
 		"the retained address has no lease deadline, so whatever held it may still be using it; "+
-			"only an IPAM admin can release it (permission ipam.miloapis.com/ipallocations.%s)",
+			"only an IPAM admin can release it (permission ipam.miloapis.com/ipallocations.%s), "+
+			"or deleting its namespace",
 		access.VerbReleaseUnleased))
 }
 

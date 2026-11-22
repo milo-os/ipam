@@ -18,6 +18,8 @@ spec:
   # pool with no maxRetentionLease, such as a VPC or subnet block. Nothing
   # would ever free it, because whatever owned it may still be using it, so
   # the server checks release-unleased itself when the row has no deadline.
+  # Deleting the namespace frees it too, through the namespace controller's
+  # deletecollection, which the server accepts in place of release-unleased.
   inheritedRoles:
     - name: ipam.miloapis.com-provider
     - name: ipam.miloapis.com-consumer

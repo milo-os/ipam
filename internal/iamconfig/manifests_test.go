@@ -208,6 +208,10 @@ func TestConsumersCanReadEveryResourceAClaimTouches(t *testing.T) {
 // nothing else ties them to a manifest. A verb the code checks but no
 // ProtectedResource declares is denied for everyone, and the denial only
 // surfaces as a cross-project reference or claim that can never be authorised.
+//
+// internal/access/release.go also asks deletecollection on ipallocations. That
+// one is undeclared on purpose and is not listed here; see
+// TestDeleteCollectionOnAllocationsStaysOutOfIAM.
 func TestEveryVerbTheCodeChecksIsDeclared(t *testing.T) {
 	protected := loadProtectedResources(t)
 	for _, want := range []struct {
@@ -317,6 +321,30 @@ func TestOnlyAdminsCanReleaseAnUnleasedAllocation(t *testing.T) {
 		}
 		if permissionsOf(roles, name, map[string]bool{})[perm] {
 			t.Errorf("role %q grants %q; only ipam-admin may release an address with no lease deadline", name, perm)
+		}
+	}
+}
+
+// The release of an allocation with no lease deadline is also admitted by
+// deletecollection on ipallocations, which the namespace controller holds
+// through Kubernetes RBAC, so deleting a namespace still frees what it holds.
+// It must stay out of Milo IAM: declared, a role could grant it, and a
+// consumer holding it could free an address held on purpose.
+func TestDeleteCollectionOnAllocationsStaysOutOfIAM(t *testing.T) {
+	pr, ok := loadProtectedResources(t)["ipallocations"]
+	if !ok {
+		t.Fatal("no ProtectedResource for ipallocations")
+	}
+	for _, v := range pr.Spec.Permissions {
+		if v == "deletecollection" {
+			t.Error("the ipallocations ProtectedResource declares deletecollection; " +
+				"internal/access/release.go admits unleased releases on it, so no IAM role may be able to grant it")
+		}
+	}
+	roles := loadRoles(t)
+	for name := range roles {
+		if permissionsOf(roles, name, map[string]bool{})["ipam.miloapis.com/ipallocations.deletecollection"] {
+			t.Errorf("role %q grants ipallocations.deletecollection", name)
 		}
 	}
 }

@@ -9,9 +9,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apiserver/pkg/authorization/authorizer"
 
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
@@ -417,5 +419,99 @@ func TestTheReclaimJudgesTheDeadlineUnderThePoolLock(t *testing.T) {
 	expectUnleasedReclaimForbidden(t, db, <-done, claim, rowsBefore)
 	if got := consumer.calls(); len(got) != 1 {
 		t.Errorf("release-unleased asked %d times, want once, under the lock", len(got))
+	}
+}
+
+// rbacAuthorizer allows exactly the verbs it is given on ipallocations, as
+// Kubernetes RBAC would for an identity bound to such a role.
+type rbacAuthorizer map[string]bool
+
+func (a rbacAuthorizer) Authorize(_ context.Context, attrs authorizer.Attributes) (authorizer.Decision, string, error) {
+	if attrs.GetResource() == "ipallocations" && a[attrs.GetVerb()] {
+		return authorizer.DecisionAllow, "", nil
+	}
+	return authorizer.DecisionDeny, "", nil
+}
+
+func (a rbacAuthorizer) ConditionsAwareAuthorize(ctx context.Context, attrs authorizer.Attributes) authorizer.ConditionsAwareDecision {
+	return authorizer.ConditionsAwareDecisionFromParts(a.Authorize(ctx, attrs))
+}
+
+func (a rbacAuthorizer) EvaluateConditions(context.Context, authorizer.ConditionsAwareDecision, authorizer.ConditionsData) (authorizer.Decision, string, error) {
+	return authorizer.DecisionDeny, "", authorizer.ErrorConditionEvaluationNotSupported
+}
+
+// Deleting a namespace frees what its allocations hold, unleased or not: the
+// namespace controller holds deletecollection on every resource, and that
+// admits the release, one allocation or the collection. A consumer, holding
+// plain delete, is still refused.
+func TestTheNamespaceControllerReleasesUnleasedAllocations(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	ctx := claimCtx(testProject)
+	one, two := retainClaim("vpc-1", ""), retainClaim("vpc-2", "")
+	retainAndDelete(t, r, ctx, one)
+	retainAndDelete(t, r, ctx, two)
+	for _, c := range []*ipam.IPClaim{one, two} {
+		if got := deadlineOf(t, db, c); got != "infinity" {
+			t.Fatalf("setup: %s expires_at = %q, want infinity", c.Name, got)
+		}
+	}
+
+	consumer := allocationStorageWith(t, db, access.NewUnleasedReleaseChecker(rbacAuthorizer{"delete": true}))
+	_, _, err := consumer.Delete(ctx, allocationNameFor(one.Namespace, one.Name), nil, &metav1.DeleteOptions{})
+	expectUnleasedForbidden(t, db, err, one)
+
+	controller := allocationStorageWith(t, db,
+		access.NewUnleasedReleaseChecker(rbacAuthorizer{"delete": true, access.VerbDeleteCollection: true}))
+	if _, _, err := controller.Delete(ctx, allocationNameFor(one.Namespace, one.Name), nil, &metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("release by a deletecollection holder: %v", err)
+	}
+	if _, ok := readAllocationRow(t, db, allocationKeyFor(one)); ok {
+		t.Error("the release left vpc-1's row")
+	}
+
+	// The namespace deleter's own call, which ReleasingREST serves item by item.
+	if _, err := controller.DeleteCollection(ctx, nil, &metav1.DeleteOptions{}, &metainternalversion.ListOptions{}); err != nil {
+		t.Fatalf("DeleteCollection by a deletecollection holder: %v", err)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations WHERE purpose = 'Claim'`); n != 0 {
+		t.Errorf("%d claim rows left after the collection was deleted, want 0", n)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_objects WHERE kind = 'IPAllocation'`); n != 0 {
+		t.Errorf("%d IPAllocations left after the collection was deleted, want 0", n)
+	}
+}
+
+// A consumer refused by the read before the transaction is refused without
+// waiting for the pool: a release in progress elsewhere holds it, and the
+// refusal still comes back at once.
+func TestAnUnleasedReleaseIsRefusedWithoutWaitingForThePool(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	ctx := claimCtx(testProject)
+	claim := retainClaim("vpc", "")
+	retainAndDelete(t, r, ctx, claim)
+
+	holder, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM ipam_objects WHERE key = $1 FOR UPDATE`,
+		tenant.Identity{Name: testProject}.ResourceKey("ippools", "us-east")); err != nil {
+		t.Fatalf("lock pool: %v", err)
+	}
+
+	deadline, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, _, err = allocationStorageWith(t, db, releaseChecker(false)).Delete(deadline,
+		allocationNameFor(claim.Namespace, claim.Name), nil, &metav1.DeleteOptions{})
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("release while the pool is held returned %v, want an immediate 403", err)
+	}
+
+	_, err = claimStorageWith(t, db, releaseChecker(false)).Create(deadline,
+		retainClaim("vpc", ipam.ReclaimDelete), nil, &metav1.CreateOptions{})
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("reclaim under Delete while the pool is held returned %v, want an immediate 403", err)
 	}
 }

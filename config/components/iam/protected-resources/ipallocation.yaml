@@ -23,6 +23,10 @@ spec:
     # by something still using it, so freeing it also needs this permission,
     # which only ipam-admin grants. The IPClaim create path checks it too, for
     # a claim that would reclaim such an allocation under reclaimPolicy Delete.
+    # The server also accepts deletecollection, held by the namespace
+    # controller through Kubernetes RBAC, so deleting a namespace still frees
+    # its addresses. Do not declare deletecollection here: a role could then
+    # grant it, and with it the release of an address held on purpose.
     - release-unleased
   subresources:
     - name: status

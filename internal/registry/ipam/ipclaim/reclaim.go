@@ -192,8 +192,11 @@ type reclaimResult struct {
 // that only an admin may release. It needs the release-unleased permission on
 // the allocation, as deleting the IPAllocation does, and is refused with 403
 // otherwise, leaving the row retained. The locked row decides; the permission
-// is asked about before the locks when an unlocked read already shows no
-// deadline, so the authorizer's round trip does not hold the pool.
+// is asked about before the transaction when an unlocked read already shows
+// no deadline, so the authorizer's round trip holds no connection and no
+// lock, and a caller without it is refused at once. A caller the release
+// admits, including one allowed deletecollection on ipallocations, is
+// admitted here too: it could free the address by deleting the IPAllocation.
 func (r *AllocatingREST) tryReclaim(
 	ctx context.Context,
 	span trace.Span,
@@ -216,15 +219,21 @@ func (r *AllocatingREST) tryReclaim(
 		return reclaimResult{}
 	}
 
-	mayFreeUnleased := r.unleasedReclaimGuard(claim.Namespace, allocationName)
-	if reclaimPolicy == v1alpha1.ReclaimDelete {
+	// A generated name never reclaims (it is refused below and drawn again),
+	// so it is not asked about, and not refused with 403 in place of that.
+	ask := access.NewUnleasedReleaseAsk(r.releaseChecker, claim.Namespace, allocationName)
+	if reclaimPolicy == v1alpha1.ReclaimDelete && !generatedName {
 		unleased, err := allocator.RetainedWithoutDeadline(ctx, r.db, allocationKey)
 		if err != nil {
 			return reclaimResult{handled: true, outcome: reasonTxError, err: err}
 		}
 		if unleased {
-			if _, err := mayFreeUnleased(ctx); err != nil {
+			allowed, err := ask.Allowed(ctx)
+			if err != nil {
 				return reclaimResult{handled: true, outcome: reasonInternal, err: err}
+			}
+			if !allowed {
+				return reclaimResult{handled: true, outcome: reasonForbidden, err: unleasedReclaimForbidden(claim.Name, allocationName)}
 			}
 		}
 	}
@@ -295,7 +304,7 @@ func (r *AllocatingREST) tryReclaim(
 	// claim is deleted; judged from the row as locked, which holds until the
 	// reclaim commits.
 	if reclaimPolicy == v1alpha1.ReclaimDelete && !row.Leased {
-		allowed, err := mayFreeUnleased(ctx)
+		allowed, err := ask.Allowed(ctx)
 		if err != nil {
 			return reclaimResult{handled: true, outcome: reasonInternal, err: err}
 		}
@@ -357,28 +366,6 @@ func (r *AllocatingREST) tryReclaim(
 	klog.V(2).InfoS("Reclaimed retained allocation", "claim", claimKey, "allocation", allocationName,
 		"cidr", row.CIDR, "reclaimPolicy", reclaimPolicy)
 	return reclaimResult{handled: true, obj: claim}
-}
-
-// unleasedReclaimGuard asks the release checker, at most once per request,
-// whether the caller may release the IPAllocation namespace/name though it has
-// no lease deadline. With no checker the answer is no.
-func (r *AllocatingREST) unleasedReclaimGuard(namespace, name string) func(context.Context) (bool, error) {
-	var asked, allowed bool
-	return func(ctx context.Context) (bool, error) {
-		if asked {
-			return allowed, nil
-		}
-		asked = true
-		if r.releaseChecker == nil {
-			return false, nil
-		}
-		ok, err := r.releaseChecker.CanReleaseUnleased(ctx, namespace, name)
-		if err != nil {
-			return false, apierrors.NewInternalError(fmt.Errorf("authorize reclaim of unleased IPAllocation: %w", err))
-		}
-		allowed = ok
-		return allowed, nil
-	}
 }
 
 // unleasedReclaimForbidden refuses a reclaim under reclaimPolicy Delete of a

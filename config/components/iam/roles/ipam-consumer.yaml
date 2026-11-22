@@ -24,7 +24,9 @@ spec:
   # address still in use, so it needs release-unleased, which only ipam-admin
   # grants. So does recreating its claim under reclaimPolicy Delete, which
   # would free it when that claim is deleted; under Retain a consumer may take
-  # it back.
+  # it back. Deleting the namespace still frees it: the namespace controller
+  # holds deletecollection through Kubernetes RBAC, which the server also
+  # accepts, and which no IAM role can grant.
   inheritedRoles:
     - name: ipam.miloapis.com-viewer
   includedPermissions:
