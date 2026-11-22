@@ -97,6 +97,33 @@ func TestReleaseOfABoundRowIsRefusedWhateverTheObjectSays(t *testing.T) {
 	}
 }
 
+// The policy is read off the row at release, so an edit to the claim's would
+// change only what the claim says. It is refused instead.
+func TestReclaimPolicyCannotBeChangedAfterCreate(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimDelete)
+	ctx := claimCtx(testProject)
+
+	created, err := r.Create(ctx, retainClaim("claim-1", ipam.ReclaimRetain), nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	edited := created.(*ipam.IPClaim).DeepCopy()
+	edited.Spec.ReclaimPolicy = ipam.ReclaimDelete
+	_, _, err = r.Update(ctx, "claim-1", rest.DefaultUpdatedObjectInfo(edited),
+		nil, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
+	if !apierrors.IsInvalid(err) {
+		t.Fatalf("changing spec.reclaimPolicy returned %v, want 422 Invalid", err)
+	}
+
+	// And the release does what the claim was created with.
+	if _, _, err := r.Delete(ctx, "claim-1", nil, &metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok := readAllocationRow(t, db, allocationKeyFor(created.(*ipam.IPClaim))); !ok {
+		t.Error("the allocation was freed; the claim was created with Retain")
+	}
+}
+
 // Releasing a retained allocation and recreating the claim that retained it
 // meet on one allocation key in one pool. The release used to delete the row
 // before locking the pool while the create locked the pool before inserting the

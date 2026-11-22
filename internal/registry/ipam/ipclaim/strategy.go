@@ -100,6 +100,12 @@ func (ipClaimStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	if n.Spec.ClassName != o.Spec.ClassName {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "className"), "className is immutable"))
 	}
+	// The policy is recorded on the allocation row when the claim binds, and
+	// release reads it from there. An edit here would change nothing but what
+	// the claim says will happen.
+	if n.Spec.ReclaimPolicy != o.Spec.ReclaimPolicy {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "reclaimPolicy"), "reclaimPolicy is immutable"))
+	}
 	// The two targets bind different objects. Changing it would mean releasing
 	// one and taking the other under a name whose holder never changed.
 	if n.Spec.Target != o.Spec.Target {
