@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -58,6 +59,12 @@ func classCtx(project string) context.Context {
 
 func newPostgresClassStorage(t *testing.T, checker access.ClassAccessChecker) *IPClassStorage {
 	t.Helper()
+	s, _ := newPostgresClassStorageWithDB(t, checker)
+	return s
+}
+
+func newPostgresClassStorageWithDB(t *testing.T, checker access.ClassAccessChecker) (*IPClassStorage, *pgxpool.Pool) {
+	t.Helper()
 	db := testdb.Pool(t)
 
 	scheme := runtime.NewScheme()
@@ -74,7 +81,7 @@ func newPostgresClassStorage(t *testing.T, checker access.ClassAccessChecker) *I
 		t.Fatalf("class storage: %v", err)
 	}
 	t.Cleanup(store.Destroy)
-	return store
+	return store, db
 }
 
 func create(t *testing.T, s *IPClassStorage, ctx context.Context, c *ipam.IPClass) (runtime.Object, error) {

@@ -107,7 +107,12 @@ func (ipPoolStrategy) PrepareForUpdate(_ context.Context, obj, old runtime.Objec
 }
 
 func (ipPoolStrategy) Validate(_ context.Context, obj runtime.Object) field.ErrorList {
-	return validateIPPool(obj.(*ipam.IPPool))
+	p := obj.(*ipam.IPPool)
+	return append(validateIPPool(p), validateMaxRetentionLease(p)...)
+}
+
+func validateMaxRetentionLease(p *ipam.IPPool) field.ErrorList {
+	return ipamvalidation.RetentionLease(p.Spec.MaxRetentionLease, field.NewPath("spec", "maxRetentionLease"))
 }
 
 func (ipPoolStrategy) WarningsOnCreate(_ context.Context, obj runtime.Object) []string {
@@ -126,6 +131,11 @@ func (ipPoolStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object)
 	o := old.(*ipam.IPPool)
 	allErrs := validateIPPool(n)
 	specPath := field.NewPath("spec")
+	// Ratcheted, as on IPClass: a cap stored before its bounds were enforced
+	// does not make every later edit of the pool fail.
+	if ipamvalidation.RetentionLeaseChanged(n.Spec.MaxRetentionLease, o.Spec.MaxRetentionLease) {
+		allErrs = append(allErrs, validateMaxRetentionLease(n)...)
+	}
 	if n.Spec.CIDR != o.Spec.CIDR {
 		allErrs = append(allErrs, field.Forbidden(specPath.Child("cidr"), "spec.cidr is immutable"))
 	}
@@ -141,8 +151,13 @@ func (ipPoolStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object)
 	return allErrs
 }
 
-func (ipPoolStrategy) WarningsOnUpdate(_ context.Context, obj, _ runtime.Object) []string {
-	return maxRetentionLeaseWarning(obj.(*ipam.IPPool))
+// WarningsOnUpdate warns only when the update sets or changes the cap.
+func (ipPoolStrategy) WarningsOnUpdate(_ context.Context, obj, old runtime.Object) []string {
+	n, o := obj.(*ipam.IPPool), old.(*ipam.IPPool)
+	if !ipamvalidation.RetentionLeaseChanged(n.Spec.MaxRetentionLease, o.Spec.MaxRetentionLease) {
+		return nil
+	}
+	return maxRetentionLeaseWarning(n)
 }
 
 func validateIPPool(p *ipam.IPPool) field.ErrorList {
@@ -208,7 +223,6 @@ func validateIPPool(p *ipam.IPPool) field.ErrorList {
 
 	allErrs = append(allErrs, ipamvalidation.Reservations(
 		p.Spec.Reservations, familyForValidation(p), specPath.Child("reservations"))...)
-	allErrs = append(allErrs, ipamvalidation.RetentionLease(p.Spec.MaxRetentionLease, specPath.Child("maxRetentionLease"))...)
 
 	switch p.Spec.Visibility {
 	case "", "platform", "consumer", "shared":

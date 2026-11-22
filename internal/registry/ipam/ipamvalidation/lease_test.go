@@ -63,3 +63,22 @@ func TestRetentionLeaseWarning(t *testing.T) {
 		}
 	}
 }
+
+func TestRetentionLeaseChanged(t *testing.T) {
+	hour := &metav1.Duration{Duration: time.Hour}
+	for _, tc := range []struct {
+		name         string
+		updated, old *metav1.Duration
+		want         bool
+	}{
+		{"both unset", nil, nil, false},
+		{"unchanged", hour, &metav1.Duration{Duration: time.Hour}, false},
+		{"newly set", hour, nil, true},
+		{"cleared", nil, hour, true},
+		{"changed", &metav1.Duration{Duration: 2 * time.Hour}, hour, true},
+	} {
+		if got := RetentionLeaseChanged(tc.updated, tc.old); got != tc.want {
+			t.Errorf("%s: RetentionLeaseChanged = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

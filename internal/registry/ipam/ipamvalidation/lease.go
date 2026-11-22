@@ -51,3 +51,14 @@ func RetentionLeaseWarning(lease *metav1.Duration, path *field.Path) []string {
 			"IPAllocation is deleted, however long ago the lease ran out (see https://github.com/milo-os/ipam/issues/107)",
 		path)}
 }
+
+// RetentionLeaseChanged reports whether an update sets, clears or changes a
+// lease. An update that leaves the lease alone is neither validated against
+// the bounds nor warned about: an object stored before the bounds existed
+// must stay editable, and a label change is not a decision about its lease.
+func RetentionLeaseChanged(updated, old *metav1.Duration) bool {
+	if updated == nil || old == nil {
+		return updated != old
+	}
+	return updated.Duration != old.Duration
+}
