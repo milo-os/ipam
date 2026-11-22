@@ -9,12 +9,12 @@ import (
 // The gauges export exactly the last set handed over: a pool left out of it
 // is no longer exported, and nothing else sets a pool series.
 func TestReplacePoolGaugesDropsPoolsNoLongerPresent(t *testing.T) {
-	t.Cleanup(func() { ReplacePoolGauges(nil) })
+	t.Cleanup(func() { ReplacePoolGauges(nil, time.Now()) })
 
 	ReplacePoolGauges([]PoolGauge{
 		{PoolKey: "projects/p/ippools/a", IPFamily: "IPv4", Resource: "ippools", Project: "p", Total: 256, Allocated: 64},
 		{PoolKey: "projects/p/ippools/b", IPFamily: "IPv4", Resource: "ippools", Project: "p", Total: 256, Allocated: 256},
-	})
+	}, time.Now())
 	got := exportedPools(t)
 	if got["projects/p/ippools/a"] != 0.25 || got["projects/p/ippools/b"] != 1 {
 		t.Fatalf("utilization = %v, want a=0.25 b=1", got)
@@ -22,7 +22,7 @@ func TestReplacePoolGaugesDropsPoolsNoLongerPresent(t *testing.T) {
 
 	ReplacePoolGauges([]PoolGauge{
 		{PoolKey: "projects/p/ippools/a", IPFamily: "IPv4", Resource: "ippools", Project: "p", Total: 256, Allocated: 128},
-	})
+	}, time.Now())
 	got = exportedPools(t)
 	if _, ok := got["projects/p/ippools/b"]; ok {
 		t.Errorf("deleted pool b is still exported: %v", got)
@@ -94,4 +94,22 @@ func TestCascadeMetricsSkipADryRun(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The heartbeat moves only when a refresh swaps in a new set, so a read that
+// keeps failing shows up as an ageing timestamp rather than as nothing.
+func TestReplacePoolGaugesStampsTheHeartbeat(t *testing.T) {
+	t.Cleanup(func() { ReplacePoolGauges(nil, time.Now()) })
+	at := time.Unix(1_700_000_000, 0)
+	ReplacePoolGauges(nil, at)
+	for _, mf := range gather(t) {
+		if mf.GetName() != "ipam_pool_gauges_last_success_timestamp_seconds" {
+			continue
+		}
+		if got := mf.GetMetric()[0].GetGauge().GetValue(); got != float64(at.Unix()) {
+			t.Errorf("heartbeat = %v, want %v", got, at.Unix())
+		}
+		return
+	}
+	t.Error("ipam_pool_gauges_last_success_timestamp_seconds is not registered")
 }

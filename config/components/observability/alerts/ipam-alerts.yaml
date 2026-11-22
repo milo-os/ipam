@@ -156,6 +156,29 @@ spec:
               with HTTP 507. Customer impact is active.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-pool-exhaustion-imminent.md"
 
+        - alert: IPAMPoolGaugesStale
+          # The per-pool gauges are read back from the database every 15s by a
+          # sampler in cmd/ipam/serve.go. A failed read keeps the previous
+          # values, so the two pool alerts above would go quiet on numbers
+          # that no longer move. The sampler stamps
+          # ipam_pool_gauges_last_success_timestamp_seconds only when a read
+          # succeeds; 300s is 20 missed reads. Evaluated per series, so it
+          # names the replica whose reads are failing.
+          expr: time() - ipam_pool_gauges_last_success_timestamp_seconds > 300
+          for: 5m
+          labels:
+            severity: warning
+            service: ipam
+            slo: pool_capacity
+          annotations:
+            summary: "IPAM pool gauges on {{ $labels.instance }} have not refreshed for {{ $value | humanizeDuration }}"
+            description: |
+              The pool gauge sampler on {{ $labels.instance }} has not read pool
+              capacity from the database for {{ $value | humanizeDuration }}. Its
+              ipam_pool_* gauges hold their last values, so IPAMPoolExhaustionImminent
+              and IPAMPoolExhausted cannot fire for pools that filled since.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-pool-exhaustion-imminent.md#ipampoolgaugesstale"
+
     - name: ipam-db-capacity
       interval: 30s
       rules:

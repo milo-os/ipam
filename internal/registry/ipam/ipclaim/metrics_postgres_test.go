@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	dto "github.com/prometheus/client_model/go"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -83,7 +84,7 @@ func refreshPoolGauges(t *testing.T, db allocator.Querier) {
 	if err != nil {
 		t.Fatalf("load pool gauges: %v", err)
 	}
-	metrics.ReplacePoolGauges(gauges)
+	metrics.ReplacePoolGauges(gauges, time.Now())
 }
 
 // A refusal is labelled by what the caller is told. A malformed spec.address
@@ -216,7 +217,7 @@ func TestScopeRangeAddressRefusalsAreNotServerFaults(t *testing.T) {
 // kept its capacity, and no cascade provisioning that did not happen.
 func TestADryRunRecordsNoPoolSeriesAndNoCascadeMetrics(t *testing.T) {
 	rest, db := newTenantREST(t)
-	metrics.ReplacePoolGauges(nil)
+	metrics.ReplacePoolGauges(nil, time.Now())
 	dry := &metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}}
 
 	// The seeded root carries no computed capacity; give it the figures a

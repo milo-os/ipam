@@ -61,6 +61,27 @@ For `IPAMPoolExhausted` (critical), the workloads consuming this pool are
 being denied with HTTP 507. Page the platform on-call and notify the consumer
 team(s) directly using the pool's owning labels.
 
+## IPAMPoolGaugesStale
+
+**Severity:** warning. **Fires when:** one replica's pool gauges have not
+refreshed for more than 5 minutes, sustained for 5 minutes.
+
+Each replica re-reads every pool's committed `status.capacity` every 15s and
+stamps `ipam_pool_gauges_last_success_timestamp_seconds` when the read
+succeeds. A failed read keeps the previous values, so while this fires the two
+pool alerts above are working from old numbers and can miss a pool that has
+filled since. The `instance` label names the replica.
+
+1. **Find the error.** Search that pod's logs for
+   `Failed to refresh pool gauges`; the error says why the read failed.
+2. **Check the database.** A read failing on every replica points at postgres
+   (connectivity, `statement_timeout`, a lock on `ipam_objects`). See
+   `ipam-db-connection-pool-saturated.md`. The read has a 10s timeout.
+3. **Check pool status directly** while the gauges are stale:
+   `kubectl get ippools -A` shows each pool's committed capacity.
+4. **Mitigate.** Restarting the affected pod restarts the sampler. If only one
+   replica is affected and postgres is healthy, restart it.
+
 ## Related
 
 - `ipam-allocation-error-rate-high.md` — 507s show up here as well

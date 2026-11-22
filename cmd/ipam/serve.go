@@ -161,7 +161,7 @@ func startPoolGaugeSampler(ctx context.Context, pool *pgxpool.Pool) {
 			klog.ErrorS(err, "Failed to refresh pool gauges; keeping the previous values")
 			return
 		}
-		metrics.ReplacePoolGauges(gauges)
+		metrics.ReplacePoolGauges(gauges, time.Now())
 	}
 	go func() {
 		refresh()

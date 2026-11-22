@@ -18,6 +18,7 @@ Use `k8s.io/component-base/metrics` (Prometheus-compatible). Register everything
 | `ipam_pool_capacity_total` | Gauge | `pool_key`, `resource`, `ip_family` | Total addresses/prefixes in a pool. Read from committed pool status every 15s, never set from a write path: a dry-run or rolled-back write must not reach it, and a deleted pool must drop out on every replica. |
 | `ipam_pool_allocated_total` | Gauge | `pool_key`, `resource`, `ip_family` | Currently allocated addresses/prefixes. |
 | `ipam_pool_utilization_ratio` | Gauge | `pool_key`, `resource`, `ip_family` | `allocated / capacity`. Alert fires at 0.80. |
+| `ipam_pool_gauges_last_success_timestamp_seconds` | Gauge | — | Unix time of the last successful read-back of the per-pool gauges. Set only when a read succeeds; `IPAMPoolGaugesStale` fires when it is more than 300s old for 5m. |
 | `ipam_watch_lag_seconds` | Gauge | — | Age of oldest unprocessed `ipam_changelog` row. |
 | `ipam_postgres_query_duration_seconds` | Histogram | `query_name` | Latency of named SQL queries. |
 

@@ -21,6 +21,7 @@ package ipamerrors
 import (
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -378,6 +379,18 @@ var knownReasons = map[Reason]bool{
 	ReasonAddressUnaligned:     true,
 	ReasonSharedPoolUnplaced:   true,
 	ReasonRangeUnplaced:        true,
+}
+
+// KnownReasons returns every reason ReasonFor can report, sorted. It is for
+// code that must handle each reason, such as a mapping a test holds to the
+// full set, so a reason added here cannot go unhandled there.
+func KnownReasons() []Reason {
+	out := make([]Reason, 0, len(knownReasons))
+	for reason := range knownReasons {
+		out = append(out, reason)
+	}
+	slices.Sort(out)
+	return out
 }
 
 // codeFor is the HTTP code each reason answers with. Exhaustion is 507:

@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"sync"
+	"time"
 
 	"k8s.io/component-base/metrics"
 )
@@ -91,11 +92,26 @@ func (c *poolGaugeCollector) CollectWithStability(ch chan<- metrics.Metric) {
 	}
 }
 
-// ReplacePoolGauges makes pools the complete set of pools exported. A pool
-// missing from it stops being exported.
-func ReplacePoolGauges(pools []PoolGauge) {
+// PoolGaugesLastSuccess is the Unix time of the last successful refresh of the
+// per-pool gauges. A failed refresh keeps the previous values, so without this
+// the gauges, and every pool alert on them, would go quiet without saying so.
+// IPAMPoolGaugesStale fires on its age, per replica.
+var PoolGaugesLastSuccess = metrics.NewGauge(
+	&metrics.GaugeOpts{
+		Namespace:      "ipam",
+		Name:           "pool_gauges_last_success_timestamp_seconds",
+		Help:           "Unix timestamp of the last successful refresh of the per-pool gauges from the database.",
+		StabilityLevel: metrics.ALPHA,
+	},
+)
+
+// ReplacePoolGauges makes pools the complete set of pools exported, and
+// stamps PoolGaugesLastSuccess with now. A pool missing from pools stops
+// being exported. Call it only with the result of a successful read.
+func ReplacePoolGauges(pools []PoolGauge, now time.Time) {
 	snapshot := append([]PoolGauge(nil), pools...)
 	poolGauges.mu.Lock()
 	poolGauges.pools = snapshot
 	poolGauges.mu.Unlock()
+	PoolGaugesLastSuccess.Set(float64(now.Unix()))
 }

@@ -78,6 +78,32 @@ func TestFailureReasonLabelsRefusalsByWhatTheCallerIsTold(t *testing.T) {
 	}
 }
 
+// Every IPAM reason, not only the ones listed above, has an explicit label, and
+// none that answers below 500 can land on a server-fault label whatever the
+// failing step passed. A reason added to ipamerrors without a label here fails
+// this test instead of paging the server-fault alert.
+func TestEveryIPAMReasonHasANonFaultLabel(t *testing.T) {
+	reasons := ipamerrors.KnownReasons()
+	if len(reasons) == 0 {
+		t.Fatal("ipamerrors.KnownReasons is empty")
+	}
+	for _, reason := range reasons {
+		t.Run(string(reason), func(t *testing.T) {
+			err := ipamerrors.New(reason, "refused")
+			if _, ok := ipamReasonLabel(err); !ok {
+				t.Errorf("reason %q has no label in ipamReasonLabel", reason)
+			}
+			code := err.Status().Code
+			for _, fault := range []string{reasonInternal, reasonTxError} {
+				got := failureReason(err, fault)
+				if code < 500 && (got == reasonInternal || got == reasonTxError) {
+					t.Errorf("reason %q (HTTP %d) with step label %q is counted as server fault %q", reason, code, fault, got)
+				}
+			}
+		})
+	}
+}
+
 // The allocator's address refusals, through the statuses the registry maps
 // them to, for both a Block claim (mapAllocationError) and a ScopeRange claim
 // (scopeRangeError).

@@ -369,6 +369,7 @@ func init() {
 		PgxpoolAcquiredConnections,
 		PgxpoolMaxConnections,
 		PgxpoolSamplerLastRunSeconds,
+		PoolGaugesLastSuccess,
 		WatchEvents,
 		WatcherPollBatchSize,
 		WatcherDrainCycles,
