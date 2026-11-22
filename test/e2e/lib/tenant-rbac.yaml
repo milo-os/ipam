@@ -15,7 +15,7 @@ rules:
   - apiGroups: [""]
     resources: ["users"]
     verbs: ["impersonate"]
-    resourceNames: ["e2e-tenant-tester"]
+    resourceNames: ["e2e-tenant-tester", "e2e-tenant-consumer"]
   # The three extras that carry the project into UserInfo.Extra.
   - apiGroups: ["authentication.k8s.io"]
     resources:
@@ -60,10 +60,12 @@ rules:
       - "ipclaims/status"
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Allocations are written by their claims. The suites read them and release
-  # retained ones, which is deleting them; nothing creates or edits one.
+  # retained ones, which is deleting them; nothing creates or edits one. This
+  # user stands in for an admin, so it may also release one with no lease
+  # deadline, which the server checks as release-unleased.
   - apiGroups: ["ipam.miloapis.com"]
     resources: ["ipallocations"]
-    verbs: ["get", "list", "watch", "delete"]
+    verbs: ["get", "list", "watch", "delete", "release-unleased"]
   - apiGroups: ["ipam.miloapis.com"]
     resources: ["ipallocations/status"]
     verbs: ["get"]
@@ -80,3 +82,42 @@ subjects:
   - kind: User
     apiGroup: rbac.authorization.k8s.io
     name: e2e-tenant-tester
+---
+# What the ipam-consumer IAM role grants (config/components/iam/roles/
+# ipam-consumer.yaml, with the viewer role it inherits), as RBAC for the
+# consumer identity. The e2e cluster authorizes with RBAC, not Milo IAM, so a
+# suite showing what a consumer may do needs the role restated here; keep the
+# two in step. Nothing else: no writes to pools or classes, no allocation
+# create, update or patch, and no release-unleased.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: e2e-tenant-ipam-consumer
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ippools", "ipclasses", "ipclaims", "ipallocations"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ippools/status", "ipclasses/status", "ipclaims/status", "ipallocations/status"]
+    verbs: ["get"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipclaims"]
+    verbs: ["create", "update", "patch", "delete"]
+  # Releasing a retained allocation. A bound one is refused with 409, and one
+  # with no lease deadline with 403: release-unleased is not granted here.
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipallocations"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: e2e-tenant-ipam-consumer-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: e2e-tenant-ipam-consumer
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: e2e-tenant-consumer

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
@@ -34,6 +35,16 @@ type ClaimAllocation struct {
 	ClassRecorded bool
 	ClassProject  string
 	AddressScope  ipamv1alpha1.AddressScope
+
+	// PoolMaxRetentionLease is the maxRetentionLease of the row's pool, read
+	// under its lock: the cap a reclaiming claim would be retained under.
+	PoolMaxRetentionLease *metav1.Duration
+
+	// Leased reports whether the retained row has a finite lease deadline, by
+	// the test ReleaseRetainedAllocation and the sweeper use: retention
+	// timestamped and expires_at neither NULL nor 'infinity'. Read under the
+	// row's lock, so it holds until the transaction ends.
+	Leased bool
 }
 
 // RowQuerier is the slice of a connection pool a single-row read outside any
@@ -96,13 +107,14 @@ func (a *PostgresPrefixAllocator) LockClaimAllocation(ctx context.Context, tx pg
 		`SELECT allocation_key, pool_key,
 		        host(allocated_cidr) || '/' || masklen(allocated_cidr),
 		        claim_key, ip_family, class_name, scope_digest, reclaim_policy,
-		        class_project, address_scope
+		        class_project, address_scope,
+		        retained_at IS NOT NULL AND expires_at IS NOT NULL AND expires_at <> 'infinity'
 		   FROM ipam_cidr_allocations
 		  WHERE allocation_key = $1 AND purpose = 'Claim' AND pool_key = ANY($2::text[])
 		    FOR UPDATE`, allocationKey, locked,
 	).Scan(&row.AllocationKey, &row.PoolKey, &row.CIDR, &claimKey,
 		&row.IPFamily, &row.ClassName, &row.ScopeDigest, &policy,
-		&classProject, &addressScope)
+		&classProject, &addressScope, &row.Leased)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -113,6 +125,9 @@ func (a *PostgresPrefixAllocator) LockClaimAllocation(ctx context.Context, tx pg
 		row.ClaimKey = *claimKey
 	}
 	row.ReclaimPolicy = ipamv1alpha1.ReclaimPolicy(policy)
+	if pool := pools[row.PoolKey]; pool != nil {
+		row.PoolMaxRetentionLease = pool.Spec.MaxRetentionLease
+	}
 	if classProject != nil {
 		row.ClassRecorded = true
 		row.ClassProject = *classProject

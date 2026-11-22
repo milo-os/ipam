@@ -103,7 +103,7 @@ On **`ipam.claim.allocate`** (the root domain span):
 | `ipam.claim.prefix_length` | Requested prefix length. |
 | `ipam.claim.ip_family` | `IPv4` / `IPv6`. |
 | `ipam.dry_run` | `true` if server dry-run (no rows persisted, allocation rolled back). |
-| `ipam.error.reason` | Set on failure: `pool_not_found`, `exhausted`, `cross_project_denied`, `tx_error`. Span status is `Error`. |
+| `ipam.error.reason` | Set on failure: `pool_not_found`, `exhausted`, `cross_project_denied`, `invalid` or `conflict` (the request was refused), `tx_error` (a server fault). Span status is `Error`. |
 
 On **`ipam.tenant.resolve`**:
 

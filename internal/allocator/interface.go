@@ -45,6 +45,25 @@ func (e *AllocationBoundError) Error() string {
 	return fmt.Sprintf("allocation %s is bound to claim %s", e.AllocationKey, e.ClaimKey)
 }
 
+// UnleasedReleaseError is the refusal to release a retained allocation that
+// has no lease deadline, for a caller the release's guard did not admit.
+//
+// Such an address is held until someone releases it, usually because whatever
+// owned it still uses it, so freeing it takes more than the permission to
+// delete the IPAllocation (see ReleaseRetainedAllocation).
+type UnleasedReleaseError struct {
+	AllocationKey string
+}
+
+func (e *UnleasedReleaseError) Error() string {
+	return fmt.Sprintf("allocation %s is retained with no lease deadline", e.AllocationKey)
+}
+
+// UnleasedReleaseGuard decides whether the caller may release a retained
+// allocation that has no lease deadline. ReleaseRetainedAllocation calls it
+// under the locks it releases the row under, only for such a row.
+type UnleasedReleaseGuard func(ctx context.Context) (bool, error)
+
 // PrefixRequest describes one allocation against a pool.
 //
 // OwnerProject scopes the allocation to a single tenant project so per-project
@@ -97,6 +116,14 @@ type PrefixRequest struct {
 	// free block, and an address that is not the start of its block is never
 	// rounded down to it.
 	Address string
+
+	// RequireRetentionCap refuses the allocation with ErrRetentionLeaseRequired
+	// unless the pool sets a maxRetentionLease. The caller sets it for a claim
+	// whose Retain override needs a lease (RetainOverridesClass) and whose
+	// class sets none, so the pool's cap is the only lease there could be. It
+	// is read under the pool's lock, so the cap judged is the one the
+	// allocation is retained under.
+	RequireRetentionCap bool
 }
 
 // PrefixAllocator atomically reserves a sub-CIDR from an IPPool.
@@ -131,7 +158,13 @@ type PrefixAllocator interface {
 	// *AllocationBoundError if it is. It is the release path an API client
 	// reaches, which must not be able to free an address a claim still holds.
 	// No row at all is not an error: there is nothing left to free.
-	ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error
+	//
+	// A retained row with no finite lease deadline (expires_at NULL or
+	// 'infinity') is released only if mayReleaseUnleased allows it, and is
+	// otherwise refused with an *UnleasedReleaseError. A nil guard refuses.
+	// The deadline is read from the row under its pool's lock and its own,
+	// the locks the delete runs under, so the guard judges the row deleted.
+	ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, allocationKey string, mayReleaseUnleased UnleasedReleaseGuard) error
 
 	// LockClaimAllocation locks the pool of the claim allocation identified by
 	// allocationKey, then the row itself, and returns it; nil when there is no

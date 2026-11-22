@@ -197,6 +197,7 @@ func TestReclaimSucceedsInAFullPool(t *testing.T) {
 // a predecessor created under Retain does not make its replacement retain.
 func TestReclaimRecordsTheReplacementsReclaimPolicy(t *testing.T) {
 	r, allocREST, db := newLifecycleREST(t, ipamv1alpha1.ReclaimDelete)
+	withLeasedDeleteClass(t, db)
 	ctx := claimCtx(testProject)
 
 	held := retainAndDelete(t, r, ctx, retainClaim("claim-1", ipam.ReclaimRetain))

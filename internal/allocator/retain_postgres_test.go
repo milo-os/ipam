@@ -202,7 +202,7 @@ func TestReleaseRetainedAllocationRefusesABoundRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	err = NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-a")
+	err = NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-a", nil)
 	_ = tx.Rollback(ctx)
 
 	var bound *AllocationBoundError
@@ -240,7 +240,7 @@ func TestReleaseRetainedAllocationFreesAnUnboundRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-a"); err != nil {
+	if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-a", allowUnleased); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("ReleaseRetainedAllocation: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestReleaseRetainedAllocationWithNoRowIsANoOp(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-missing"); err != nil {
+	if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-missing", nil); err != nil {
 		t.Errorf("ReleaseRetainedAllocation with no row returned %v, want nil", err)
 	}
 }

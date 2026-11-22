@@ -28,6 +28,22 @@ spec:
   strategy: FirstFit
   reclaimPolicy: Retain
 ---
+# A Delete class with no lease, in a pool that caps nothing: a claim
+# overriding it to Retain would hold its address indefinitely, and is refused.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: rr-delete
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPPool
 metadata:
@@ -39,6 +55,7 @@ spec:
   classNames:
     - rr-retain
     - rr-other
+    - rr-delete
   allocation:
     minPrefixLength: 32
     maxPrefixLength: 32

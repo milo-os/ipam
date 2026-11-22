@@ -120,6 +120,12 @@ type AllocatingREST struct {
 	poolChecker access.PoolAccessChecker
 	nsChecker   access.NamespaceChecker
 	codec       runtime.Codec
+
+	// releaseChecker authorizes a reclaim under reclaimPolicy Delete of a
+	// retained allocation with no lease deadline, which would free an address
+	// only an admin may release (see tryReclaim). nil refuses every such
+	// reclaim.
+	releaseChecker access.UnleasedReleaseChecker
 }
 
 // txBeginner is the minimal slice of *pgxpool.Pool the allocation handlers
@@ -139,7 +145,9 @@ type txBeginner interface {
 // fully-populated objects. poolChecker may be nil; when non-nil it
 // authorises cross-project claims via SubjectAccessReview before allocation.
 // nsChecker may be nil, which disables the namespace-liveness check.
-func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker, nsChecker access.NamespaceChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
+// releaseChecker authorizes reclaiming an unleased retained allocation under
+// reclaimPolicy Delete; nil refuses every such reclaim.
+func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker, nsChecker access.NamespaceChecker, releaseChecker access.UnleasedReleaseChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
 	claimStore, statusStore, err := newInnerStorage(scheme, optsGetter)
 	if err != nil {
 		return nil, nil, err
@@ -152,6 +160,7 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 		poolChecker:    poolChecker,
 		nsChecker:      nsChecker,
 		codec:          codec,
+		releaseChecker: releaseChecker,
 	}, statusStore, nil
 }
 
@@ -405,6 +414,15 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	}
 	reclaimPolicy := allocator.EffectiveReclaimPolicy(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy))
 
+	// A Retain the class would not have chosen is allowed only under a lease.
+	// The class's own lease settles it before any pool is known. When the
+	// class sets none, the cap of the pool the claim lands in is the only lease
+	// there could be, and it is judged under that pool's lock: by AllocatePrefix
+	// for a fresh allocation, and by tryReclaim for the pool a retained one is
+	// in. Checking it any earlier would judge a pool the claim might not get.
+	requireRetentionCap := allocator.RetainOverridesClass(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy)) &&
+		allocator.EffectiveLease(class.Spec.RetentionLease, nil) == nil
+
 	// The address space this allocation must be unique in. A claim that does
 	// not carry a role its class names in uniqueWithin is refused by name
 	// rather than compared against a wider space: widening would look correct
@@ -430,10 +448,12 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		scopeDigest:  scopeDigest,
 		prefixLength: statedPrefixLength,
 		address:      claim.Spec.Address,
+
+		requireRetentionCap: requireRetentionCap,
 	}, uniqueScope, reclaimPolicy, generatedName, dryRun)
 	if reclaimed.handled {
 		if reclaimed.err != nil {
-			failSpan(tracing.ReasonTxError)
+			failSpan(spanReason(failureReason(reclaimed.err, reclaimed.outcome)))
 			return nil, fail(reclaimed.err, reclaimed.outcome)
 		}
 		// A request-level result, so a dry-run reclaim records it too (see
@@ -458,6 +478,21 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 			return nil, fail(apierrors.NewBadRequest(fmt.Sprintf("spec.address %s: %v", claim.Spec.Address, err)), reasonInvalid)
 		}
 		wantBlock = &block
+	}
+
+	// A Retain override that needs the pool's cap is refused here, before
+	// resolution, when the claim would be placed in a pool that does not exist
+	// yet: resolving would provision it, each level committing on its own, and
+	// a provisioned pool carries no cap, so the refusal is certain and the
+	// pools would be left behind. Where every level exists the cap is judged
+	// under the pool's lock as usual, which is what keeps an operator pool, or
+	// a provisioned one an operator has since capped, accepted. A claim naming
+	// its address provisions nothing, and is left to that check.
+	if requireRetentionCap && wantBlock == nil {
+		if _, pending, err := allocator.ResolveExistingPool(ctx, r.db, class, claim.Spec.Scope); err == nil && len(pending) > 0 {
+			failSpan(tracing.ReasonInvalid)
+			return nil, fail(retentionLeaseRequired(claim.Name, class, ""), reasonInvalid)
+		}
 	}
 
 	// Resolving the pool provisions any missing level of the class's chain, and
@@ -515,11 +550,13 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		AddressScope:  class.Spec.AddressScope,
 		ReclaimPolicy: reclaimPolicy,
 		Address:       claim.Spec.Address,
+
+		RequireRetentionCap: requireRetentionCap,
 	})
 	if err != nil {
 		if isClaimNameCollision(err) || isIdentityCollision(err) {
 			_ = tx.Rollback(ctx)
-			failSpan(tracing.ReasonTxError)
+			failSpan(tracing.ReasonConflict)
 			if isClaimNameCollision(err) {
 				return nil, fail(duplicateClaimConflict(claim.Name), reasonConflict)
 			}
@@ -527,16 +564,24 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		}
 		_ = tx.Rollback(ctx)
 		reason := allocationFailureReason(err)
-		switch reason {
-		case reasonPoolExhausted:
+		switch {
+		case reason == reasonPoolExhausted:
 			result = "exhausted"
 			failSpan(tracing.ReasonExhausted)
-		case reasonPoolNotFound, reasonInvalid:
+		case errors.Is(err, allocator.ErrRetentionLeaseRequired):
+			failSpan(tracing.ReasonInvalid)
+		case reason == reasonPoolNotFound, reason == reasonInvalid:
 			failSpan(tracing.ReasonPoolNotFound)
+		case reason == reasonConflict:
+			failSpan(tracing.ReasonConflict)
 		default:
 			failSpan(tracing.ReasonTxError)
 		}
-		return nil, fail(mapAllocationError(err, poolName, claim.Name), reason)
+		apiErr := mapAllocationError(err, poolName, claim.Name)
+		if errors.Is(err, allocator.ErrRetentionLeaseRequired) {
+			apiErr = retentionLeaseRequired(claim.Name, class, poolName)
+		}
+		return nil, fail(apiErr, reason)
 	}
 
 	// Populate the claim status with the computed allocation up-front so both
@@ -648,7 +693,8 @@ func allocationFailureReason(err error) string {
 	case errors.Is(err, allocator.ErrAddressInUse), errors.Is(err, allocator.ErrAddressReserved):
 		return reasonConflict
 	case errors.Is(err, allocator.ErrAddressOutsidePool), errors.Is(err, allocation.ErrUnalignedAddress),
-		errors.Is(err, allocation.ErrInvalidAddress), errors.Is(err, allocation.ErrPrefixLenMismatch):
+		errors.Is(err, allocation.ErrInvalidAddress), errors.Is(err, allocation.ErrPrefixLenMismatch),
+		errors.Is(err, allocator.ErrRetentionLeaseRequired):
 		return reasonInvalid
 	default:
 		return reasonTxError
@@ -937,6 +983,37 @@ func retainedAllocationConflict(claimName, allocationName string) error {
 		allocationName,
 		fmt.Sprintf("an allocation under this identity already exists: IPAllocation %q, retained by an earlier claim of the same name; delete it to reuse the name", allocationName),
 	)
+}
+
+// retentionLeaseRequired is the refusal for a claim whose Retain override
+// would hold its address with no lease, under class in pool poolName. It names
+// the objects a lease could be set on, and the way out that needs neither.
+//
+// A chained class provisions a pool per scope, and a provisioned pool carries
+// no cap, so a cap set on one would cover only that scope: the fix for those
+// is the class's lease, and only that is suggested. poolName is empty when the
+// claim was refused before its pool existed.
+func retentionLeaseRequired(claimName string, class *allocator.ResolvedClass, poolName string) error {
+	named := fmt.Sprintf("class %q", class.LocalName)
+	if class.LocalName != class.Name {
+		named = fmt.Sprintf("class %q (defined as %q in project %q)", class.LocalName, class.Name, class.Project)
+	}
+	const prefix = "%s does not allow retaining addresses indefinitely: spec.reclaimPolicy Retain overrides its default of Delete, "
+	var msg string
+	switch {
+	case class.Spec.ParentClassName != "":
+		where := "the pools it provisions set"
+		if poolName != "" {
+			where = fmt.Sprintf("pool %q, which it provisions, sets", poolName)
+		}
+		msg = fmt.Sprintf(prefix+"the class sets no retentionLease, and %s no maxRetentionLease. "+
+			"Set retentionLease on the class, or leave spec.reclaimPolicy unset", named, where)
+	default:
+		msg = fmt.Sprintf(prefix+"and neither the class's retentionLease nor pool %q's maxRetentionLease is set. "+
+			"Set retentionLease on the class or maxRetentionLease on the pool, or leave spec.reclaimPolicy unset",
+			named, poolName)
+	}
+	return ipamerrors.NewRetentionLeaseRequired(v1alpha1.Resource("ipclaims"), claimName, msg)
 }
 
 // resolvePoolError turns a failure to resolve a Block claim's pool into the

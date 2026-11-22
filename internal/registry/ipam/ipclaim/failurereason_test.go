@@ -11,6 +11,7 @@ import (
 
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
+	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
 )
@@ -53,6 +54,8 @@ func TestFailureReasonLabelsRefusalsByWhatTheCallerIsTold(t *testing.T) {
 		{"AllocationRetained", retainedAllocationConflict("c", "a"), reasonTxError, reasonConflict},
 		{"RetainedAllocationMismatch", retainedMismatchConflict("c", "a", &reclaimMismatch{field: "spec.className", message: "x"}), reasonTxError, reasonConflict},
 		{"RangeUnplaced", ipamerrors.New(ipamerrors.ReasonRangeUnplaced, "x"), reasonTxError, reasonInvalid},
+		// Found inside the allocation transaction, whose step label is a fault.
+		{"RetentionLeaseRequired", ipamerrors.NewRetentionLeaseRequired(gr, "c", "x"), reasonTxError, reasonInvalid},
 		{"SharedPoolUnplaced", ipamerrors.New(ipamerrors.ReasonSharedPoolUnplaced, "x"), reasonTxError, reasonInvalid},
 		{"AddressUnaligned", ipamerrors.New(ipamerrors.ReasonAddressUnaligned, "x"), reasonTxError, reasonInvalid},
 		{"AddressOutsidePool", ipamerrors.New(ipamerrors.ReasonAddressOutsidePool, "x"), reasonTxError, reasonInvalid},
@@ -165,6 +168,32 @@ func TestAddressRefusalsAreNeverServerFaults(t *testing.T) {
 		t.Run("resolve/"+name, func(t *testing.T) {
 			if got := failureReason(resolvePoolError(tc.err), reasonTxError); got != tc.want {
 				t.Errorf("%s = %q, want %q", name, got, tc.want)
+			}
+		})
+	}
+}
+
+// A trace marks as a server fault only what the failure counter does. The
+// reclaim refusals once all reached the span as tx_error.
+func TestSpanReasonMarksOnlyFaultsAsTxError(t *testing.T) {
+	ipclaims := v1alpha1.Resource("ipclaims")
+	cases := []struct {
+		name  string
+		err   error
+		label string
+		want  string
+	}{
+		{"mismatch", retainedMismatchConflict("c", "a", &reclaimMismatch{field: "spec.className", message: "x"}), reasonConflict, tracing.ReasonConflict},
+		{"claim exists", duplicateClaimConflict("c"), reasonConflict, tracing.ReasonConflict},
+		{"lease required", ipamerrors.NewRetentionLeaseRequired(ipclaims, "c", "x"), reasonInvalid, tracing.ReasonInvalid},
+		{"scope roles", ipamerrors.NewScopeRolesMissing([]string{"network"}, "x"), reasonInvalid, tracing.ReasonInvalid},
+		{"database", errors.New("conn reset"), reasonTxError, tracing.ReasonTxError},
+		{"encode", errors.New("encode"), reasonInternal, tracing.ReasonTxError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := spanReason(failureReason(tc.err, tc.label)); got != tc.want {
+				t.Errorf("spanReason = %q, want %q", got, tc.want)
 			}
 		})
 	}

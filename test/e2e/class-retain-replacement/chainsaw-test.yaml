@@ -16,6 +16,11 @@ spec:
       c. a pool with no free block left: the recreate still succeeds, because
          it takes back a block the pool already holds for it. Before reclaim
          the block search ran first and answered 507.
+      d. a claim overriding a Delete class to Retain where neither the class
+         nor the pool sets a lease: refused with 422 RetentionLeaseRequired on
+         spec.reclaimPolicy, and nothing is allocated. A class lease, a pool
+         cap, a class whose own default is Retain, the reclaim path and dry-run
+         are covered by retention_guard_postgres_test.go.
 
     The other mismatch terms (family, scope, prefix length, requested address)
     and the concurrency cases are covered by the Postgres-backed tests in
@@ -82,14 +87,14 @@ spec:
               release_pool_allocations "$NAMESPACE" rr-tiny
               release_pool_allocations "$NAMESPACE" rr-pool
               kubectl delete ippool rr-tiny rr-pool --ignore-not-found >/dev/null 2>&1
-              kubectl delete ipclass rr-retain rr-other rr-tiny-cls --ignore-not-found >/dev/null 2>&1
+              kubectl delete ipclass rr-retain rr-other rr-delete rr-tiny-cls --ignore-not-found >/dev/null 2>&1
 
               # A leftover here is a leak into the project every suite shares,
               # so it fails the suite rather than passing quietly.
               left=$(kubectl get ipallocation -n "$NAMESPACE" -o json 2>/dev/null | jq -r \
                 '.items[] | select(.spec.poolRef.name == "rr-pool" or .spec.poolRef.name == "rr-tiny") | .metadata.name')
               pools=$(kubectl get ippool rr-pool rr-tiny --ignore-not-found -o name 2>/dev/null)
-              classes=$(kubectl get ipclass rr-retain rr-other rr-tiny-cls --ignore-not-found -o name 2>/dev/null)
+              classes=$(kubectl get ipclass rr-retain rr-other rr-delete rr-tiny-cls --ignore-not-found -o name 2>/dev/null)
               if [ -n "$left$pools$classes" ]; then
                 echo "FAIL: class-retain-replacement cleanup left behind:" $left $pools $classes
                 exit 1
@@ -261,3 +266,55 @@ spec:
             check:
               ($error == null): true
               "(contains($stdout, 'OK: the full pool handed'))": true
+
+    - name: an-unleased-retain-override-is-refused
+      description: |
+        A claim may retain past its class's Delete only under a lease. rr-delete
+        sets none and rr-pool caps nothing, so the override would hold the
+        address for good: refused by reason and field, and nothing is bound.
+        Leaving the policy to the class binds.
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+
+              before=$(allocation_count "$NAMESPACE" rr-pool)
+              expect_refusal "$NAMESPACE" 422 RetentionLeaseRequired 'does not allow retaining addresses indefinitely' "unleased Retain override" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rr-override
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-retain-replacement
+              spec:
+                className: rr-delete
+                reclaimPolicy: Retain
+              EOF
+              expect_no_claim "$NAMESPACE" rr-override
+              after=$(allocation_count "$NAMESPACE" rr-pool)
+              if [ "$after" != "$before" ]; then
+                echo "FAIL: the refused override changed rr-pool's allocations from $before to $after"
+                exit 1
+              fi
+
+              kubectl create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rr-override
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-retain-replacement
+              spec:
+                className: rr-delete
+              EOF
+              wait_claim_bound "$NAMESPACE" rr-override 60
+              echo "OK: the unleased override was refused and the class default bound"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the unleased override was refused'))": true

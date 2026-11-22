@@ -26,11 +26,11 @@ type steppedAllocator struct {
 	before, after func()
 }
 
-func (s *steppedAllocator) ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, key string) error {
+func (s *steppedAllocator) ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, key string, guard allocator.UnleasedReleaseGuard) error {
 	if s.before != nil {
 		s.before()
 	}
-	err := s.PrefixAllocator.ReleaseRetainedAllocation(ctx, tx, key)
+	err := s.PrefixAllocator.ReleaseRetainedAllocation(ctx, tx, key, guard)
 	if s.after != nil {
 		s.after()
 	}
@@ -53,7 +53,7 @@ func TestAStaleReleaseLeavesARecreatedClaimsAllocationAlone(t *testing.T) {
 	}
 	getter.SetCodec(serializer.NewCodecFactory(scheme).LegacyCodec(ipamv1alpha1.SchemeGroupVersion))
 	stepped := &steppedAllocator{PrefixAllocator: allocator.NewPostgresPrefixAllocator()}
-	staleREST, _, err := ipallocation.NewAllocationStorage(scheme, getter, stepped, db)
+	staleREST, _, err := ipallocation.NewAllocationStorage(scheme, getter, stepped, db, releaseChecker(true))
 	if err != nil {
 		t.Fatalf("allocation storage: %v", err)
 	}

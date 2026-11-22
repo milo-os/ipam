@@ -12,6 +12,9 @@ spec:
   strategy: FirstFit
   reclaimPolicy: Retain
 ---
+# The lease is what lets claim-overrides-class-default set reclaimPolicy
+# Retain on a claim of this class: a claim may retain past a Delete class only
+# under a lease. It is long enough that no step outlives it.
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPClass
 metadata:
@@ -25,6 +28,7 @@ spec:
   defaultPrefixLength: 32
   strategy: FirstFit
   reclaimPolicy: Delete
+  retentionLease: 720h
 ---
 apiVersion: ipam.miloapis.com/v1alpha1
 kind: IPPool

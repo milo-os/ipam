@@ -103,6 +103,7 @@ func TestReleaseOfABoundRowIsRefusedWhateverTheObjectSays(t *testing.T) {
 // change only what the claim says. It is refused instead.
 func TestReclaimPolicyCannotBeChangedAfterCreate(t *testing.T) {
 	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimDelete)
+	withLeasedDeleteClass(t, db)
 	ctx := claimCtx(testProject)
 
 	created, err := r.Create(ctx, retainClaim("claim-1", ipam.ReclaimRetain), nil, &metav1.CreateOptions{})

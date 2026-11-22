@@ -27,12 +27,18 @@ spec:
     property from retention itself: a retained address that can never be
     reclaimed is a permanent loss of capacity rather than a deliberate hold.
     Deleting the unbound allocation is the operator gesture; deleting a bound
-    one must be refused. The other way out, recreating the claim under its own
-    name to take the address back, is class-retain-replacement's; every claim
-    here that must not get a retained address carries a different name.
+    one must be refused. The last step makes these requests as a consumer,
+    which may release what its claims retained with a lease deadline, but not
+    an address held with no deadline, nor take one back under reclaimPolicy
+    Delete, and nothing a claim still holds. The other way out, recreating the
+    claim under its own name to take the address back, is
+    class-retain-replacement's; every claim here that must not get a retained
+    address carries a different name.
 
-    Retention leases are not enforced yet (milo-os/ipam#107), so nothing here
-    waits for one: a retained address is held until its allocation is deleted.
+    The only lease set here, rc-delete's 720h, outlives every step, so no
+    retained address runs out during the suite whether the retention sweeper
+    enforces leases or only observes them. Release at the deadline is
+    class-lease's and the allocator tests'.
 
   # Every claim resolves its class, and resolving a class needs a project, so
   # the suite drives the apiserver as a project tenant. `task e2e` generates the
@@ -294,7 +300,8 @@ spec:
         A claim setting reclaimPolicy: Retain against a class whose default is
         Delete must be retained. This is the case where the effective policy is
         neither object's literal default, and the one a hard-coded policy value
-        gets wrong most quietly.
+        gets wrong most quietly. rc-delete sets a retention lease, without
+        which the override is refused (class-retain-replacement covers that).
       try:
         - script:
             timeout: 120s
@@ -497,3 +504,183 @@ spec:
               ($error == null): true
               "(contains($stdout, 'OK: bound allocation refused with 409 naming its claim'))": true
 
+
+    - name: a-consumer-releases-what-it-retained
+      description: |
+        The ipam-consumer role grants ipallocations.delete, so a consumer gives
+        back what its own claim retained without an admin, as long as the
+        retained address has a lease deadline. This step runs as
+        e2e-tenant-consumer, which holds only that role (lib/tenant-rbac.yaml
+        mirrors it, and internal/iamconfig pins the mirror).
+
+        Three cases. An address retained under rc-delete's lease is released
+        with 200. One retained under rc-retain, which sets no lease in a pool
+        with no cap, is held with no deadline: the consumer is refused with 403
+        and the allocation stays, because freeing it could hand out an address
+        still in use. Recreating its claim under reclaimPolicy Delete, which
+        would free it when that claim went, is refused with 403 the same way;
+        recreating it under the class's Retain takes it back. The admin-like
+        tenant user, which has release-unleased, then releases it. A bound one
+        is refused with 409 naming its claim, which keeps its address.
+      try:
+        - script:
+            # Nine 60s waits, plus the requests between them.
+            timeout: 600s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              KUBECTL="kubectl --kubeconfig ../.tenant-impersonation.kubeconfig --context tenant-project-alpha-consumer"
+              . ../lib/ipam.sh
+
+              # The identity is the consumer, not the admin-like tenant user
+              # the other steps run as.
+              if [ "$($KUBECTL auth can-i create ippools.ipam.miloapis.com 2>/dev/null || true)" != "no" ]; then
+                echo "FAIL: the consumer context can create pools; it is not consumer-only"
+                exit 1
+              fi
+              if [ "$($KUBECTL auth can-i delete ipallocations.ipam.miloapis.com -n "$NAMESPACE" 2>/dev/null || true)" != "yes" ]; then
+                echo "FAIL: the consumer context may not delete IPAllocations; tenant-rbac.yaml is out of step"
+                exit 1
+              fi
+              if [ "$($KUBECTL auth can-i release-unleased ipallocations.ipam.miloapis.com -n "$NAMESPACE" 2>/dev/null || true)" != "no" ]; then
+                echo "FAIL: the consumer context may release unleased IPAllocations; tenant-rbac.yaml is out of step"
+                exit 1
+              fi
+
+              # claim <name> <class> [reclaimPolicy]
+              claim() {
+                _policy=""
+                if [ -n "${3:-}" ]; then _policy="reclaimPolicy: $3"; fi
+                $KUBECTL create -n "$NAMESPACE" -f - >/dev/null <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: $1
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: $2
+                $_policy
+              EOF
+                wait_claim_bound "$NAMESPACE" "$1" 60
+              }
+
+              # retain_claim <name> <class> [reclaimPolicy] — binds, deletes the
+              # claim, checks the allocation was retained, and prints its name.
+              # Everything else goes to stderr, so a failure is not swallowed
+              # into the caller's variable.
+              retain_claim() {
+                claim "$@" >&2
+                _alloc=$($KUBECTL get ipclaim -n "$NAMESPACE" "$1" -o jsonpath='{.status.boundAllocationRef.name}')
+                $KUBECTL delete ipclaim -n "$NAMESPACE" "$1" --wait=true >/dev/null
+                wait_gone ipclaim "$NAMESPACE" "$1" 60 >&2
+                _ref=$($KUBECTL get ipallocation -n "$NAMESPACE" "$_alloc" -o json | jq -r '.spec.claimRef // "none"')
+                if [ "$_ref" != "none" ]; then
+                  echo "FAIL: setup: $_alloc was not retained (claimRef $_ref)" >&2
+                  return 1
+                fi
+                echo "$_alloc"
+              }
+
+              # kubectl -v=6 logs the GET it makes first as well, so only the
+              # DELETE of this allocation counts. Both log formats put the verb
+              # and URL before the status.
+              expect_released() {
+                _out=$($KUBECTL delete ipallocation -n "$NAMESPACE" "$1" -v=6 2>&1) && _rc=0 || _rc=$?
+                if [ "$_rc" != "0" ] || ! printf '%s\n' "$_out" | grep -Eq "DELETE.*/ipallocations/$1[\" ?].*200 OK"; then
+                  echo "FAIL: $2 of retained $1 did not return 200 (rc $_rc)"
+                  printf '%s\n' "$_out" | grep -i 'response\|error' | tail -5
+                  return 1
+                fi
+                wait_gone ipallocation "$NAMESPACE" "$1" 60
+              }
+
+              # Leased: rc-delete's lease bounds the override, so the address
+              # has a deadline and the consumer may bring it forward.
+              leased=$(retain_claim rc-consumer-leased rc-delete Retain)
+              expires=$($KUBECTL get ipallocation -n "$NAMESPACE" "$leased" -o jsonpath='{.status.expiresAt}')
+              if [ -z "$expires" ]; then
+                echo "FAIL: setup: $leased was retained with no expiresAt under rc-delete's lease"
+                exit 1
+              fi
+              expect_released "$leased" "the consumer's release"
+              echo "OK: consumer released leased $leased"
+
+              # Unleased: rc-retain sets no lease and rc-pool no cap, so the
+              # address is held until someone releases it. Not the consumer.
+              kept=$(retain_claim rc-consumer-kept rc-retain)
+              expires=$($KUBECTL get ipallocation -n "$NAMESPACE" "$kept" -o jsonpath='{.status.expiresAt}')
+              if [ -n "$expires" ]; then
+                echo "FAIL: setup: $kept has expiresAt $expires; rc-retain should give it no lease"
+                exit 1
+              fi
+              expect_delete_rejected ipallocation "$NAMESPACE" "$kept" 403 'no lease deadline' "consumer release of unleased $kept"
+              claimref=$($KUBECTL get ipallocation -n "$NAMESPACE" "$kept" -o json | jq -r '.spec.claimRef // "none"')
+              if [ "$claimref" != "none" ]; then
+                echo "FAIL: $kept changed under the refused release (claimRef $claimref)"
+                exit 1
+              fi
+              echo "OK: consumer release of unleased $kept refused with 403"
+
+              # Nor can the consumer free it by taking it back under Delete
+              # and deleting the claim.
+              expect_rejected "$NAMESPACE" 403 'no lease deadline' "consumer reclaim of unleased $kept under Delete" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: rc-consumer-kept
+                namespace: $NAMESPACE
+                labels:
+                  suite: class-reclaim
+              spec:
+                className: rc-retain
+                reclaimPolicy: Delete
+              EOF
+              claimref=$($KUBECTL get ipallocation -n "$NAMESPACE" "$kept" -o json | jq -r '.spec.claimRef // "none"')
+              if [ "$claimref" != "none" ]; then
+                echo "FAIL: the refused reclaim bound $kept (claimRef $claimref)"
+                exit 1
+              fi
+              echo "OK: consumer reclaim of unleased $kept under Delete refused with 403"
+
+              # Under the class's Retain it may take the address back; deleting
+              # that claim retains it again.
+              claim rc-consumer-kept rc-retain
+              again=$($KUBECTL get ipclaim -n "$NAMESPACE" rc-consumer-kept -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ "$again" != "$kept" ]; then
+                echo "FAIL: recreating rc-consumer-kept under Retain bound '$again', want the retained $kept"
+                exit 1
+              fi
+              $KUBECTL delete ipclaim -n "$NAMESPACE" rc-consumer-kept --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" rc-consumer-kept 60
+              echo "OK: consumer reclaimed unleased $kept under Retain"
+
+              # The admin-like tenant user holds release-unleased.
+              consumer_kubectl="$KUBECTL"
+              KUBECTL=kubectl
+              expect_released "$kept" "the admin's release"
+              KUBECTL="$consumer_kubectl"
+              echo "OK: admin released unleased $kept"
+
+              # Bound: the release is refused and the claim keeps its address.
+              claim rc-consumer-bound rc-retain
+              bound=$($KUBECTL get ipclaim -n "$NAMESPACE" rc-consumer-bound -o jsonpath='{.status.boundAllocationRef.name}')
+              addr=$(claim_cidr "$NAMESPACE" rc-consumer-bound)
+              expect_delete_rejected ipallocation "$NAMESPACE" "$bound" 409 'rc-consumer-bound' "consumer release of a bound allocation"
+              phase=$($KUBECTL get ipclaim -n "$NAMESPACE" rc-consumer-bound -o jsonpath='{.status.phase}')
+              still=$(claim_cidr "$NAMESPACE" rc-consumer-bound)
+              if [ "$phase" != "Bound" ] || [ "$still" != "$addr" ]; then
+                echo "FAIL: rc-consumer-bound is $phase on '$still' after the refused release, want Bound on $addr"
+                exit 1
+              fi
+              echo "OK: consumer release of bound $bound refused with 409"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: consumer released leased'))": true
+              "(contains($stdout, 'OK: consumer release of unleased'))": true
+              "(contains($stdout, 'OK: consumer reclaim of unleased'))": true
+              "(contains($stdout, 'OK: consumer reclaimed unleased'))": true
+              "(contains($stdout, 'OK: admin released unleased'))": true
+              "(contains($stdout, 'OK: consumer release of bound'))": true

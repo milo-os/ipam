@@ -88,7 +88,7 @@ func newTenantREST(t *testing.T) (*AllocatingREST, *pgxpool.Pool) {
 	}
 	getter.SetCodec(codec)
 
-	rest, _, err := NewAllocatingStorage(scheme, getter, allocator.NewPostgresPrefixAllocator(), db, codec, nil, nil)
+	rest, _, err := NewAllocatingStorage(scheme, getter, allocator.NewPostgresPrefixAllocator(), db, codec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("claim storage: %v", err)
 	}

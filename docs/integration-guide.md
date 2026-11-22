@@ -7,7 +7,11 @@ prefixes and ASNs.
 
 - IPAM apiserver deployed and `APIService v1alpha1.ipam.miloapis.com` Available
 - A `ClusterRoleBinding` granting your service `ipam.miloapis.com` claim verbs
-  (typically: `ipam-consumer` from `config/milo/rbac.yaml`)
+  (typically: `ipam-consumer` from `config/milo/rbac.yaml`). The consumer role
+  also grants deleting an IPAllocation, which is how your service releases an
+  address its claim retained under a lease; a bound allocation is refused with
+  409, and one retained with no lease deadline with 403 (only IPAM Admin can
+  release that; see [Retention leases](#retention-leases)).
 
 ## Claiming a prefix
 
@@ -68,7 +72,9 @@ back only on the terms it was held under:
 
 Anything else is a 409 with reason `RetainedAllocationMismatch`, naming the
 IPAllocation and the field. Recreate on the retained terms, or delete the
-IPAllocation to release the address and claim afresh.
+IPAllocation to release the address and claim afresh. Deleting it needs only
+the consumer role if the retained address has a lease deadline, and is refused
+with 409 while a claim is bound to it. One with no deadline needs IPAM Admin.
 
 Three consequences to plan around:
 
@@ -103,6 +109,38 @@ status:
 With no lease on either, `expiresAt` is absent and the reason is `NoLease`.
 Recreating the claim before the deadline reclaims the address and clears both
 timestamps.
+
+The deadline also decides who can release the address early. With an
+`expiresAt`, the consumer role can delete the IPAllocation: the release only
+brings the deadline forward. With none (`NoLease`, or `LeasePending` until the
+sweeper evaluates it), the address is held until someone releases it, usually
+because what owned it, such as a VPC block under a class that retains by
+default, still uses it. Deleting that IPAllocation is refused with 403 unless
+the caller has `ipam.miloapis.com/ipallocations.release-unleased`, which only
+the IPAM Admin role grants. The same goes for taking it back under
+`reclaimPolicy: Delete`, which would free it when that claim is deleted: the
+create is refused with 403 and the address stays retained. Recreate the claim
+with `reclaimPolicy: Retain`, or under a class whose default is `Retain`, to
+take the address back; if your service needs to give it up, ask an admin to
+release it. Deleting the namespace still frees it: the namespace controller's
+`deletecollection` on IPAllocations admits the release, and no IAM role grants
+that verb to a consumer.
+
+A claim cannot retain indefinitely on its own say-so. Setting
+`reclaimPolicy: Retain` on a claim whose class defaults to `Delete` is refused
+with 422 and reason `RetentionLeaseRequired` unless the class sets
+`retentionLease` or the pool the claim lands in sets `maxRetentionLease`. The
+message names both. Ask the class or pool owner for a lease, or leave
+`reclaimPolicy` to the class. A recreate that would reclaim a retained address
+is held to the same rule against the pool holding it. Under a chained class,
+whose pools are provisioned without a cap, only the class's `retentionLease`
+admits the override. A class whose own default is `Retain` is not affected.
+
+The rule is checked when the claim is created. The lease is read again when the
+claim is deleted, so removing the class's lease or the pool's cap, deleting the
+class, or changing a `Retain` class the claim agreed with to `Delete` while the
+claim is bound can still leave its address retained with no lease. Do not read
+an accepted `Retain` as a promise that a deadline will be set.
 
 Leases are not yet enforced. Until they are, nothing is released at
 `expiresAt`, and an expired retained address stays held until its IPAllocation
@@ -205,6 +243,10 @@ case ipamerrors.ReasonRetainedAllocationMismatch:
     // address back, or delete the IPAllocation to claim afresh.
     allocation, field, _ := ipamerrors.RetainedAllocationMismatch(err)
     ...
+case ipamerrors.ReasonRetentionLeaseRequired:
+    // The claim set reclaimPolicy Retain against a class that defaults to
+    // Delete, and no lease would bound the retention. Leave reclaimPolicy to
+    // the class, or have the class or pool owner set a lease.
 case ipamerrors.ReasonAllocationRetained:
     // Returned by IPAM releases that refused a recreate over a retained
     // allocation; current releases reclaim it instead. RetainedAllocation
@@ -217,5 +259,6 @@ Reasons are added over time, so treat an unrecognised one the same as
 
 - **507 Insufficient Storage**: no space. Fall back to a different pool or back off.
 - **400 Bad Request**: the request will not succeed unchanged on retry.
-- **403 Forbidden**: RBAC. Investigate role bindings.
+- **403 Forbidden**: RBAC. Investigate role bindings. Deleting a retained IPAllocation with no lease deadline, or reclaiming one under `reclaimPolicy: Delete`, is also 403 for anyone but an IPAM Admin.
 - **409 Conflict**: a name is taken.
+- **422 Unprocessable Entity**: a field is refused for its value; change it before retrying.

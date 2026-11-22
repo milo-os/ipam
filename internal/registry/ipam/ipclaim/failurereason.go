@@ -6,6 +6,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
+	"go.miloapis.com/ipam/internal/tracing"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
 )
 
@@ -83,8 +84,30 @@ func ipamReasonLabel(err error) (string, bool) {
 		ipamerrors.ReasonAddressScopeMismatch, ipamerrors.ReasonScopeRolesMissing,
 		ipamerrors.ReasonNoProjectScope, ipamerrors.ReasonAddressOutsidePool,
 		ipamerrors.ReasonAddressUnaligned, ipamerrors.ReasonSharedPoolUnplaced,
-		ipamerrors.ReasonRangeUnplaced:
+		ipamerrors.ReasonRangeUnplaced, ipamerrors.ReasonRetentionLeaseRequired:
 		return reasonInvalid, true
 	}
 	return "", false
+}
+
+// spanReason is the span error reason for a failure the metric labels label,
+// so a trace and the failure counter agree on what was a refusal. Only the
+// server-fault labels map to tracing.ReasonTxError.
+func spanReason(label string) string {
+	switch label {
+	case reasonInternal, reasonTxError:
+		return tracing.ReasonTxError
+	case reasonPoolExhausted:
+		return tracing.ReasonExhausted
+	case reasonPoolNotFound, reasonClassNotFound:
+		return tracing.ReasonPoolNotFound
+	case reasonNamespaceNotLive:
+		return tracing.ReasonNamespaceNotLive
+	case reasonConflict:
+		return tracing.ReasonConflict
+	case reasonInvalid:
+		return tracing.ReasonInvalid
+	}
+	// forbidden, class_holds_no_range: refusals with labels of their own.
+	return label
 }

@@ -208,6 +208,10 @@ func TestConsumersCanReadEveryResourceAClaimTouches(t *testing.T) {
 // nothing else ties them to a manifest. A verb the code checks but no
 // ProtectedResource declares is denied for everyone, and the denial only
 // surfaces as a cross-project reference or claim that can never be authorised.
+//
+// internal/access/release.go also asks deletecollection on ipallocations. That
+// one is undeclared on purpose and is not listed here; see
+// TestDeleteCollectionOnAllocationsStaysOutOfIAM.
 func TestEveryVerbTheCodeChecksIsDeclared(t *testing.T) {
 	protected := loadProtectedResources(t)
 	for _, want := range []struct {
@@ -215,6 +219,7 @@ func TestEveryVerbTheCodeChecksIsDeclared(t *testing.T) {
 	}{
 		{"ippools", "use", "internal/access/sar.go"},
 		{"ipclasses", "use", "internal/access/class.go"},
+		{"ipallocations", "release-unleased", "internal/access/release.go"},
 	} {
 		pr, ok := protected[want.plural]
 		if !ok {
@@ -272,6 +277,132 @@ func TestRolesGrantNoSubresourceWrites(t *testing.T) {
 			if strings.HasPrefix(perm, "ipam.miloapis.com/") && strings.Contains(resource, "/") && verb != "get" {
 				t.Errorf("role %q grants %q, a write to a server-owned subresource", name, perm)
 			}
+		}
+	}
+}
+
+// A consumer releases the addresses its own claims retained: releasing is
+// deleting the IPAllocation, and the allocator refuses a bound one, so delete
+// is safe to grant where a claim can be filed. Nothing may write one, and an
+// admin keeps the release through the consumer role it inherits.
+// Releasing one with no lease deadline is admin-only; see
+// TestOnlyAdminsCanReleaseAnUnleasedAllocation.
+func TestConsumersCanReleaseAllocationsButNotWriteThem(t *testing.T) {
+	roles := loadRoles(t)
+	for _, name := range []string{"ipam.miloapis.com-consumer", "ipam.miloapis.com-admin"} {
+		perms := permissionsOf(roles, name, map[string]bool{})
+		if !perms["ipam.miloapis.com/ipallocations.delete"] {
+			t.Errorf("role %q cannot release an IPAllocation", name)
+		}
+		for _, verb := range []string{"create", "update", "patch"} {
+			if perm := "ipam.miloapis.com/ipallocations." + verb; perms[perm] {
+				t.Errorf("role %q grants %q; allocations are written only by their claims", name, perm)
+			}
+		}
+	}
+	viewer := permissionsOf(roles, "ipam.miloapis.com-viewer", map[string]bool{})
+	if viewer["ipam.miloapis.com/ipallocations.delete"] {
+		t.Error("the viewer role can release an IPAllocation")
+	}
+}
+
+// An allocation retained with no lease deadline is held on purpose, often by
+// something that still uses it, so releasing it needs release-unleased on top
+// of delete. Only ipam-admin grants it; a consumer releases what has a lease.
+func TestOnlyAdminsCanReleaseAnUnleasedAllocation(t *testing.T) {
+	const perm = "ipam.miloapis.com/ipallocations.release-unleased"
+	roles := loadRoles(t)
+	if !permissionsOf(roles, "ipam.miloapis.com-admin", map[string]bool{})[perm] {
+		t.Errorf("the admin role lacks %q; nobody could release an unleased allocation", perm)
+	}
+	for name := range roles {
+		if name == "ipam.miloapis.com-admin" {
+			continue
+		}
+		if permissionsOf(roles, name, map[string]bool{})[perm] {
+			t.Errorf("role %q grants %q; only ipam-admin may release an address with no lease deadline", name, perm)
+		}
+	}
+}
+
+// The release of an allocation with no lease deadline is also admitted by
+// deletecollection on ipallocations, which the namespace controller holds
+// through Kubernetes RBAC, so deleting a namespace still frees what it holds.
+// It must stay out of Milo IAM: declared, a role could grant it, and a
+// consumer holding it could free an address held on purpose.
+func TestDeleteCollectionOnAllocationsStaysOutOfIAM(t *testing.T) {
+	pr, ok := loadProtectedResources(t)["ipallocations"]
+	if !ok {
+		t.Fatal("no ProtectedResource for ipallocations")
+	}
+	for _, v := range pr.Spec.Permissions {
+		if v == "deletecollection" {
+			t.Error("the ipallocations ProtectedResource declares deletecollection; " +
+				"internal/access/release.go admits unleased releases on it, so no IAM role may be able to grant it")
+		}
+	}
+	roles := loadRoles(t)
+	for name := range roles {
+		if permissionsOf(roles, name, map[string]bool{})["ipam.miloapis.com/ipallocations.deletecollection"] {
+			t.Errorf("role %q grants ipallocations.deletecollection", name)
+		}
+	}
+}
+
+// The e2e cluster authorizes with RBAC rather than Milo IAM, so the consumer
+// identity's access is restated as a ClusterRole. It must grant exactly what
+// the consumer role does, or a consumer suite proves something about a role
+// nobody ships.
+func TestTheE2EConsumerRoleMirrorsTheConsumerRole(t *testing.T) {
+	const path = "../../test/e2e/lib/tenant-rbac.yaml"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	type clusterRole struct {
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Rules []struct {
+			APIGroups []string `json:"apiGroups"`
+			Resources []string `json:"resources"`
+			Verbs     []string `json:"verbs"`
+		} `json:"rules"`
+	}
+	got := map[string]bool{}
+	found := false
+	for _, doc := range strings.Split(string(data), "\n---\n") {
+		var cr clusterRole
+		if err := yaml.Unmarshal([]byte(doc), &cr); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if cr.Kind != "ClusterRole" || cr.Metadata.Name != "e2e-tenant-ipam-consumer" {
+			continue
+		}
+		found = true
+		for _, rule := range cr.Rules {
+			for _, group := range rule.APIGroups {
+				for _, resource := range rule.Resources {
+					for _, verb := range rule.Verbs {
+						got[group+"/"+resource+"."+verb] = true
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("%s has no ClusterRole e2e-tenant-ipam-consumer", path)
+	}
+	want := permissionsOf(loadRoles(t), "ipam.miloapis.com-consumer", map[string]bool{})
+	for perm := range want {
+		if !got[perm] {
+			t.Errorf("the e2e consumer ClusterRole lacks %q, which the consumer role grants", perm)
+		}
+	}
+	for perm := range got {
+		if !want[perm] {
+			t.Errorf("the e2e consumer ClusterRole grants %q, which the consumer role does not", perm)
 		}
 	}
 }

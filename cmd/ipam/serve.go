@@ -440,9 +440,11 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 
 	var poolChecker access.PoolAccessChecker
 	var classChecker access.ClassAccessChecker
+	var releaseChecker access.UnleasedReleaseChecker
 	if genericConfig.Authorization.Authorizer != nil {
 		poolChecker = access.NewPoolAccessChecker(genericConfig.Authorization.Authorizer)
 		classChecker = access.NewClassAccessChecker(genericConfig.Authorization.Authorizer)
+		releaseChecker = access.NewUnleasedReleaseChecker(genericConfig.Authorization.Authorizer)
 	}
 
 	// ClientConfig comes from --kubeconfig via CoreAPI.ApplyTo, which runs
@@ -465,6 +467,7 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 			AllocatorPool:          allocatorPool,
 			PoolChecker:            poolChecker,
 			ClassChecker:           classChecker,
+			ReleaseChecker:         releaseChecker,
 			NamespaceChecker:       namespaceChecker,
 			RetentionSweepInterval: o.RetentionSweepInterval,
 			RetentionSweepMode:     sweepMode,

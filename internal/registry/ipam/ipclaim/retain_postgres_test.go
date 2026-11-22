@@ -77,12 +77,15 @@ func newLifecycleREST(t *testing.T, classPolicy ipamv1alpha1.ReclaimPolicy) (*Al
 	getter.SetCodec(codec)
 
 	alloc := allocator.NewPostgresPrefixAllocator()
-	claimREST, _, err := NewAllocatingStorage(scheme, getter, alloc, db, codec, nil, nil)
+	// The release checker admits everything, here and for the allocation
+	// storage below: these tests act as an admin would. What a consumer may
+	// release or reclaim is unleased_release_postgres_test.go.
+	claimREST, _, err := NewAllocatingStorage(scheme, getter, alloc, db, codec, nil, nil, releaseChecker(true))
 	if err != nil {
 		t.Fatalf("claim storage: %v", err)
 	}
 	t.Cleanup(claimREST.Destroy)
-	allocREST, _, err := ipallocation.NewAllocationStorage(scheme, getter, alloc, db)
+	allocREST, _, err := ipallocation.NewAllocationStorage(scheme, getter, alloc, db, releaseChecker(true))
 	if err != nil {
 		t.Fatalf("allocation storage: %v", err)
 	}
@@ -238,9 +241,10 @@ func TestDeleteUnderRetainHoldsTheAddress(t *testing.T) {
 }
 
 // A claim overrides its class's policy, so Retain is reachable without a class
-// that defaults to it.
+// that defaults to it, given a lease to retain under.
 func TestClaimOverridesTheClassReclaimPolicy(t *testing.T) {
 	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimDelete)
+	withLeasedDeleteClass(t, db)
 	ctx := claimCtx(testProject)
 
 	created, err := r.Create(ctx, retainClaim("claim-1", ipam.ReclaimRetain), nil, &metav1.CreateOptions{})
