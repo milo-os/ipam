@@ -510,7 +510,8 @@ spec:
         naming its claim, which keeps its address.
       try:
         - script:
-            timeout: 150s
+            # Four 60s waits, plus the requests between them.
+            timeout: 270s
             env:
               - name: NAMESPACE
                 value: ($namespace)
@@ -555,8 +556,11 @@ spec:
                 exit 1
               fi
 
+              # kubectl -v=6 logs the GET it makes first as well, so only the
+              # DELETE of this allocation counts. Both log formats put the verb
+              # and URL before the status.
               out=$($KUBECTL delete ipallocation -n "$NAMESPACE" "$kept" -v=6 2>&1) && rc=0 || rc=$?
-              if [ "$rc" != "0" ] || ! printf '%s\n' "$out" | grep -q '200 OK'; then
+              if [ "$rc" != "0" ] || ! printf '%s\n' "$out" | grep -Eq "DELETE.*/ipallocations/$kept[\" ?].*200 OK"; then
                 echo "FAIL: the consumer's release of retained $kept did not return 200 (rc $rc)"
                 printf '%s\n' "$out" | grep -i 'response\|error' | tail -5
                 exit 1
