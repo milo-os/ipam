@@ -144,7 +144,8 @@ Exit codes are a contract:
   Creating the claim again under the same name takes the address back, if it
   resolves to the same class, scope and pool and asks for the same size;
   `claim create` names the field that differs otherwise. `allocation list --unclaimed` is the
-  leak check; `allocation release` is the deliberate hand-back. `allocation show`
+  leak check; `allocation release` is the deliberate hand-back, open to the IPAM
+  Consumer role and refused for an allocation a claim still holds. `allocation show`
   prints a retained allocation's lease deadline, if its class or pool sets one;
   leases are not yet enforced, so it stays held past that until released.
 

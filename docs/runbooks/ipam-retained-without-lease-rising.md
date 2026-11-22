@@ -23,6 +23,12 @@ IPv4, that capacity does not come back on its own.
 - retained before IPAM timestamped retention (`retained_at IS NULL`). No lease
   can be measured for these, so they never expire.
 
+A claim cannot add to the first kind by overriding a Delete class to Retain:
+that override is refused (`RetentionLeaseRequired`) unless the class or pool
+sets a lease. New unleased rows come from a class whose own default is Retain,
+from claims created before that refusal shipped, or from a lease or cap removed
+after the claim was created.
+
 ## Source signals
 
 - `ipam_retained_allocations{lease="none"}`, by `ip_family`
@@ -57,7 +63,9 @@ IPv4, that capacity does not come back on its own.
   on the pool, which also caps classes that set none. Lowering a pool's cap
   applies to what the pool already retains. A class's lease applies from the
   next retention.
-- Release what is not needed: `datumctl ipam allocation release <name>`.
+- Release what is not needed: `datumctl ipam allocation release <name>`. The
+  consumer that retained it can do this itself: the IPAM Consumer role grants
+  it, and a bound allocation is refused.
 - Leases are not enforced until the sweeper runs in enforce mode
   (`RETENTION_SWEEP_MODE=enforce`). Until then a lease shows a deadline
   (`status.expiresAt`) but releases nothing.

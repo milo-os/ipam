@@ -7,7 +7,9 @@ prefixes and ASNs.
 
 - IPAM apiserver deployed and `APIService v1alpha1.ipam.miloapis.com` Available
 - A `ClusterRoleBinding` granting your service `ipam.miloapis.com` claim verbs
-  (typically: `ipam-consumer` from `config/milo/rbac.yaml`)
+  (typically: `ipam-consumer` from `config/milo/rbac.yaml`). The consumer role
+  also grants deleting an IPAllocation, which is how your service releases an
+  address its claim retained; a bound allocation is refused with 409.
 
 ## Claiming a prefix
 
@@ -68,7 +70,8 @@ back only on the terms it was held under:
 
 Anything else is a 409 with reason `RetainedAllocationMismatch`, naming the
 IPAllocation and the field. Recreate on the retained terms, or delete the
-IPAllocation to release the address and claim afresh.
+IPAllocation to release the address and claim afresh. Deleting it needs only
+the consumer role, and is refused with 409 while a claim is bound to it.
 
 Three consequences to plan around:
 

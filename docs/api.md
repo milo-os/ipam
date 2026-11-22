@@ -101,7 +101,9 @@ block.
 
 `IPAllocation` is namespace-scoped (`shortName: ipalloc`) and system-created; it
 records the block granted to an IPClaim. Its status is written only by the
-server: `ipallocations/status` serves get and nothing else. Its table output has an `Expires`
+server: `ipallocations/status` serves get and nothing else. Deleting an
+IPAllocation releases its address; the IPAM Consumer role grants it, and it is
+refused with 409 while a claim is bound to the allocation. Its table output has an `Expires`
 column: the time left on the lease, `never` with no lease, `<pending>` while
 unevaluated, and `<none>` while a claim holds it.
 

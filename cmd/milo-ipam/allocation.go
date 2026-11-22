@@ -351,7 +351,12 @@ not yet enforced, so an allocation past its deadline is still held until it is
 released here.
 
 Releasing an allocation that still has a claim bound to it is refused — release
-the claim instead, so the claim and its address do not disagree.`,
+the claim instead, so the claim and its address do not disagree.
+
+Releasing needs the IPAM Consumer role in the project, the role claims are
+filed with, or IPAM Admin. A consumer can give back what its own claims
+retained without an admin; the refusal above is the server's, so no role can
+release an address a claim still holds.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
