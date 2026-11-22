@@ -104,16 +104,21 @@ PrometheusRule (or VMRule for Victoria Metrics):
 groups:
   - name: ipam.allocation
     rules:
-      - alert: IPAMAllocationErrorRateCritical
+      # Pages only on server faults. reason=internal (bug) and
+      # reason=tx_error (postgres) are the only server-fault reasons; every
+      # other reason (invalid, conflict, forbidden, pool_exhausted, ...) is a
+      # refused request the caller fixes and must not page. Pool exhaustion
+      # has its own utilization alerts below.
+      - alert: IPAMAllocationErrorRateHigh
         expr: |
-          rate(ipam_allocation_total{outcome=~"error|conflict"}[5m])
-          / rate(ipam_allocation_total[5m]) > 0.05
+          sum(rate(ipam_allocation_failures_total{reason=~"internal|tx_error"}[5m]))
+          / clamp_min(sum(rate(ipam_allocation_duration_seconds_count[5m])), 1e-9) > 0.05
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "IPAM allocation error rate above 5%"
-          runbook_url: "docs/runbooks/ipam-allocation-error-rate.md"
+          summary: "IPAM allocation server-fault rate above 5%"
+          runbook_url: "docs/runbooks/ipam-allocation-error-rate-high.md"
 
       - alert: IPAMPoolNearlyExhausted
         expr: ipam_pool_utilization_ratio > 0.80

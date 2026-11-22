@@ -6,9 +6,12 @@
 
 ## What this alert means
 
-The ratio of `ipam_allocation_failures_total` to total allocation attempts
-(`ipam_allocation_duration_seconds_count`) exceeded 5% over the last 5 minutes,
-sustained for 2 minutes. This is the headline write-path error budget alert.
+The ratio of server-fault failures (`ipam_allocation_failures_total{reason=~"internal|tx_error"}`)
+to total allocation attempts (`ipam_allocation_duration_seconds_count`) exceeded
+5% over the last 5 minutes, sustained for 2 minutes. This is the headline
+write-path error budget alert. Requests the server refused (every other
+`reason`) do not count toward it: a caller sending malformed claims, or a full
+pool, cannot fire it.
 
 ## Source signals
 
@@ -31,12 +34,14 @@ The `reason` label distinguishes root causes:
 | `tx_error` | postgres transaction failed (rollback, deadlock, conn loss) | Database health |
 | `internal` | Bug — should never occur in steady state | Open a P1; capture klog output |
 
-Only `tx_error` and `internal` are server faults. Every other reason is a request the server refused, which this alert also counts: a caller sending malformed claims can fire it with the service healthy, so check the split before paging the database or the service owner.
+Only `tx_error` and `internal` are server faults, and only they fire this alert and `IPAMAllocationErrorRateAbsolute`. Every other reason is a request the server refused and is shown on the dashboard for context. A full pool is covered by `IPAMPoolExhaustionImminent` and `IPAMPoolExhausted` instead.
 
 ## Diagnose
 
-1. **Break down failures by reason.**
+1. **Break down server faults by reason.** The second query shows refusals
+   alongside, which can point at what the failing requests were doing.
    ```promql
+   sum by (resource, reason) (rate(ipam_allocation_failures_total{reason=~"internal|tx_error"}[5m]))
    topk(5, sum by (resource, reason) (rate(ipam_allocation_failures_total[5m])))
    ```
 2. **For `tx_error`:** check postgres connectivity and lock contention.
