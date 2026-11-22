@@ -10,8 +10,10 @@ import (
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
-// The lease line never reads as a promise: a deadline says it is not yet
-// enforced, and no lease says what will release the address instead.
+// The lease line says when the address becomes eligible for release without
+// promising one, since the CLI cannot see the sweeper's mode: a passed
+// deadline names enforce mode as what releases it, and no lease says what
+// will release the address instead.
 func TestLeaseTextSaysWhatHappensAndWhen(t *testing.T) {
 	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
 	at := func(d time.Duration) *metav1.Time { v := metav1.NewTime(now.Add(d)); return &v }
@@ -21,9 +23,9 @@ func TestLeaseTextSaysWhatHappensAndWhen(t *testing.T) {
 		want   []string
 	}{
 		{"future", ipamv1alpha1.IPAllocationStatus{RetainedAt: at(-time.Hour), ExpiresAt: at(3 * time.Hour)},
-			[]string{"runs out 2026-11-21T15:00:00Z", "in 3h", "not yet enforced"}},
+			[]string{"runs out 2026-11-21T15:00:00Z", "in 3h", "eligible for release"}},
 		{"past", ipamv1alpha1.IPAllocationStatus{RetainedAt: at(-time.Hour), ExpiresAt: at(-10 * time.Minute)},
-			[]string{"ran out", "10m ago", "not yet enforced"}},
+			[]string{"ran out", "10m ago", "released by the retention sweeper when it runs in enforce mode"}},
 		{"none", ipamv1alpha1.IPAllocationStatus{RetainedAt: at(-time.Hour)}, []string{"none", "released or reclaimed"}},
 		{"pending", ipamv1alpha1.IPAllocationStatus{RetainedAt: at(-time.Hour), Conditions: []metav1.Condition{{
 			Type: ipamv1alpha1.AllocationConditionRetained, Status: metav1.ConditionTrue, Reason: ipamv1alpha1.RetainedReasonLeasePending,

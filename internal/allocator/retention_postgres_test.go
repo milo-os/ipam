@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8smetrics "k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/testutil"
 
 	"go.miloapis.com/ipam/internal/metrics"
@@ -306,7 +307,7 @@ func TestTheRetainedSetGauges(t *testing.T) {
 	}
 	allocateWithPolicy(t, db, poolKey, "claim-bound", "bound", ipamv1alpha1.ReclaimRetain)
 
-	if err := publishRetainedGauges(ctx, db); err != nil {
+	if err := publishRetainedGauges(ctx, db, 0); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	for lease, want := range map[string]float64{"finite": 1, "none": 2, "unevaluated": 1} {
@@ -323,6 +324,99 @@ func TestTheRetainedSetGauges(t *testing.T) {
 	}
 	if age, _ := testutil.GetGaugeMetricValue(metrics.RetainedOldestAge.WithLabelValues("IPv4")); age < 0 || age > 600 {
 		t.Errorf("oldest retained age = %vs, want the few seconds since the fixtures retained", age)
+	}
+}
+
+// The overdue gauges count rows past a finite deadline by the database clock,
+// count as late only those past it by more than the grace, and age the most
+// overdue by its deadline, not by when it was retained. A deadline still
+// ahead, 'infinity', an unevaluated lease, and a row retained before retention
+// was timestamped are not overdue; a family with nothing due reads zero. A
+// successful read stamps the replica's freshness gauge.
+func TestTheOverdueRetainedGauges(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "sweep-overdue", "10.78.0.0/16")
+	for _, key := range []string{"due-long", "due-recent", "ahead", "forever", "uneval"} {
+		retain(t, db, poolKey, "claim-"+key, key)
+	}
+	for key, expiresAt := range map[string]string{
+		"due-long":   `now() - interval '2 hours'`,
+		"due-recent": `now() - interval '1 minute'`,
+		"ahead":      `now() + interval '1 hour'`,
+		"forever":    `'infinity'`,
+		"uneval":     `NULL`,
+	} {
+		if _, err := db.Exec(ctx, `UPDATE ipam_cidr_allocations SET expires_at = `+expiresAt+` WHERE allocation_key = $1`, key); err != nil {
+			t.Fatalf("set deadline of %s: %v", key, err)
+		}
+	}
+	// Retained before retention was timestamped, with a past deadline: findDue
+	// never releases it, so it is not overdue either.
+	if _, err := db.Exec(ctx,
+		`INSERT INTO ipam_cidr_allocations (pool_key, allocated_cidr, claim_key, allocation_key, ip_family, purpose, expires_at)
+		 VALUES ($1, '10.78.200.0/24', NULL, 'legacy', 'IPv4', 'Claim', now() - interval '3 hours')`, poolKey); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	before := time.Now().Unix()
+	if err := publishRetainedGauges(ctx, db, time.Hour); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedOverdue.WithLabelValues("IPv4")); got != 2 {
+		t.Errorf("ipam_retained_overdue_allocations{ip_family=IPv4} = %v, want 2", got)
+	}
+	// Only the row two hours overdue is past the one-hour grace.
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedLate.WithLabelValues("IPv4")); got != 1 {
+		t.Errorf("ipam_retained_late_allocations{ip_family=IPv4} = %v, want 1", got)
+	}
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedGaugesLastSuccess); got < float64(before) {
+		t.Errorf("ipam_retained_gauges_last_success_timestamp_seconds = %v, want at least %v", got, before)
+	}
+	// Two hours past its deadline, give or take the test's own runtime.
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedOldestOverdue.WithLabelValues("IPv4")); got < 7200 || got > 7200+600 {
+		t.Errorf("ipam_retained_oldest_overdue_seconds{ip_family=IPv4} = %vs, want about 7200s", got)
+	}
+	for name, gauge := range map[string]*k8smetrics.GaugeVec{
+		"ipam_retained_overdue_allocations":    metrics.RetainedOverdue,
+		"ipam_retained_late_allocations":       metrics.RetainedLate,
+		"ipam_retained_oldest_overdue_seconds": metrics.RetainedOldestOverdue,
+	} {
+		if got, err := testutil.GetGaugeMetricValue(gauge.WithLabelValues("IPv6")); err != nil || got != 0 {
+			t.Errorf("%s{ip_family=IPv6} = %v (%v), want 0", name, got, err)
+		}
+	}
+
+	// An enforcing pass releases both due rows, and the gauges it publishes
+	// on the next pass read zero.
+	if res := sweep(t, db, SweepEnforce); res.Released != 2 {
+		t.Fatalf("enforce released %d, want 2", res.Released)
+	}
+	if err := publishRetainedGauges(ctx, db, time.Hour); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedOverdue.WithLabelValues("IPv4")); got != 0 {
+		t.Errorf("overdue after enforce = %v, want 0", got)
+	}
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedOldestOverdue.WithLabelValues("IPv4")); got != 0 {
+		t.Errorf("oldest overdue after enforce = %vs, want 0", got)
+	}
+	if got, _ := testutil.GetGaugeMetricValue(metrics.RetainedLate.WithLabelValues("IPv4")); got != 0 {
+		t.Errorf("late after enforce = %v, want 0", got)
+	}
+}
+
+// Run publishes the mode it was configured with, so alerts that expect
+// releases can tell enforce from observe.
+func TestTheSweeperPublishesItsMode(t *testing.T) {
+	db := testdb.Pool(t)
+	for mode, want := range map[SweepMode]float64{SweepEnforce: 1, SweepObserve: 0} {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		NewSweeper(db, mode).Run(ctx, time.Minute)
+		if got, _ := testutil.GetGaugeMetricValue(metrics.RetentionSweepEnforcing); got != want {
+			t.Errorf("ipam_retention_sweep_enforcing in %s mode = %v, want %v", mode, got, want)
+		}
 	}
 }
 

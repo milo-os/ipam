@@ -507,7 +507,7 @@ local retentionReleasesPanel = common.tsPanel(
     },
   ],
   unit='short',
-  description='Retained allocations released because their lease ran out. enforce: released. observe: would have been released; each deadline is counted once as it passes, so this is the rate enforce will have once it is turned on.'
+  description='Retained allocations released because their lease ran out. enforce (the default): released, the IPAllocation deleted and the address back in its pool. observe: would have been released; each deadline is counted once as it passes, so after a switch to enforce the enforce series starts with the backlog observe has counted and then runs at this rate.'
 );
 
 local retentionSweepPanel = common.tsPanel(
@@ -547,6 +547,48 @@ local retentionLastPassPanel = common.statPanel(
   'time() - max(ipam_retention_sweep_last_success_timestamp_seconds{%(sel)s})' % { sel: ipamSel },
   unit='s',
   description='Time since any replica completed a sweep pass. IPAMRetentionSweeperStalled fires past five intervals.'
+);
+
+// Overdue is what an enforcing sweep should have released already: past a
+// finite deadline, by the database clock, on the predicate the sweeper
+// releases by.
+local retainedOverduePanel = common.tsPanel(
+  'Overdue retained allocations',
+  [
+    {
+      expr: 'max by (ip_family) (ipam_retained_overdue_allocations{%(sel)s})' % { sel: ipamSel },
+      legend: '{{ip_family}} overdue',
+    },
+    {
+      expr: 'max by (ip_family) (ipam_retained_late_allocations{%(sel)s})' % { sel: ipamSel },
+      legend: '{{ip_family}} late (> 5 intervals)',
+    },
+  ],
+  unit='short',
+  description='Retained allocations past their lease deadline and due for release (overdue), and those past it by more than five sweep intervals (late). In enforce mode overdue should fall to zero within a pass or two of each deadline and late should stay at zero; after a switch from observe both fall by up to 2000 (the per-pass budget) each interval. IPAMRetentionReleasesStalled fires when late stops falling. In observe mode both only grow, since nothing is released.'
+);
+
+local retainedOldestOverduePanel = common.tsPanel(
+  'Most overdue retained allocation',
+  [
+    {
+      expr: 'max by (ip_family) (ipam_retained_oldest_overdue_seconds{%(sel)s})' % { sel: ipamSel },
+      legend: '{{ip_family}}',
+    },
+    {
+      expr: '5 * max(ipam_retention_sweep_interval_seconds{%(sel)s})' % { sel: ipamSel },
+      legend: 'alert threshold (5 intervals)',
+    },
+  ],
+  unit='s',
+  description='How long the most overdue retained allocation of each family has been past its deadline; 0 when none is due. Above the threshold line, the row counts as late.'
+);
+
+local retentionModePanel = common.statPanel(
+  'Replicas enforcing',
+  'sum(ipam_retention_sweep_enforcing{%(sel)s}) / count(ipam_retention_sweep_enforcing{%(sel)s})' % { sel: ipamSel },
+  unit='percentunit',
+  description='Share of replicas running the sweeper in enforce mode. 100%: all enforce. 0%: all observe, or the sweeper is disabled. In between: some replica is in observe mode, and any replica that wins the sweep lock runs the pass in its own mode. IPAMRetentionReleasesStalled is armed while any replica enforces.'
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -625,4 +667,7 @@ dashboard.new('IPAM — Provider')
   at(retentionReleasesPanel, 0, 116, 10, 7),
   at(retentionSweepPanel, 10, 116, 10, 7),
   at(retentionLastPassPanel, 20, 116, 4, 7),
+  at(retainedOverduePanel, 0, 123, 10, 7),
+  at(retainedOldestOverduePanel, 10, 123, 10, 7),
+  at(retentionModePanel, 20, 123, 4, 7),
 ])

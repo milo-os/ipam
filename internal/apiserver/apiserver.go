@@ -257,6 +257,7 @@ func (c completedConfig) New() (*IPAMServer, error) {
 func (s *IPAMServer) addRetentionSweeper(cfg *ExtraConfig) error {
 	if cfg.RetentionSweepInterval <= 0 {
 		metrics.RetentionSweepInterval.Set(0)
+		metrics.RetentionSweepEnforcing.Set(0)
 		klog.InfoS("Retention sweeper disabled")
 		return nil
 	}

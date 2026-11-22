@@ -142,11 +142,13 @@ class, or changing a `Retain` class the claim agreed with to `Delete` while the
 claim is bound can still leave its address retained with no lease. Do not read
 an accepted `Retain` as a promise that a deadline will be set.
 
-Leases are not yet enforced. Until they are, nothing is released at
-`expiresAt`, and an expired retained address stays held until its IPAllocation
-is deleted. Read `expiresAt` as the date the address will be released once
-enforcement is turned on (milo-os/ipam#107). Do not rely on it being held past
-that date.
+An expired retained address is released. On a retention sweeper pass shortly
+after `expiresAt`, usually the next, the IPAllocation is deleted and the
+address goes back to the pool, where another claim may be given it. A pass
+skips a pool that a live claim holds at that moment, so a release can wait for
+a later pass. To keep the address,
+recreate the claim before `expiresAt`. Do not rely on it being held past that
+date.
 
 ## Hierarchical delegation
 

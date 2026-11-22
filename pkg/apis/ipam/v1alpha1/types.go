@@ -480,8 +480,10 @@ type IPClassSpec struct {
 	// the IPAllocation's status.expiresAt; changing this field later does not
 	// move a deadline already set.
 	//
-	// Leases are not yet enforced: an allocation past its deadline is still
-	// held until it is released explicitly.
+	// When the lease runs out the address is released: on a retention sweeper
+	// pass shortly after the deadline, usually the next, the IPAllocation is
+	// deleted and the address returns to the pool. A pass skips a pool a live
+	// claim holds, and leaves it for a later one.
 	// +optional
 	RetentionLease *metav1.Duration `json:"retentionLease,omitempty"`
 
@@ -633,8 +635,10 @@ type IPPoolSpec struct {
 	// retains: every deadline the new cap cuts short is brought forward to
 	// retention plus the cap. Raising or removing it moves no deadline back.
 	//
-	// Leases are not yet enforced: an allocation past its deadline is still
-	// held until it is released explicitly.
+	// When the lease runs out the address is released: on a retention sweeper
+	// pass shortly after the deadline, usually the next, the IPAllocation is
+	// deleted and the address returns to the pool. A pass skips a pool a live
+	// claim holds, and leaves it for a later one.
 	// +optional
 	MaxRetentionLease *metav1.Duration `json:"maxRetentionLease,omitempty"`
 
@@ -754,8 +758,11 @@ const (
 // still held and still counted against its holder. A claim created again under
 // the same name in the same namespace takes it back. Its retention lease, if
 // its class or pool sets one, is fixed when the claim is deleted and shown as
-// status.expiresAt. Leases are not yet enforced: until they are, a retained
-// allocation is held past that deadline until it is released explicitly.
+// status.expiresAt. Once that deadline passes, the retention sweeper releases
+// the allocation on a pass shortly after it, usually the next: the
+// IPAllocation is deleted and its address returns to the pool. A pass skips a
+// pool a live claim holds, and leaves it for a later one. With no lease, it is
+// held until it is deleted or reclaimed.
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type IPAllocation struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -831,8 +838,11 @@ type IPAllocationStatus struct {
 	// maxRetentionLease later brings it forward; nothing pushes it back.
 	// Unset when no lease applies, and while a claim holds the allocation.
 	//
-	// Leases are not yet enforced: an allocation past this deadline is still
-	// held until its IPAllocation is deleted or a recreated claim reclaims it.
+	// Once this deadline passes, the retention sweeper releases the
+	// allocation on a pass shortly after it, usually the next: this
+	// IPAllocation is deleted and the address returns to the pool, unless a
+	// recreated claim reclaims it first. A pass skips a pool a live claim
+	// holds, and leaves it for a later one.
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 	// Conditions include Retained, which is True while the allocation is

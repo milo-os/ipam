@@ -255,7 +255,8 @@ func allocatedAny(s string) bool {
 
 // leaseExpiry renders when a retained allocation's lease runs out, relative to
 // now. A lease past its deadline reads as expired rather than as a negative
-// duration; while leases are not enforced the address is still held then.
+// duration; the address is still held until a sweeper pass releases it, or
+// for as long as the sweeper runs in observe mode.
 func leaseExpiry(a *ipam.IPAllocation, now time.Time) string {
 	switch {
 	case a.Status.ExpiresAt != nil:

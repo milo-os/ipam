@@ -1635,7 +1635,7 @@
             "type": "datasource",
             "uid": "-- Mixed --"
          },
-         "description": "Retained allocations released because their lease ran out. enforce: released. observe: would have been released; each deadline is counted once as it passes, so this is the rate enforce will have once it is turned on.",
+         "description": "Retained allocations released because their lease ran out. enforce (the default): released, the IPAllocation deleted and the address back in its pool. observe: would have been released; each deadline is counted once as it passes, so after a switch to enforce the enforce series starts with the backlog observe has counted and then runs at this rate.",
          "fieldConfig": {
             "defaults": {
                "custom": {
@@ -1813,6 +1813,167 @@
             }
          ],
          "title": "Since the last sweep pass",
+         "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Retained allocations past their lease deadline and due for release (overdue), and those past it by more than five sweep intervals (late). In enforce mode overdue should fall to zero within a pass or two of each deadline and late should stay at zero; after a switch from observe both fall by up to 2000 (the per-pass budget) each interval. IPAMRetentionReleasesStalled fires when late stops falling. In observe mode both only grow, since nothing is released.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 10,
+            "x": 0,
+            "y": 123
+         },
+         "id": 42,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "max by (ip_family) (ipam_retained_overdue_allocations{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "{{ip_family}} overdue"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "max by (ip_family) (ipam_retained_late_allocations{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "{{ip_family}} late (> 5 intervals)"
+            }
+         ],
+         "title": "Overdue retained allocations",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "How long the most overdue retained allocation of each family has been past its deadline; 0 when none is due. Above the threshold line, the row counts as late.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 10,
+            "x": 10,
+            "y": 123
+         },
+         "id": 43,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "max by (ip_family) (ipam_retained_oldest_overdue_seconds{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "{{ip_family}}"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "5 * max(ipam_retention_sweep_interval_seconds{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "alert threshold (5 intervals)"
+            }
+         ],
+         "title": "Most overdue retained allocation",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Share of replicas running the sweeper in enforce mode. 100%: all enforce. 0%: all observe, or the sweeper is disabled. In between: some replica is in observe mode, and any replica that wins the sweep lock runs the pass in its own mode. IPAMRetentionReleasesStalled is armed while any replica enforces.",
+         "fieldConfig": {
+            "defaults": {
+               "unit": "percentunit"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 4,
+            "x": 20,
+            "y": 123
+         },
+         "id": 44,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "sum(ipam_retention_sweep_enforcing{job=\"$job\", instance=~\"$instance\"}) / count(ipam_retention_sweep_enforcing{job=\"$job\", instance=~\"$instance\"})"
+            }
+         ],
+         "title": "Replicas enforcing",
          "type": "stat"
       }
    ],

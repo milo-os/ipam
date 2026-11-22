@@ -1,0 +1,248 @@
+# promtool unit tests for alerts/ipam-alerts.yaml, run by
+# `task observability:verify-alerts` against the rules extracted from the
+# PrometheusRule. Every series is scraped once a minute; the sweep interval is
+# 60s unless a case says otherwise.
+rule_files: [ipam-alerts.rules.yaml]
+evaluation_interval: 1m
+tests:
+  # IPAMRetentionReleasesStalled: five rows stuck past the grace, passes completing. Late from the start: the floors are comparable from 15m, so it fires from 45m.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 1x120
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x120
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 5x120
+      - series: ipam_retained_overdue_allocations{pod="a",ip_family="IPv4"}
+        values: 5x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 600+60x120
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv6"}
+        values: 0x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv6"}
+        values: 0x120
+    alert_rule_test:
+      - {eval_time: 40m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+      - eval_time: 50m
+        alertname: IPAMRetentionReleasesStalled
+        exp_alerts:
+          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, slo: retention}
+            exp_annotations:
+              summary: "IPAM IPv4 retained allocations are not being released (1h 0m 0s past their deadline)"
+              description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-releases-stalled.md"
+
+  # One stuck row among normal churn: the overdue count is noisy, the late count stays at one with brief spikes, and the floors hold.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 1x180
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x180
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x180
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x180
+      - series: ipam_retained_overdue_allocations{pod="a",ip_family="IPv4"}
+        values: 1 3 2 1 4 2 1 2 3 1 1 2 3 4 1 2 1 3 2 2 1 2 4 3 1 2 1 1 3 2 1 4 2 1 2 3 1 1 2 3 4 1 2 1 3 2 2 1 2 4 3 1 2 1 1 3 2 1 4 2 1 3 2 1 4 2 1 2 3 1 1 2 3 4 1 2 1 3 2 2 1 2 4 3 1 2 1 1 3 2 1 4 2 1 2 3 1 1 2 3 4 1 2 1 3 2 2 1 2 4 3 1 2 1 1 3 2 1 4 2 1 3 2 1 4 2 1 2 3 1 1 2 3 4 1 2 1 3 2 2 1 2 4 3 1 2 1 1 3 2 1 4 2 1 2 3 1 1 2 3 4 1 2 1 3 2 2 1 2 4 3 1 2 1 1 3 2 1 4 2 1
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1 1 2 1 1 1 1 3 1 1 1 2 1 1 1 1
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 600+60x180
+    alert_rule_test:
+      - eval_time: 120m
+        alertname: IPAMRetentionReleasesStalled
+        exp_alerts:
+          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, slo: retention}
+            exp_annotations:
+              summary: "IPAM IPv4 retained allocations are not being released (2h 10m 0s past their deadline)"
+              description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-releases-stalled.md"
+
+  # The same stuck rows in observe mode: never.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 0x120
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x120
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 5x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 600+60x120
+    alert_rule_test:
+      - {eval_time: 90m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+
+  # Sweeper disabled: interval 0, enforcing 0, no passes.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 0x120
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 0x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x120
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 5x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 600+60x120
+    alert_rule_test:
+      - {eval_time: 90m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+
+  # Post-switch drain of 150k rows sharing one deadline, three days overdue, at 2000 a pass for 75 passes: quiet throughout. Three rows are left behind; it fires once the earlier window has left the drain (90m) and the 30m hold has passed.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 1x200
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x200
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x200
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x200
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 150003-2000x75 3x125
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 259200+60x200
+    alert_rule_test:
+      - {eval_time: 30m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+      - {eval_time: 74m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+      - {eval_time: 100m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+      - eval_time: 125m
+        alertname: IPAMRetentionReleasesStalled
+        exp_alerts:
+          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, slo: retention}
+            exp_annotations:
+              summary: "IPAM IPv4 retained allocations are not being released (3d 2h 5m 0s past their deadline)"
+              description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-releases-stalled.md"
+
+  # Two replicas mid-drain; b's read fails from the start, so its gauges and freshness stamp freeze. b is dropped and a's drain holds the alert off.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 1x120
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x120
+      - series: ipam_retention_sweep_enforcing{pod="b"}
+        values: 1x120
+      - series: ipam_retention_sweep_interval_seconds{pod="b"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="b"}
+        values: 0+60x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="b"}
+        values: 0x120
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 300000-2000x120
+      - series: ipam_retained_late_allocations{pod="b",ip_family="IPv4"}
+        values: 300000x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 259200+60x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="b",ip_family="IPv4"}
+        values: 259200x120
+    alert_rule_test:
+      - {eval_time: 100m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+
+  # Passes not completing: IPAMRetentionSweeperStalled's case, not this one.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 1x120
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x120
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 5x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 600+60x120
+    alert_rule_test:
+      - {eval_time: 60m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+
+  # A replica frozen with rows late while the healthy one reads zero: the frozen one is dropped, so a healthy fleet does not fire.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 1x120
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0x120
+      - series: ipam_retention_sweep_enforcing{pod="b"}
+        values: 1x120
+      - series: ipam_retention_sweep_interval_seconds{pod="b"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="b"}
+        values: 0+60x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="b"}
+        values: 0+60x120
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 5x120
+      - series: ipam_retained_late_allocations{pod="b",ip_family="IPv4"}
+        values: 0x120
+      - series: ipam_retained_overdue_allocations{pod="a",ip_family="IPv4"}
+        values: 5x120
+      - series: ipam_retained_overdue_allocations{pod="b",ip_family="IPv4"}
+        values: 0x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 3600x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="b",ip_family="IPv4"}
+        values: 0x120
+    alert_rule_test:
+      - {eval_time: 100m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+
+  # A replica frozen at zero while the healthy one sees rows stuck: the frozen one cannot hide the stall.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 1x120
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0x120
+      - series: ipam_retention_sweep_enforcing{pod="b"}
+        values: 1x120
+      - series: ipam_retention_sweep_interval_seconds{pod="b"}
+        values: 60x120
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="b"}
+        values: 0+60x120
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="b"}
+        values: 0+60x120
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 0x120
+      - series: ipam_retained_late_allocations{pod="b",ip_family="IPv4"}
+        values: 5x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 0x120
+      - series: ipam_retained_oldest_overdue_seconds{pod="b",ip_family="IPv4"}
+        values: 600+60x120
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: IPAMRetentionReleasesStalled
+        exp_alerts:
+          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, slo: retention}
+            exp_annotations:
+              summary: "IPAM IPv4 retained allocations are not being released (1h 0m 0s past their deadline)"
+              description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-releases-stalled.md"

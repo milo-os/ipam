@@ -106,6 +106,10 @@ const (
 	defaultChunk = 25
 	// defaultCapPools bounds the capped pools one pass checks.
 	defaultCapPools = 200
+	// lateIntervals is how many sweep intervals past its deadline a retained
+	// row counts as late in ipam_retained_late_allocations. An enforcing pass
+	// frees a row within about one.
+	lateIntervals = 5
 )
 
 // Sweeper runs retention sweep passes against one database. It is not safe
@@ -115,6 +119,10 @@ type Sweeper struct {
 	mode SweepMode
 
 	pageSize, rowBudget, chunk, capPools int
+
+	// lateAfter is how far past its deadline a row counts as late; Run sets
+	// it from the interval. Zero counts every overdue row as late.
+	lateAfter time.Duration
 
 	// Where the previous pass stopped in each set, so the next resumes there.
 	evaluateFrom, dueFrom keyset
@@ -170,6 +178,12 @@ type SweepResult struct {
 // doubling up to ten intervals while it keeps panicking.
 func (s *Sweeper) Run(ctx context.Context, interval time.Duration) {
 	metrics.RetentionSweepInterval.Set(interval.Seconds())
+	enforcing := 0.0
+	if s.mode == SweepEnforce {
+		enforcing = 1
+	}
+	metrics.RetentionSweepEnforcing.Set(enforcing)
+	s.lateAfter = lateIntervals * interval
 	klog.InfoS("Retention sweeper started", "interval", interval.String(), "mode", string(s.mode))
 	backoff := interval
 	for {
@@ -237,7 +251,7 @@ func (s *Sweeper) Sweep(ctx context.Context) (res SweepResult, err error) {
 		span.End()
 	}()
 
-	if gerr := publishRetainedGauges(ctx, s.db); gerr != nil {
+	if gerr := publishRetainedGauges(ctx, s.db, s.lateAfter); gerr != nil {
 		klog.ErrorS(gerr, "Could not read the retained set; keeping the previous gauges")
 		res.Errors++
 	}
@@ -851,29 +865,37 @@ func lockPoolNoWait(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alph
 
 // publishRetainedGauges reads the retained set in one aggregate query and
 // replaces the gauges with it. Rows retained before retention was timestamped
-// count as no lease: nothing will ever release them on a schedule.
-func publishRetainedGauges(ctx context.Context, db Querier) error {
+// count as no lease: nothing will ever release them on a schedule. A row is
+// overdue on the predicate findDue releases by, against the database clock
+// that predicate uses; 'infinity' never passes now(), so needs no exclusion.
+// It is late once its deadline is more than lateAfter past.
+func publishRetainedGauges(ctx context.Context, db Querier, lateAfter time.Duration) error {
 	defer metrics.ObserveQuery("retained_set_gauges", time.Now())
 	rows, err := db.Query(ctx,
 		`SELECT ip_family,
 		        count(*) FILTER (WHERE retained_at IS NOT NULL AND expires_at IS NOT NULL AND expires_at <> 'infinity'),
 		        count(*) FILTER (WHERE retained_at IS NULL OR expires_at = 'infinity'),
 		        count(*) FILTER (WHERE retained_at IS NOT NULL AND expires_at IS NULL),
-		        COALESCE(EXTRACT(EPOCH FROM now() - min(retained_at)), 0)::float8
+		        COALESCE(EXTRACT(EPOCH FROM now() - min(retained_at)), 0)::float8,
+		        count(*) FILTER (WHERE retained_at IS NOT NULL AND expires_at <= now()),
+		        count(*) FILTER (WHERE retained_at IS NOT NULL AND expires_at <= now() - $1::bigint * interval '1 microsecond'),
+		        COALESCE(EXTRACT(EPOCH FROM now() - min(expires_at) FILTER (WHERE retained_at IS NOT NULL AND expires_at <= now())), 0)::float8
 		   FROM ipam_cidr_allocations
 		  WHERE claim_key IS NULL AND purpose = 'Claim'
-		  GROUP BY ip_family`)
+		  GROUP BY ip_family`, lateAfter.Microseconds())
 	if err != nil {
 		return fmt.Errorf("read retained set: %w", err)
 	}
 	families, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (metrics.RetainedFamily, error) {
 		var f metrics.RetainedFamily
-		err := row.Scan(&f.IPFamily, &f.Finite, &f.None, &f.Unevaluated, &f.OldestAgeSeconds)
+		err := row.Scan(&f.IPFamily, &f.Finite, &f.None, &f.Unevaluated, &f.OldestAgeSeconds,
+			&f.Overdue, &f.Late, &f.OldestOverdueSeconds)
 		return f, err
 	})
 	if err != nil {
 		return fmt.Errorf("read retained set: %w", err)
 	}
 	metrics.PublishRetained(families)
+	metrics.RetainedGaugesLastSuccess.Set(float64(time.Now().Unix()))
 	return nil
 }

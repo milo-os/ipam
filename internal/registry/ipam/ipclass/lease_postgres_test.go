@@ -24,10 +24,12 @@ func withLease(d time.Duration) func(*ipam.IPClass) {
 	return func(c *ipam.IPClass) { c.Spec.RetentionLease = &metav1.Duration{Duration: d} }
 }
 
+// leaseWarnings picks out any warning about a lease. Leases are enforced, so a
+// lease that is set needs no warning, and none should come back.
 func leaseWarnings(ws []string) []string {
 	var out []string
 	for _, w := range ws {
-		if strings.Contains(w, "retentionLease") && strings.Contains(w, "issues/107") {
+		if strings.Contains(strings.ToLower(w), "lease") {
 			out = append(out, w)
 		}
 	}
@@ -54,9 +56,9 @@ func TestAClassRetentionLeaseIsBounded(t *testing.T) {
 	}
 }
 
-// A class that sets a lease is accepted, and the response says the lease does
-// nothing yet, on create and on every update that still sets one.
-func TestAClassRetentionLeaseWarnsThatItIsNotEnforced(t *testing.T) {
+// A class that sets a lease is accepted without a warning, on create and on an
+// update that changes it: the sweeper releases what a lease says it will.
+func TestAClassRetentionLeaseIsAcceptedWithoutAWarning(t *testing.T) {
 	s := newPostgresClassStorage(t, nil)
 	rec := &warningRecorder{}
 	ctx := warning.WithWarningRecorder(classCtx(callerProject), rec)
@@ -65,8 +67,8 @@ func TestAClassRetentionLeaseWarnsThatItIsNotEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if got := leaseWarnings(rec.warnings); len(got) != 1 {
-		t.Fatalf("create warnings = %v, want one about the unenforced lease", rec.warnings)
+	if got := leaseWarnings(rec.warnings); len(got) != 0 {
+		t.Errorf("create warned about the lease: %v", got)
 	}
 
 	rec.warnings = nil
@@ -76,8 +78,8 @@ func TestAClassRetentionLeaseWarnsThatItIsNotEnforced(t *testing.T) {
 		nil, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	if got := leaseWarnings(rec.warnings); len(got) != 1 {
-		t.Errorf("update warnings = %v, want one about the unenforced lease", rec.warnings)
+	if got := leaseWarnings(rec.warnings); len(got) != 0 {
+		t.Errorf("update warned about the lease: %v", got)
 	}
 
 	rec.warnings = nil
@@ -90,8 +92,8 @@ func TestAClassRetentionLeaseWarnsThatItIsNotEnforced(t *testing.T) {
 }
 
 // A class stored with a lease outside today's bounds stays editable: an update
-// that leaves the lease alone is not validated against it, and is not warned
-// about. Changing the lease is held to the bounds.
+// that leaves the lease alone is not validated against it. Changing the lease
+// is held to the bounds.
 func TestAClassRetentionLeaseIsRatchetedOnUpdate(t *testing.T) {
 	s, db := newPostgresClassStorageWithDB(t, nil)
 	rec := &warningRecorder{}
@@ -149,7 +151,7 @@ func TestAClassRetentionLeaseIsRatchetedOnUpdate(t *testing.T) {
 	if err := update(fixed); err != nil {
 		t.Fatalf("changing the lease to 1h: %v", err)
 	}
-	if got := leaseWarnings(rec.warnings); len(got) != 1 {
-		t.Errorf("changing the lease warned %v, want one warning", rec.warnings)
+	if got := leaseWarnings(rec.warnings); len(got) != 0 {
+		t.Errorf("changing the lease warned about it: %v", got)
 	}
 }

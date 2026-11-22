@@ -60,3 +60,35 @@ spec:
     minPrefixLength: 32
     maxPrefixLength: 32
     strategy: FirstFit
+---
+# A lease of a few seconds, so the suite can watch the sweeper release it. The
+# dev and test-infra overlays sweep every 2s in enforce mode.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: cl-brief
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Retain
+  retentionLease: 30s
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: cl-short
+spec:
+  cidr: 10.206.2.0/28
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - cl-brief
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit

@@ -208,8 +208,10 @@ type IPAMServerOptions struct {
 	// minRetentionSweepInterval.
 	RetentionSweepInterval time.Duration
 
-	// RetentionSweepMode is "observe", which counts what is due and releases
-	// nothing, or "enforce", which releases it.
+	// RetentionSweepMode is "enforce", the default, which releases what is
+	// due, or "observe", which counts it and releases nothing. Observe is the
+	// opt-out for an environment that wants to see what a pass would free
+	// before it frees anything.
 	RetentionSweepMode string
 }
 
@@ -228,7 +230,7 @@ func NewIPAMServerOptions() *IPAMServerOptions {
 		Logs:                   logsapi.NewLoggingConfiguration(),
 		EnableQuota:            true,
 		RetentionSweepInterval: time.Minute,
-		RetentionSweepMode:     string(allocator.SweepObserve),
+		RetentionSweepMode:     string(allocator.SweepEnforce),
 	}
 
 	// IPAM is a delegating aggregated apiserver — admission webhooks, policies,
@@ -262,8 +264,8 @@ func (o *IPAMServerOptions) AddFlags(fs *pflag.FlagSet) {
 			"have run out. 0 disables it; otherwise at least 1s. One replica runs each pass.")
 	fs.StringVar(&o.RetentionSweepMode, "retention-sweep-mode", o.RetentionSweepMode,
 		"What the retention sweeper does with a retained allocation whose lease has run out: "+
-			"observe (count it in ipam_retention_releases_total{mode=\"observe\"} and release nothing) or "+
-			"enforce (release it).")
+			"enforce (release it) or "+
+			"observe (count it in ipam_retention_releases_total{mode=\"observe\"} and release nothing).")
 }
 
 func (o *IPAMServerOptions) Complete() error { return nil }

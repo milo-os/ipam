@@ -46,24 +46,6 @@ func TestRetentionLease(t *testing.T) {
 	}
 }
 
-// Until expiry runs, a lease that is set is a lease that is ignored, and the
-// author is told so in terms they can follow up on.
-func TestRetentionLeaseWarning(t *testing.T) {
-	path := field.NewPath("spec", "maxRetentionLease")
-	if w := RetentionLeaseWarning(nil, path); w != nil {
-		t.Errorf("warned about an unset lease: %v", w)
-	}
-	w := RetentionLeaseWarning(&metav1.Duration{Duration: time.Hour}, path)
-	if len(w) != 1 {
-		t.Fatalf("warnings = %v, want one", w)
-	}
-	for _, want := range []string{"spec.maxRetentionLease", "not yet enforced", "milo-os/ipam/issues/107"} {
-		if !strings.Contains(w[0], want) {
-			t.Errorf("warning %q does not mention %q", w[0], want)
-		}
-	}
-}
-
 func TestRetentionLeaseChanged(t *testing.T) {
 	hour := &metav1.Duration{Duration: time.Hour}
 	for _, tc := range []struct {

@@ -107,3 +107,52 @@ Claims are unaffected. The sweeper yields to them, never the other way round.
 - To stop the sweeper while you investigate, set `RETENTION_SWEEP_INTERVAL=0`.
   Nothing is lost: deadlines are stored on the rows, and the next pass after
   re-enabling acts on everything that fell due meanwhile.
+
+## Switching the sweeper from observe to enforce
+
+Enforce is the default. A deployment that ran `RETENTION_SWEEP_MODE=observe`
+and switches to `enforce` (or drops the override) releases, on its first
+enforce passes, every retained allocation whose deadline passed while it was
+observing. Nothing clamps that backlog: each pass releases at most its row
+budget (2000 rows), oldest deadline first, and the rest go on the following
+passes, one sweep interval apart. Each release deletes the IPAllocation and
+returns the address to its pool, where the next claim may be given it.
+
+### When the switch happens
+
+The switch comes with the release that makes enforce the default, not with a
+per-environment step. milo-os/infra deploys `./base` from the IPAM OCI
+artifact and does not set `RETENTION_SWEEP_*`, so the base value applies:
+staging, which tracks every build, switches to enforce on the first main build
+after that change merges. Production is pinned to a release tag in
+milo-os/infra, so it switches when that pin is moved to a release that carries
+the change. Run the checks below against staging before merging, and against
+production before moving its pin. To hold an environment in observe mode for
+longer, pin `RETENTION_SWEEP_MODE=observe` in its milo-os/infra overlay first,
+and remove the pin when it is ready to switch.
+
+### Before switching, check what will be freed
+
+- `ipam_retention_releases_total{mode="observe"}` counts each deadline once as
+  it passes. Its increase over the observe period is how many addresses fell
+  due, including any since reclaimed or released by hand.
+- The rows still due right now, per pool:
+  ```sql
+  SELECT pool_key, class_name, class_project, count(*), min(expires_at) AS oldest_deadline
+    FROM ipam_cidr_allocations
+   WHERE claim_key IS NULL AND purpose = 'Claim'
+     AND expires_at IS NOT NULL AND expires_at <= now()
+   GROUP BY 1, 2, 3
+   ORDER BY oldest_deadline ASC;
+  ```
+- Per project, `datumctl ipam allocation list --unclaimed` lists retained
+  allocations, and `status.expiresAt` on each says whether its deadline has
+  passed.
+
+An owner who still needs an address that is due can recreate the claim under
+the same name before the switch; that reclaims it and clears its deadline.
+After the switch, `ipam_retention_releases_total{mode="enforce"}` should jump
+by about the backlog and then settle to the observe rate. `ipam_retained_overdue_allocations` and
+`ipam_retained_late_allocations` should fall by up to 2000 a pass until they
+reach zero. If the late count stops falling while rows are still late,
+[`IPAMRetentionReleasesStalled`](ipam-retention-releases-stalled.md) fires.
