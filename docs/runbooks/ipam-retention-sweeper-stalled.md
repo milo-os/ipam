@@ -123,9 +123,11 @@ returns the address to its pool, where the next claim may be given it.
 The switch comes with the release that makes enforce the default, not with a
 per-environment step. milo-os/infra deploys `./base` from the IPAM OCI
 artifact and does not set `RETENTION_SWEEP_*`, so the base value applies:
-staging switches to enforce on the first main build after that change merges,
-and production on the next release. Run the checks below against each
-environment before merging. To hold an environment in observe mode for
+staging, which tracks every build, switches to enforce on the first main build
+after that change merges. Production is pinned to a release tag in
+milo-os/infra, so it switches when that pin is moved to a release that carries
+the change. Run the checks below against staging before merging, and against
+production before moving its pin. To hold an environment in observe mode for
 longer, pin `RETENTION_SWEEP_MODE=observe` in its milo-os/infra overlay first,
 and remove the pin when it is ready to switch.
 
