@@ -224,3 +224,49 @@ func TestADryRunIsHeldToTheSameRule(t *testing.T) {
 	expectLeaseRequired(t, err, "us-east")
 	assertStillRetained(t, db, claim)
 }
+
+// poolAndCarveCount is how many IPPools exist and how many PoolCarve rows back
+// them: what a refused claim must not have added to.
+func poolAndCarveCount(t *testing.T, db *pgxpool.Pool) (pools, carves int) {
+	t.Helper()
+	return countRows(t, db, `SELECT count(*) FROM ipam_objects WHERE kind = 'IPPool'`),
+		countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations WHERE purpose = 'PoolCarve'`)
+}
+
+// A chained class provisions a pool per scope, and a provisioned pool carries
+// no cap. A Retain override under such a class with no lease is therefore
+// refused before resolution, leaving no pool or carve behind; the message
+// points at the class's lease, since a cap would cover one scope. Once the
+// leaf exists the refusal is made under its lock and names it, and once an
+// operator caps it the override is accepted.
+func TestAChainedClassOverrideWithNoLeaseProvisionsNothing(t *testing.T) {
+	r, db := newTenantREST(t)
+	ctx := claimCtx(testProject)
+	pools, carves := poolAndCarveCount(t, db)
+
+	refused := endpointClaim("ep-1", "net-a", "ams")
+	refused.Spec.ReclaimPolicy = ipam.ReclaimRetain
+	_, err := r.Create(ctx, refused.DeepCopy(), nil, &metav1.CreateOptions{})
+	if ipamerrors.ReasonFor(err) != ipamerrors.ReasonRetentionLeaseRequired || !apierrors.IsInvalid(err) {
+		t.Fatalf("create returned %v, want 422 RetentionLeaseRequired", err)
+	}
+	if !strings.Contains(err.Error(), "Set retentionLease on the class") || strings.Contains(err.Error(), "maxRetentionLease on the pool") {
+		t.Errorf("message %q should point at the class's lease and not at a pool cap", err.Error())
+	}
+	if p, c := poolAndCarveCount(t, db); p != pools || c != carves {
+		t.Errorf("a refused claim left %d pools and %d carves, want %d and %d", p, c, pools, carves)
+	}
+
+	// The scope's chain is provisioned by a claim that leaves the policy to
+	// the class.
+	leaf := create(t, r, endpointClaim("ep-plain", "net-a", "ams")).Status.PoolRef.Name
+	_, err = r.Create(ctx, refused.DeepCopy(), nil, &metav1.CreateOptions{})
+	if ipamerrors.ReasonFor(err) != ipamerrors.ReasonRetentionLeaseRequired || !strings.Contains(err.Error(), `pool "`+leaf+`"`) {
+		t.Fatalf("override into the existing leaf returned %v, want RetentionLeaseRequired naming %s", err, leaf)
+	}
+
+	setPoolCap(t, db, leaf, &metav1.Duration{Duration: time.Hour})
+	if _, err := r.Create(ctx, refused.DeepCopy(), nil, &metav1.CreateOptions{}); err != nil {
+		t.Errorf("override into the capped leaf: %v", err)
+	}
+}

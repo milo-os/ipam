@@ -471,6 +471,21 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		wantBlock = &block
 	}
 
+	// A Retain override that needs the pool's cap is refused here, before
+	// resolution, when the claim would be placed in a pool that does not exist
+	// yet: resolving would provision it, each level committing on its own, and
+	// a provisioned pool carries no cap, so the refusal is certain and the
+	// pools would be left behind. Where every level exists the cap is judged
+	// under the pool's lock as usual, which is what keeps an operator pool, or
+	// a provisioned one an operator has since capped, accepted. A claim naming
+	// its address provisions nothing, and is left to that check.
+	if requireRetentionCap && wantBlock == nil {
+		if _, pending, err := allocator.ResolveExistingPool(ctx, r.db, class, claim.Spec.Scope); err == nil && len(pending) > 0 {
+			failSpan(tracing.ReasonInvalid)
+			return nil, fail(retentionLeaseRequired(claim.Name, class, ""), reasonInvalid)
+		}
+	}
+
 	// Resolving the pool provisions any missing level of the class's chain, and
 	// each level commits on its own — so it runs BEFORE the allocation
 	// transaction opens, not inside it. A pool is durable infrastructure that
@@ -963,17 +978,33 @@ func retainedAllocationConflict(claimName, allocationName string) error {
 
 // retentionLeaseRequired is the refusal for a claim whose Retain override
 // would hold its address with no lease, under class in pool poolName. It names
-// both objects a lease could be set on, and the way out that needs neither.
+// the objects a lease could be set on, and the way out that needs neither.
+//
+// A chained class provisions a pool per scope, and a provisioned pool carries
+// no cap, so a cap set on one would cover only that scope: the fix for those
+// is the class's lease, and only that is suggested. poolName is empty when the
+// claim was refused before its pool existed.
 func retentionLeaseRequired(claimName string, class *allocator.ResolvedClass, poolName string) error {
 	named := fmt.Sprintf("class %q", class.LocalName)
 	if class.LocalName != class.Name {
 		named = fmt.Sprintf("class %q (defined as %q in project %q)", class.LocalName, class.Name, class.Project)
 	}
-	return ipamerrors.NewRetentionLeaseRequired(v1alpha1.Resource("ipclaims"), claimName, fmt.Sprintf(
-		"%s does not allow retaining addresses indefinitely: spec.reclaimPolicy Retain overrides its default of Delete, "+
-			"and neither the class's retentionLease nor pool %q's maxRetentionLease is set. "+
+	const prefix = "%s does not allow retaining addresses indefinitely: spec.reclaimPolicy Retain overrides its default of Delete, "
+	var msg string
+	switch {
+	case class.Spec.ParentClassName != "":
+		where := "the pools it provisions set"
+		if poolName != "" {
+			where = fmt.Sprintf("pool %q, which it provisions, sets", poolName)
+		}
+		msg = fmt.Sprintf(prefix+"the class sets no retentionLease, and %s no maxRetentionLease. "+
+			"Set retentionLease on the class, or leave spec.reclaimPolicy unset", named, where)
+	default:
+		msg = fmt.Sprintf(prefix+"and neither the class's retentionLease nor pool %q's maxRetentionLease is set. "+
 			"Set retentionLease on the class or maxRetentionLease on the pool, or leave spec.reclaimPolicy unset",
-		named, poolName))
+			named, poolName)
+	}
+	return ipamerrors.NewRetentionLeaseRequired(v1alpha1.Resource("ipclaims"), claimName, msg)
 }
 
 // resolvePoolError turns a failure to resolve a Block claim's pool into the
