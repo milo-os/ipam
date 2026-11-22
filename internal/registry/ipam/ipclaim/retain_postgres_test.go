@@ -82,7 +82,9 @@ func newLifecycleREST(t *testing.T, classPolicy ipamv1alpha1.ReclaimPolicy) (*Al
 		t.Fatalf("claim storage: %v", err)
 	}
 	t.Cleanup(claimREST.Destroy)
-	allocREST, _, err := ipallocation.NewAllocationStorage(scheme, getter, alloc, db)
+	// The release checker admits everything: these tests act as an admin
+	// would. What a consumer may release is unleased_release_postgres_test.go.
+	allocREST, _, err := ipallocation.NewAllocationStorage(scheme, getter, alloc, db, releaseChecker(true))
 	if err != nil {
 		t.Fatalf("allocation storage: %v", err)
 	}

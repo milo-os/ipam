@@ -226,9 +226,17 @@ func (a *PostgresPrefixAllocator) ReleaseAllocation(ctx context.Context, tx pgx.
 // The binding is read from the row, in the DELETE's own predicate, never from
 // the IPAllocation object: the object is a copy a caller can write, and a copy
 // that said "unbound" over a bound row would hand the address out twice.
-func (a *PostgresPrefixAllocator) ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error {
+//
+// The lease deadline is read the same way, and under the pool's lock and the
+// row's own, so nothing can change it between the guard's decision and the
+// delete: retention, the sweeper's evaluation and a tightened pool cap all
+// write the row under one of those locks.
+func (a *PostgresPrefixAllocator) ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, allocationKey string, mayReleaseUnleased UnleasedReleaseGuard) error {
 	pools, err := lockPoolsOf(ctx, tx, "allocation_key = $1", allocationKey)
 	if err != nil {
+		return err
+	}
+	if err := guardUnleasedRelease(ctx, tx, pools, allocationKey, mayReleaseUnleased); err != nil {
 		return err
 	}
 	freed, err := deleteLockedAllocations(ctx, tx, pools,
@@ -257,6 +265,74 @@ func (a *PostgresPrefixAllocator) ReleaseRetainedAllocation(ctx context.Context,
 		holder = *claimKey
 	}
 	return &AllocationBoundError{AllocationKey: allocationKey, ClaimKey: holder}
+}
+
+// guardUnleasedRelease locks the row ReleaseRetainedAllocation is about to
+// free and, if it is a retained claim row with no finite lease deadline,
+// refuses the release unless mayReleaseUnleased allows it. The caller holds
+// the locks of the pools in pools. A row that is bound, is not a claim row, or
+// is missing is left to the release itself, which refuses or skips it.
+//
+// "Finite" is the sweeper's own test for a row that will expire: a deadline
+// that is neither NULL (not yet evaluated) nor 'infinity' (no lease), on a row
+// whose retention is timestamped.
+func guardUnleasedRelease(ctx context.Context, tx pgx.Tx, pools map[string]*ipamv1alpha1.IPPool, allocationKey string, mayReleaseUnleased UnleasedReleaseGuard) error {
+	if len(pools) == 0 {
+		return nil
+	}
+	locked := make([]string, 0, len(pools))
+	for key := range pools {
+		locked = append(locked, key)
+	}
+	var retained, leased bool
+	err := tx.QueryRow(ctx,
+		`SELECT claim_key IS NULL AND purpose = 'Claim',
+		        retained_at IS NOT NULL AND expires_at IS NOT NULL AND expires_at <> 'infinity'
+		   FROM ipam_cidr_allocations
+		  WHERE allocation_key = $1 AND pool_key = ANY($2::text[])
+		    FOR UPDATE`, allocationKey, locked,
+	).Scan(&retained, &leased)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("lock allocation %q: %w", allocationKey, err)
+	}
+	if !retained || leased {
+		return nil
+	}
+	if mayReleaseUnleased == nil {
+		return &UnleasedReleaseError{AllocationKey: allocationKey}
+	}
+	allowed, err := mayReleaseUnleased(ctx)
+	if err != nil {
+		return fmt.Errorf("authorize release of unleased allocation %q: %w", allocationKey, err)
+	}
+	if !allowed {
+		return &UnleasedReleaseError{AllocationKey: allocationKey}
+	}
+	return nil
+}
+
+// RetainedWithoutDeadline reports whether allocationKey names a retained
+// claim row with no finite lease deadline, the rows whose release
+// ReleaseRetainedAllocation guards. It takes no lock: it lets a caller run an
+// expensive guard before the locks are taken, and the decision is still made
+// by ReleaseRetainedAllocation, from the row as it is under them.
+func RetainedWithoutDeadline(ctx context.Context, db RowQuerier, allocationKey string) (bool, error) {
+	var unleased bool
+	err := db.QueryRow(ctx,
+		`SELECT claim_key IS NULL AND purpose = 'Claim'
+		        AND NOT (retained_at IS NOT NULL AND expires_at IS NOT NULL AND expires_at <> 'infinity')
+		   FROM ipam_cidr_allocations WHERE allocation_key = $1`, allocationKey,
+	).Scan(&unleased)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read deadline of allocation %q: %w", allocationKey, err)
+	}
+	return unleased, nil
 }
 
 // ReleasePoolReservations implements PrefixAllocator.ReleasePoolReservations.

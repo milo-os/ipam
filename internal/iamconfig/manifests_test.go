@@ -215,6 +215,7 @@ func TestEveryVerbTheCodeChecksIsDeclared(t *testing.T) {
 	}{
 		{"ippools", "use", "internal/access/sar.go"},
 		{"ipclasses", "use", "internal/access/class.go"},
+		{"ipallocations", "release-unleased", "internal/access/release.go"},
 	} {
 		pr, ok := protected[want.plural]
 		if !ok {
@@ -280,6 +281,8 @@ func TestRolesGrantNoSubresourceWrites(t *testing.T) {
 // deleting the IPAllocation, and the allocator refuses a bound one, so delete
 // is safe to grant where a claim can be filed. Nothing may write one, and an
 // admin keeps the release through the consumer role it inherits.
+// Releasing one with no lease deadline is admin-only; see
+// TestOnlyAdminsCanReleaseAnUnleasedAllocation.
 func TestConsumersCanReleaseAllocationsButNotWriteThem(t *testing.T) {
 	roles := loadRoles(t)
 	for _, name := range []string{"ipam.miloapis.com-consumer", "ipam.miloapis.com-admin"} {
@@ -296,6 +299,25 @@ func TestConsumersCanReleaseAllocationsButNotWriteThem(t *testing.T) {
 	viewer := permissionsOf(roles, "ipam.miloapis.com-viewer", map[string]bool{})
 	if viewer["ipam.miloapis.com/ipallocations.delete"] {
 		t.Error("the viewer role can release an IPAllocation")
+	}
+}
+
+// An allocation retained with no lease deadline is held on purpose, often by
+// something that still uses it, so releasing it needs release-unleased on top
+// of delete. Only ipam-admin grants it; a consumer releases what has a lease.
+func TestOnlyAdminsCanReleaseAnUnleasedAllocation(t *testing.T) {
+	const perm = "ipam.miloapis.com/ipallocations.release-unleased"
+	roles := loadRoles(t)
+	if !permissionsOf(roles, "ipam.miloapis.com-admin", map[string]bool{})[perm] {
+		t.Errorf("the admin role lacks %q; nobody could release an unleased allocation", perm)
+	}
+	for name := range roles {
+		if name == "ipam.miloapis.com-admin" {
+			continue
+		}
+		if permissionsOf(roles, name, map[string]bool{})[perm] {
+			t.Errorf("role %q grants %q; only ipam-admin may release an address with no lease deadline", name, perm)
+		}
 	}
 }
 

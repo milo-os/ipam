@@ -23,6 +23,7 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 	"k8s.io/klog/v2"
 
+	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/registry/ipam/tableconvertor"
 	"go.miloapis.com/ipam/internal/tenant"
@@ -65,10 +66,19 @@ func (s *IPAllocationStatusStorage) ConvertToTable(ctx context.Context, obj runt
 // that writes their row. One created through the API would have no row behind
 // it and could take the name a future claim's allocation needs, so the
 // endpoint does not offer create at all.
+//
+// Deleting an IPAllocation is authorized by the apiserver as any delete is,
+// and the ipam-consumer role grants it. That is enough for an address whose
+// lease will run out anyway. One retained with no lease deadline is held on
+// purpose, often by something outside IPAM that still uses it, so releasing it
+// also needs the release-unleased permission, which only ipam-admin grants and
+// which releaseChecker asks about. A nil releaseChecker refuses every such
+// release: with no authorizer to ask, nothing has vouched for the caller.
 type ReleasingREST struct {
 	allocationStore
-	allocator allocator.PrefixAllocator
-	db        txBeginner
+	allocator      allocator.PrefixAllocator
+	db             txBeginner
+	releaseChecker access.UnleasedReleaseChecker
 }
 
 // allocationStore is the part of the generic store the IPAllocation endpoint
@@ -106,6 +116,14 @@ type txBeginner interface {
 // claim can write a new, bound IPAllocation under the same name; deleting by
 // name alone would remove that one. A dry run runs the same checks and rolls
 // back.
+//
+// An allocation retained with no finite lease deadline is released only for a
+// caller with the release-unleased permission, and refused with 403 otherwise.
+// The allocator decides that from the row under the locks it deletes it
+// under. The permission is asked about before those locks are taken when an
+// unlocked read already shows no deadline, so the authorizer's round trip does
+// not hold up every claim on the pool; it is asked under them only if the row
+// lost its deadline in between.
 func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
 	existing, err := r.Get(ctx, name, &metav1.GetOptions{})
 	if err != nil {
@@ -140,7 +158,15 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 		}
 	}()
 
-	if err := r.allocator.ReleaseRetainedAllocation(ctx, tx, key); err != nil {
+	guard, err := r.unleasedReleaseGuard(ctx, tx, key, alloc.Namespace, name)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := r.allocator.ReleaseRetainedAllocation(ctx, tx, key, guard); err != nil {
+		var unleased *allocator.UnleasedReleaseError
+		if errors.As(err, &unleased) {
+			return nil, false, unleasedForbidden(name)
+		}
 		var bound *allocator.AllocationBoundError
 		if errors.As(err, &bound) {
 			claimName := ""
@@ -180,6 +206,51 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 	committed = true
 	klog.V(2).InfoS("retained allocation released", "allocation", name)
 	return alloc, true, nil
+}
+
+// unleasedReleaseGuard returns the guard ReleaseRetainedAllocation runs for a
+// row with no lease deadline. It asks the release checker at most once per
+// request, and asks it now, before any lock is taken, if an unlocked read of
+// the row already shows no deadline.
+func (r *ReleasingREST) unleasedReleaseGuard(ctx context.Context, tx pgx.Tx, key, namespace, name string) (allocator.UnleasedReleaseGuard, error) {
+	var (
+		asked   bool
+		allowed bool
+	)
+	ask := func(ctx context.Context) (bool, error) {
+		if asked {
+			return allowed, nil
+		}
+		asked = true
+		if r.releaseChecker == nil {
+			return false, nil
+		}
+		ok, err := r.releaseChecker.CanReleaseUnleased(ctx, namespace, name)
+		if err != nil {
+			return false, apierrors.NewInternalError(fmt.Errorf("authorize release of unleased IPAllocation: %w", err))
+		}
+		allowed = ok
+		return allowed, nil
+	}
+	unleased, err := allocator.RetainedWithoutDeadline(ctx, tx, key)
+	if err != nil {
+		return nil, err
+	}
+	if unleased {
+		if _, err := ask(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return ask, nil
+}
+
+// unleasedForbidden is the refusal to release an allocation retained with no
+// lease deadline to a caller without the release-unleased permission.
+func unleasedForbidden(name string) error {
+	return apierrors.NewForbidden(v1alpha1.Resource("ipallocations"), name, fmt.Errorf(
+		"the retained address has no lease deadline, so whatever held it may still be using it; "+
+			"only an IPAM admin can release it (permission ipam.miloapis.com/ipallocations.%s)",
+		access.VerbReleaseUnleased))
 }
 
 // boundConflict is the refusal to release an allocation something still
@@ -249,8 +320,9 @@ func allocationObjectKey(id tenant.Identity, namespace, name string) string {
 // /status subresource. Allocations are created by the ipclaim Create handler,
 // never here, and the storage offers no create; the allocator and db are for
 // the delete path, which has to free the address a retained allocation still
-// holds.
-func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool) (*ReleasingREST, *IPAllocationStatusStorage, error) {
+// holds. releaseChecker authorizes releasing one with no lease deadline; nil
+// refuses every such release.
+func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, releaseChecker access.UnleasedReleaseChecker) (*ReleasingREST, *IPAllocationStatusStorage, error) {
 	strategy := NewStrategy(scheme)
 
 	store := &genericregistry.Store{
@@ -274,6 +346,7 @@ func NewAllocationStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 		allocationStore: store,
 		allocator:       alloc,
 		db:              db,
+		releaseChecker:  releaseChecker,
 	}, &IPAllocationStatusStorage{store: store}, nil
 }
 

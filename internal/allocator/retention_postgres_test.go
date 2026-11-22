@@ -474,7 +474,7 @@ func TestASweepAndAnExplicitReleaseOfOneRowHaveOneWinner(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
-		if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, release, "alloc-a"); err != nil {
+		if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, release, "alloc-a", nil); err != nil {
 			t.Fatalf("release: %v", err)
 		}
 		if res := sweep(t, db, SweepEnforce); res.Released != 0 || res.PoolsSkipped != 1 {
@@ -508,7 +508,7 @@ func TestASweepAndAnExplicitReleaseOfOneRowHaveOneWinner(t *testing.T) {
 				done <- err
 				return
 			}
-			if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-a"); err != nil {
+			if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-a", nil); err != nil {
 				_ = tx.Rollback(ctx)
 				done <- err
 				return

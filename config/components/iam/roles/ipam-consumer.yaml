@@ -4,7 +4,7 @@ metadata:
   name: ipam.miloapis.com-consumer
   annotations:
     kubernetes.io/display-name: IPAM Consumer
-    kubernetes.io/description: "File and manage IP claims and release retained allocations; read-only on pools"
+    kubernetes.io/description: "File and manage IP claims and release retained allocations that have a lease deadline; read-only on pools"
 spec:
   launchStage: Beta
   # Consumers inherit read access to every IPAM resource (including pools so
@@ -16,6 +16,13 @@ spec:
   # bound one with 409 in SQL, whatever the object says, so this cannot take
   # an address out from under a live claim. Allocations are written only by
   # the claim that makes them, so there is no create, update or patch to grant.
+  #
+  # The release is the consumer's only when the retained address has a lease
+  # deadline, which it would reach anyway. One held with no deadline (a class
+  # that retains by default with no lease, in a pool with no cap, such as a
+  # VPC or subnet block) is refused with 403: freeing it could hand out an
+  # address still in use, so it needs release-unleased, which only ipam-admin
+  # grants.
   inheritedRoles:
     - name: ipam.miloapis.com-viewer
   includedPermissions:

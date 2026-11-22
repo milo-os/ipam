@@ -16,6 +16,13 @@ spec:
     - update
     - patch
     - delete
+    # "release-unleased" is checked by the IPAllocation delete path (see
+    # internal/access/release.go) when the allocation being released is
+    # retained with no lease deadline. delete alone releases one whose lease
+    # will run out anyway; one held with no deadline is held on purpose, often
+    # by something still using it, so freeing it also needs this permission,
+    # which only ipam-admin grants.
+    - release-unleased
   subresources:
     - name: status
       permissions:
