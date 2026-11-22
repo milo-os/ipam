@@ -507,7 +507,7 @@ local retentionReleasesPanel = common.tsPanel(
     },
   ],
   unit='short',
-  description='Retained allocations released because their lease ran out. enforce: released. observe: would have been released; each deadline is counted once as it passes, so this is the rate enforce will have once it is turned on.'
+  description='Retained allocations released because their lease ran out. enforce (the default): released, the IPAllocation deleted and the address back in its pool. observe: would have been released; each deadline is counted once as it passes, so after a switch to enforce the enforce series starts with the backlog observe has counted and then runs at this rate.'
 );
 
 local retentionSweepPanel = common.tsPanel(

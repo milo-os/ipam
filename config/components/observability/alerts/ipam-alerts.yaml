@@ -502,8 +502,8 @@ spec:
               No replica has completed a retention sweep pass for more than five sweep
               intervals. A pass that carries on past a failed pool or row still completes, so
               this means passes are not running or are failing outright. Retained allocations
-              whose lease has run out are not being released (enforce mode) or counted
-              (observe mode), and leases left unevaluated stay unevaluated.
+              whose lease has run out stay held instead of being released (or, in observe
+              mode, are not counted), and leases left unevaluated stay unevaluated.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-sweeper-stalled.md"
 
         - alert: IPAMRetentionRowsStuck
