@@ -126,6 +126,12 @@ spec:
             # ENABLE_QUOTA=false, otherwise the quota informers can't sync
             # against the missing quota.miloapis.com CRDs and readyz never passes.
             - --enable-quota=$(ENABLE_QUOTA)
+            # Retention-lease sweeper. Every replica runs the loop and one takes
+            # each pass under a Postgres advisory lock. Observe mode counts the
+            # retained allocations whose lease has run out and releases none;
+            # enforce releases them (milo-os/ipam#107).
+            - --retention-sweep-interval=$(RETENTION_SWEEP_INTERVAL)
+            - --retention-sweep-mode=$(RETENTION_SWEEP_MODE)
             # Distributed tracing. Off by default: an empty TRACING_CONFIG_FILE
             # is treated as "no tracing". Composing the tracing component sets
             # this env var to the mounted config path and turns export on.
@@ -169,6 +175,13 @@ spec:
             # quota backend (kind/dev, e2e) override this to "false".
             - name: ENABLE_QUOTA
               value: "true"
+            # "0" disables the sweeper; otherwise at least "1s".
+            - name: RETENTION_SWEEP_INTERVAL
+              value: "1m"
+            # Observe until a release schedule has been reviewed against real
+            # data; enforce is turned on deliberately, environment by environment.
+            - name: RETENTION_SWEEP_MODE
+              value: "observe"
             # Empty disables tracing; the tracing component overrides this with
             # the mounted config path.
             - name: TRACING_CONFIG_FILE

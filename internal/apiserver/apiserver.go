@@ -10,6 +10,7 @@ package apiserver
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,7 +23,7 @@ import (
 
 	"go.miloapis.com/ipam/internal/access"
 	"go.miloapis.com/ipam/internal/allocator"
-	_ "go.miloapis.com/ipam/internal/metrics"
+	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipallocation"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipclaim"
 	"go.miloapis.com/ipam/internal/registry/ipam/ipclass"
@@ -74,6 +75,12 @@ type ExtraConfig struct {
 	// NamespaceChecker refuses an IPClaim whose namespace is missing or
 	// terminating. nil disables it — unlike ClassChecker, which fails closed.
 	NamespaceChecker access.NamespaceChecker
+	// RetentionSweepInterval is how often the retention sweeper runs a pass;
+	// zero disables it.
+	RetentionSweepInterval time.Duration
+	// RetentionSweepMode is whether the sweeper releases what is due or only
+	// counts it.
+	RetentionSweepMode allocator.SweepMode
 }
 
 // Config combines generic and IPAM-specific configuration.
@@ -222,8 +229,35 @@ func (c completedConfig) New() (*IPAMServer, error) {
 		return nil, err
 	}
 
+	if err := s.addRetentionSweeper(c.ExtraConfig); err != nil {
+		return nil, err
+	}
+
 	klog.Info("IPAM server initialized successfully")
 	return s, nil
+}
+
+// addRetentionSweeper runs the retention sweeper in this process, from a
+// post-start hook, so it starts once the server is serving and stops with it.
+//
+// Every replica runs the loop. Each pass is taken by whichever replica gets
+// the sweep's Postgres advisory lock (see allocator.Sweeper), so there is no
+// leader to elect and no separate deployable, and a replica that dies takes
+// its lock with its session. The hook's context is cancelled at shutdown,
+// which ends the loop between passes; a pass in flight finishes or rolls back
+// its current pool transaction, so nothing is left half-swept.
+func (s *IPAMServer) addRetentionSweeper(cfg *ExtraConfig) error {
+	if cfg.RetentionSweepInterval <= 0 {
+		metrics.RetentionSweepInterval.Set(0)
+		klog.InfoS("Retention sweeper disabled")
+		return nil
+	}
+	sweeper := allocator.NewSweeper(cfg.AllocatorPool, cfg.RetentionSweepMode)
+	interval := cfg.RetentionSweepInterval
+	return s.GenericAPIServer.AddPostStartHook("ipam-retention-sweeper", func(hookCtx genericapiserver.PostStartHookContext) error {
+		go sweeper.Run(hookCtx.Context, interval)
+		return nil
+	})
 }
 
 // Run starts the server and blocks until the context is cancelled.
