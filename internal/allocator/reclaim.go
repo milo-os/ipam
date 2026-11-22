@@ -30,7 +30,7 @@ type ClaimAllocation struct {
 	ReclaimPolicy ipamv1alpha1.ReclaimPolicy
 
 	// ClassRecorded reports whether the row records the class's defining
-	// project and address scope; rows written before migration 006 do not.
+	// project and address scope; rows written before migration 007 do not.
 	ClassRecorded bool
 	ClassProject  string
 	AddressScope  ipamv1alpha1.AddressScope

@@ -1,4 +1,4 @@
--- 006: record exactly which class, and what address scope, an allocation was
+-- 007: record exactly which class, and what address scope, an allocation was
 -- handed out under.
 --
 -- WHY
