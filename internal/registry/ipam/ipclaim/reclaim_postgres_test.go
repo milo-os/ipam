@@ -105,6 +105,17 @@ func reclaimCount(t *testing.T, result string) float64 {
 	return v
 }
 
+// failures reads ipam_allocation_failures_total for an IPv4 claim in the test
+// project, by reason.
+func failures(t *testing.T, reason string) float64 {
+	t.Helper()
+	v, err := testutil.GetCounterMetricValue(metrics.AllocationFailures.WithLabelValues("ipclaim", reason, "IPv4", testProject, ""))
+	if err != nil {
+		t.Fatalf("read ipam_allocation_failures_total{reason=%q}: %v", reason, err)
+	}
+	return v
+}
+
 func poolAllocated(t *testing.T, db *pgxpool.Pool, pool string) string {
 	t.Helper()
 	var allocated string
@@ -324,6 +335,7 @@ func TestReclaimRefusesAMismatch(t *testing.T) {
 				tc.setup(t, db)
 			}
 			mismatches := reclaimCount(t, "mismatch")
+			conflicts, faults := failures(t, reasonConflict), failures(t, reasonInternal)+failures(t, reasonTxError)
 
 			_, err := r.Create(ctx, tc.claim(), nil, &metav1.CreateOptions{})
 			if ipamerrors.ReasonFor(err) != ipamerrors.ReasonRetainedAllocationMismatch {
@@ -344,6 +356,16 @@ func TestReclaimRefusesAMismatch(t *testing.T) {
 			}
 			if got := reclaimCount(t, "mismatch"); got != mismatches+1 {
 				t.Errorf("ipam_reclaims_total{result=mismatch} moved by %v, want 1", got-mismatches)
+			}
+			// A refusal, never a server fault. The family case resolves an
+			// IPv6 class, so its failure lands on the IPv6 series instead.
+			if tc.field != "spec.ipFamily" {
+				if got := failures(t, reasonConflict); got != conflicts+1 {
+					t.Errorf("ipam_allocation_failures_total{reason=conflict} moved by %v, want 1", got-conflicts)
+				}
+			}
+			if got := failures(t, reasonInternal) + failures(t, reasonTxError); got != faults {
+				t.Errorf("a mismatch moved the server-fault failure counters by %v", got-faults)
 			}
 			assertStillRetained(t, db, predecessor)
 		})

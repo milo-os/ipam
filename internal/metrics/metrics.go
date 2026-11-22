@@ -314,7 +314,9 @@ var (
 	//               claims on terms that no longer match what it retained.
 	//
 	// Paired with retentions_total: retentions minus reclaims is roughly the
-	// retained set a recreate never came back for. Dry runs are not counted.
+	// retained set a recreate never came back for. Dry runs are not counted;
+	// their latency is, as result="reclaimed" on allocation_duration_seconds,
+	// like every other request-level metric.
 	Reclaims = metrics.NewCounterVec(
 		&metrics.CounterOpts{
 			Namespace:      "ipam",
@@ -494,8 +496,13 @@ func RecordRetention(resource string) {
 }
 
 // RecordReclaim records the outcome of a recreated claim meeting a retained
-// allocation under its name. result is "reclaimed" or "mismatch".
-func RecordReclaim(result string) {
+// allocation under its name. result is "reclaimed" or "mismatch". Nothing is
+// recorded under a dry-run (see WithDryRun): the counter describes retained
+// addresses taken back or left held, and a dry-run takes none back.
+func RecordReclaim(ctx context.Context, result string) {
+	if IsDryRun(ctx) {
+		return
+	}
 	Reclaims.WithLabelValues(result).Inc()
 }
 

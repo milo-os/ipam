@@ -151,7 +151,10 @@ type reclaimResult struct {
 	// identity, and create carries on to allocate.
 	handled bool
 	obj     runtime.Object
-	// outcome is the failure-metric reason when err is set.
+	// outcome is the step label failureReason is given when err is set. A
+	// refusal (ClaimExists, AllocationRetained, a mismatch) is labelled by its
+	// IPAM reason whatever this says; reasonInternal and reasonTxError are
+	// passed only for the server's own faults.
 	outcome string
 	err     error
 }
@@ -191,7 +194,7 @@ func (r *AllocatingREST) tryReclaim(
 
 	exists, err := allocator.HasClaimAllocation(ctx, r.db, allocationKey)
 	if err != nil {
-		return reclaimResult{handled: true, outcome: "tx_error", err: err}
+		return reclaimResult{handled: true, outcome: reasonTxError, err: err}
 	}
 	if !exists {
 		return reclaimResult{}
@@ -199,7 +202,7 @@ func (r *AllocatingREST) tryReclaim(
 
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return reclaimResult{handled: true, outcome: "tx_error", err: fmt.Errorf("begin reclaim transaction: %w", err)}
+		return reclaimResult{handled: true, outcome: reasonTxError, err: fmt.Errorf("begin reclaim transaction: %w", err)}
 	}
 	committed := false
 	defer func() {
@@ -210,7 +213,7 @@ func (r *AllocatingREST) tryReclaim(
 
 	row, err := r.allocator.LockClaimAllocation(ctx, tx, allocationKey)
 	if err != nil {
-		return reclaimResult{handled: true, outcome: "tx_error", err: fmt.Errorf("read allocation under the claim's identity: %w", err)}
+		return reclaimResult{handled: true, outcome: reasonTxError, err: fmt.Errorf("read allocation under the claim's identity: %w", err)}
 	}
 	if row == nil {
 		// Nothing retained under this identity, or it was released while this
@@ -218,17 +221,15 @@ func (r *AllocatingREST) tryReclaim(
 		return reclaimResult{}
 	}
 	if row.ClaimKey != "" {
-		return reclaimResult{handled: true, outcome: "conflict", err: duplicateClaimConflict(claim.Name)}
+		return reclaimResult{handled: true, outcome: reasonConflict, err: duplicateClaimConflict(claim.Name)}
 	}
 	if generatedName {
-		return reclaimResult{handled: true, outcome: "conflict", err: retainedAllocationConflict(claim.Name, allocationName)}
+		return reclaimResult{handled: true, outcome: reasonConflict, err: retainedAllocationConflict(claim.Name, allocationName)}
 	}
 
 	refuse := func(m *reclaimMismatch) reclaimResult {
-		if !dryRun {
-			metrics.RecordReclaim("mismatch")
-		}
-		return reclaimResult{handled: true, outcome: "conflict", err: retainedMismatchConflict(claim.Name, allocationName, m)}
+		metrics.RecordReclaim(ctx, "mismatch")
+		return reclaimResult{handled: true, outcome: reasonConflict, err: retainedMismatchConflict(claim.Name, allocationName, m)}
 	}
 	if m := agreeOnClass(row, terms); m != nil {
 		return refuse(m)
@@ -238,10 +239,10 @@ func (r *AllocatingREST) tryReclaim(
 	if err != nil {
 		var missing *scope.MissingRoleError
 		if errors.As(err, &missing) {
-			return reclaimResult{handled: true, outcome: "internal", err: ipamerrors.NewScopeRolesMissing(missing.Roles,
+			return reclaimResult{handled: true, outcome: reasonInvalid, err: ipamerrors.NewScopeRolesMissing(missing.Roles,
 				fmt.Sprintf("%s (class %q)", missing.Error(), terms.class.Name))}
 		}
-		return reclaimResult{handled: true, outcome: "tx_error", err: fmt.Errorf("check the retained allocation's placement: %w", err)}
+		return reclaimResult{handled: true, outcome: reasonTxError, err: fmt.Errorf("check the retained allocation's placement: %w", err)}
 	}
 	if placement != nil {
 		return refuse(&reclaimMismatch{field: placement.Field, message: placement.Reason})
@@ -253,9 +254,9 @@ func (r *AllocatingREST) tryReclaim(
 
 	if err := r.allocator.ReclaimAllocation(ctx, tx, allocationKey, claimKey, reclaimPolicy); err != nil {
 		if isClaimNameCollision(err) {
-			return reclaimResult{handled: true, outcome: "conflict", err: duplicateClaimConflict(claim.Name)}
+			return reclaimResult{handled: true, outcome: reasonConflict, err: duplicateClaimConflict(claim.Name)}
 		}
-		return reclaimResult{handled: true, outcome: "tx_error", err: fmt.Errorf("reclaim allocation: %w", err)}
+		return reclaimResult{handled: true, outcome: reasonTxError, err: fmt.Errorf("reclaim allocation: %w", err)}
 	}
 
 	poolName := row.PoolKey[strings.LastIndex(row.PoolKey, "/")+1:]
@@ -275,7 +276,7 @@ func (r *AllocatingREST) tryReclaim(
 	claim.Status.PoolRef = &ipam.LocalRef{Name: poolName}
 
 	if err := r.bindRetainedAllocation(ctx, tx, claim, row, allocationKey, allocationName, poolName, uniqueScope, reclaimPolicy); err != nil {
-		return reclaimResult{handled: true, outcome: "tx_error", err: err}
+		return reclaimResult{handled: true, outcome: reasonTxError, err: err}
 	}
 
 	if dryRun {
@@ -284,24 +285,24 @@ func (r *AllocatingREST) tryReclaim(
 
 	claimData, err := runtime.Encode(r.codec, claim)
 	if err != nil {
-		return reclaimResult{handled: true, outcome: "internal", err: fmt.Errorf("encode claim: %w", err)}
+		return reclaimResult{handled: true, outcome: reasonInternal, err: fmt.Errorf("encode claim: %w", err)}
 	}
 	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
 	if err != nil {
 		if isIdentityCollision(err) {
-			return reclaimResult{handled: true, outcome: "conflict", err: duplicateClaimConflict(claim.Name)}
+			return reclaimResult{handled: true, outcome: reasonConflict, err: duplicateClaimConflict(claim.Name)}
 		}
-		return reclaimResult{handled: true, outcome: "tx_error", err: fmt.Errorf("persist claim: %w", err)}
+		return reclaimResult{handled: true, outcome: reasonTxError, err: fmt.Errorf("persist claim: %w", err)}
 	}
 	if err := (storage.APIObjectVersioner{}).UpdateObject(claim, uint64(rv)); err != nil {
-		return reclaimResult{handled: true, outcome: "internal", err: fmt.Errorf("set resource version: %w", err)}
+		return reclaimResult{handled: true, outcome: reasonInternal, err: fmt.Errorf("set resource version: %w", err)}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return reclaimResult{handled: true, outcome: "tx_error", err: fmt.Errorf("commit reclaim transaction: %w", err)}
+		return reclaimResult{handled: true, outcome: reasonTxError, err: fmt.Errorf("commit reclaim transaction: %w", err)}
 	}
 	committed = true
 
-	metrics.RecordReclaim("reclaimed")
+	metrics.RecordReclaim(ctx, "reclaimed")
 	klog.V(2).InfoS("Reclaimed retained allocation", "claim", claimKey, "allocation", allocationName,
 		"cidr", row.CIDR, "reclaimPolicy", reclaimPolicy)
 	return reclaimResult{handled: true, obj: claim}

@@ -370,7 +370,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	if claim.Spec.Target == ipam.TargetScopeRange {
 		obj, outcome, err := r.createScopeRange(ctx, span, claim, class, id, dryRun)
 		if err != nil {
-			// The latency histogram's result is success | exhausted | error,
+			// The latency histogram's result is success | exhausted | error (reclaimed is Block-only),
 			// as on the block path; the reason goes on the failure counter.
 			if failureReason(err, outcome) == reasonPoolExhausted {
 				result = "exhausted"
@@ -435,10 +435,10 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 			failSpan(tracing.ReasonTxError)
 			return nil, fail(reclaimed.err, reclaimed.outcome)
 		}
-		result = "success"
-		if !dryRun {
-			result = "reclaimed"
-		}
+		// A request-level result, so a dry-run reclaim records it too (see
+		// metrics.WithDryRun); ipam_reclaims_total, which counts addresses
+		// taken back, does not.
+		result = "reclaimed"
 		return reclaimed.obj, nil
 	}
 

@@ -120,8 +120,8 @@ func TestResolutionDurationProvisionedLabelIsABoolean(t *testing.T) {
 // Reclaims are counted per outcome and nothing else: the retained allocation,
 // its pool and its claim each take a new value per object.
 func TestReclaimsCarryOnlyTheResultLabel(t *testing.T) {
-	RecordReclaim("reclaimed")
-	RecordReclaim("mismatch")
+	RecordReclaim(context.Background(), "reclaimed")
+	RecordReclaim(context.Background(), "mismatch")
 
 	labels, ok := gatherLabelNames(t)["ipam_reclaims_total"]
 	if !ok {
