@@ -141,10 +141,14 @@ func TestRetentionFixesTheShorterLease(t *testing.T) {
 
 func ptr[T any](v T) *T { return &v }
 
-// leaseOf is the lease a stored deadline gives, measured as the API reports
-// it: from the whole second of retention.
+// leaseOf is the whole-second lease a stored deadline gives. A deadline is
+// retention plus the lease rounded up to the second, so it is the lease plus
+// less than a second after retention, and a whole second itself.
 func leaseOf(r RetainedAllocation) time.Duration {
-	return r.ExpiresAt.Sub(r.RetainedAt.Truncate(time.Second))
+	if !r.ExpiresAt.Equal(r.ExpiresAt.Truncate(time.Second)) {
+		return -1
+	}
+	return r.ExpiresAt.Sub(r.RetainedAt).Truncate(time.Second)
 }
 
 // A class that cannot be read leaves the lease for the sweeper and does not
@@ -208,23 +212,88 @@ func TestRebindingClearsTheDeadline(t *testing.T) {
 }
 
 // The class is found from the row alone, without a tenant on the context: the
-// recorded class_project when there is one, and the pool's project for a row
-// written before it was recorded.
+// recorded class_project when there is one. A row written before it was
+// recorded uses its pool's project only where the pool offers the class by
+// name, which puts the pool in the defining project; anywhere else the class
+// is not known.
 func TestRetentionClassProject(t *testing.T) {
 	poolKey := tenant.Identity{Name: "consumer"}.ResourceKey("ippools", "p")
+	offering := &ipamv1alpha1.IPPool{Spec: ipamv1alpha1.IPPoolSpec{ClassNames: []string{"standard"}}}
+	provisioned := &ipamv1alpha1.IPPool{}
 	for _, tc := range []struct {
 		name         string
+		pool         *ipamv1alpha1.IPPool
 		classProject *string
 		want         string
+		known        bool
 	}{
-		{"recorded", strp("platform"), "platform"},
-		{"not recorded", nil, "consumer"},
-		{"recorded empty", strp(""), "consumer"},
+		{"recorded", provisioned, strp("platform"), "platform", true},
+		{"not recorded, pool offers the class", offering, nil, "consumer", true},
+		{"recorded empty, pool offers the class", offering, strp(""), "consumer", true},
+		{"not recorded, pool does not offer it", provisioned, nil, "", false},
+		{"not recorded, no pool", nil, nil, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := retentionClassProject(poolKey, tc.classProject); got != tc.want {
-				t.Errorf("retentionClassProject = %q, want %q", got, tc.want)
+			got, known := retentionClassProject(tc.pool, poolKey, "standard", tc.classProject)
+			if got != tc.want || known != tc.known {
+				t.Errorf("retentionClassProject = %q, %v; want %q, %v", got, known, tc.want, tc.known)
 			}
 		})
+	}
+}
+
+// A row that does not record its class's project, in a pool that does not
+// offer the class, could belong to another project's class of the same name.
+// Its lease is then the pool's cap alone, which can only hold the address
+// longer than the class meant, never shorter; a same-named class with a
+// shorter lease in the pool's project is not applied to it.
+func TestAnUnidentifiedClassGetsOnlyThePoolsCap(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		offers bool
+		want   time.Duration
+	}{
+		{"pool provisioned under another project's class", false, 2 * time.Hour},
+		{"pool offers the class", true, 10 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testdb.Pool(t)
+			ctx := context.Background()
+			poolKey := seedPool(t, db, "lease-legacy", "10.65.0.0/16")
+			setPoolCap(t, db, poolKey, dur(2*time.Hour))
+			if tc.offers {
+				setPoolClasses(t, db, poolKey, "standard")
+			}
+			seedLeaseClass(t, db, dur(10*time.Minute))
+			allocateWithPolicy(t, db, poolKey, "claim-a", "alloc-a", ipamv1alpha1.ReclaimRetain)
+			if _, err := db.Exec(ctx,
+				`UPDATE ipam_cidr_allocations SET class_project = NULL, address_scope = NULL WHERE allocation_key = 'alloc-a'`); err != nil {
+				t.Fatalf("unrecord the class: %v", err)
+			}
+			got := releaseRetained(t, db, "claim-a")
+			if len(got) != 1 || got[0].Lease != LeaseFinite || leaseOf(got[0]) != tc.want {
+				t.Errorf("retained = %+v (lease %s), want a %s lease", got, leaseOf(got[0]), tc.want)
+			}
+		})
+	}
+}
+
+// setPoolClasses rewrites a seeded pool's spec.classNames.
+func setPoolClasses(t *testing.T, db *pgxpool.Pool, poolKey string, classNames ...string) {
+	t.Helper()
+	ctx := context.Background()
+	var data []byte
+	if err := db.QueryRow(ctx, `SELECT data FROM ipam_objects WHERE key = $1`, poolKey).Scan(&data); err != nil {
+		t.Fatalf("read pool: %v", err)
+	}
+	var pool ipamv1alpha1.IPPool
+	if err := json.Unmarshal(data, &pool); err != nil {
+		t.Fatalf("decode pool: %v", err)
+	}
+	pool.Spec.ClassNames = classNames
+	if data, err := json.Marshal(&pool); err != nil {
+		t.Fatalf("encode pool: %v", err)
+	} else if _, err := db.Exec(ctx, `UPDATE ipam_objects SET data = $2 WHERE key = $1`, poolKey, data); err != nil {
+		t.Fatalf("write pool: %v", err)
 	}
 }

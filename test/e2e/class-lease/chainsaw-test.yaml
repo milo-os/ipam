@@ -10,8 +10,8 @@ spec:
     transaction, so it is readable the moment the delete returns.
 
       a. a leased class in a capped pool: status.retainedAt, status.expiresAt
-         exactly the pool's 1h cap later (the shorter of the class's 2h and
-         the cap), and Retained=True/LeaseActive
+         the pool's 1h cap later (the shorter of the class's 2h and the cap,
+         to the second), and Retained=True/LeaseActive
       b. no lease anywhere: status.retainedAt, no status.expiresAt, and
          Retained=True/NoLease
       c. recreating the claim reclaims the address: both timestamps go, and
@@ -137,8 +137,10 @@ spec:
                 exit 1
               fi
               lease=$(printf '%s' "$json" | jq -r '(.status.expiresAt | fromdateiso8601) - (.status.retainedAt | fromdateiso8601)')
-              if [ "$lease" != "3600" ]; then
-                echo "FAIL: expiresAt - retainedAt = ${lease}s, want 3600 (the pool's 1h cap under the class's 2h)"
+              # retainedAt is shown truncated to the second and the deadline is
+              # stored rounded up to it, so the gap is the lease or a second more.
+              if [ "$lease" != "3600" ] && [ "$lease" != "3601" ]; then
+                echo "FAIL: expiresAt - retainedAt = ${lease}s, want 3600 or 3601 (the pool's 1h cap under the class's 2h)"
                 exit 1
               fi
               cond=$(printf '%s' "$json" | jq -r '.status.conditions[]? | select(.type == "Retained") | "\(.status)/\(.reason)"')

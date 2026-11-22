@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -73,20 +74,27 @@ func EffectiveLease(classLease, poolCap *metav1.Duration) *time.Duration {
 	return out
 }
 
-// retentionClassProject is the project whose class an allocation row was handed
-// out under.
+// retentionClassProject is the project whose class an allocation row was
+// handed out under, and whether that can be told from the row and its pool.
 //
 // The row's recorded class_project is the class definition's project, which
 // is exactly what a reference resolved to when the claim was made. Rows written
-// before migration 007 did not record it; for those the pool's own project
-// stands in. An allocation's pool is provisioned under, or offered by, the
-// definition's project, so the two agree wherever both are known, which a
-// test pins. Neither needs a tenant on the context: the sweeper has none.
-func retentionClassProject(poolKey string, classProject *string) string {
+// before migration 007 did not record it. For those the pool's project is the
+// definition's only where the pool itself offers the class by name: an
+// operator pool offering a class lives in the project defining it. A pool
+// provisioned by a class chain may sit under another project's class of the
+// same name, so for one of those the class is not known, and the caller applies
+// only the pool's cap. That can hold an address longer than its class meant,
+// never shorter. Neither path needs a tenant on the context: the sweeper has
+// none.
+func retentionClassProject(pool *ipamv1alpha1.IPPool, poolKey, className string, classProject *string) (string, bool) {
 	if classProject != nil && *classProject != "" {
-		return *classProject
+		return *classProject, true
 	}
-	return tenant.ProjectFromKey(poolKey)
+	if pool != nil && className != "" && slices.Contains(pool.Spec.ClassNames, className) {
+		return tenant.ProjectFromKey(poolKey), true
+	}
+	return "", false
 }
 
 // classRetentionLease reads the retention lease of class name in project.
@@ -122,11 +130,23 @@ func classRetentionLease(ctx context.Context, tx pgx.Tx, project, name string) (
 
 // leaseFor resolves the lease of one retained row in pool, which the caller
 // holds locked. ok is false when the class could not be read; the error says
-// why, for the caller's log.
+// why, for the caller's log. A class the row does not identify contributes no
+// lease (see retentionClassProject).
 func leaseFor(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, poolKey, className string, classProject *string) (lease *time.Duration, ok bool, err error) {
-	classLease, err := classRetentionLease(ctx, tx, retentionClassProject(poolKey, classProject), className)
-	if err != nil {
-		return nil, false, err
+	return leaseWith(ctx, tx, pool, poolKey, className, classProject, classRetentionLease)
+}
+
+// classLeaseReader reads a class's retention lease; classRetentionLease, or a
+// pass's memo of it.
+type classLeaseReader func(ctx context.Context, tx pgx.Tx, project, name string) (*metav1.Duration, error)
+
+func leaseWith(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, poolKey, className string, classProject *string, read classLeaseReader) (*time.Duration, bool, error) {
+	var classLease *metav1.Duration
+	if project, known := retentionClassProject(pool, poolKey, className, classProject); known {
+		var err error
+		if classLease, err = read(ctx, tx, project, className); err != nil {
+			return nil, false, err
+		}
 	}
 	var poolCap *metav1.Duration
 	if pool != nil {
@@ -138,10 +158,10 @@ func leaseFor(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, poolKey
 // writeLease stores the deadline lease gives a retained row and returns the
 // row's retention as stored.
 //
-// The deadline is measured from the whole second of retention. The API reports
-// both instants to the second, so this makes status.expiresAt exactly the
-// instant the sweeper acts on, and expiresAt minus retainedAt exactly the
-// lease, rather than each a fraction of a second off. It writes only a row that is still retained and
+// The deadline is retention plus the lease, rounded up to the whole second
+// (ipam_ceil_second). The API reports times to the second, so status.expiresAt
+// is exactly the instant the sweeper acts on, and the address is never due
+// before the full lease has passed. It writes only a row that is still retained and
 // not yet evaluated, so it can neither give a bound row a deadline nor move one
 // already fixed; changed is false when it wrote nothing. The caller holds the
 // row's pool locked.
@@ -158,7 +178,7 @@ func writeLease(ctx context.Context, tx pgx.Tx, allocationKey string, lease *tim
 	)
 	err := tx.QueryRow(ctx,
 		`UPDATE ipam_cidr_allocations
-		    SET expires_at = COALESCE(date_trunc('second', retained_at) + $2::bigint * interval '1 microsecond', 'infinity')
+		    SET expires_at = COALESCE(ipam_ceil_second(retained_at + $2::bigint * interval '1 microsecond'), 'infinity')
 		  WHERE allocation_key = $1 AND claim_key IS NULL AND purpose = 'Claim'
 		    AND retained_at IS NOT NULL AND expires_at IS NULL
 		 RETURNING retained_at, expires_at`, allocationKey, micros,
@@ -257,6 +277,26 @@ func writeRetentionStatus(ctx context.Context, tx pgx.Tx, r RetainedAllocation) 
 		return fmt.Errorf("publish retention of IPAllocation %q: %w", r.AllocationKey, err)
 	}
 	return nil
+}
+
+// publishRetention writes r onto its IPAllocation under a savepoint, so an
+// object that cannot be written fails only its own publication. The row is the
+// record the sweeper acts on, and it stands either way; an object that cannot
+// be decoded cannot be read through the API either. Reports whether it wrote.
+func publishRetention(ctx context.Context, tx pgx.Tx, r RetainedAllocation) bool {
+	sp, err := tx.Begin(ctx)
+	if err == nil {
+		if err = writeRetentionStatus(ctx, sp, r); err == nil {
+			if err = sp.Commit(ctx); err == nil {
+				return true
+			}
+		} else {
+			_ = sp.Rollback(ctx)
+		}
+	}
+	klog.ErrorS(err, "Could not publish a retained allocation's lease on its IPAllocation", "allocation", r.AllocationKey)
+	metrics.RetentionSweepRowErrors.Inc()
+	return false
 }
 
 // evaluateRetained fixes the lease of a row retention has just unbound. A class

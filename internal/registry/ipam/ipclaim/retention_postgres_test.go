@@ -33,6 +33,15 @@ func getAllocation(t *testing.T, allocREST *ipallocation.ReleasingREST, ctx cont
 	return obj.(*ipam.IPAllocation)
 }
 
+// isLease reports whether a's deadline is lease after its retention, as the
+// API reports both: retention is shown truncated to the second and the
+// deadline is stored rounded up to it, so the gap is the lease or a second
+// more.
+func isLease(a *ipam.IPAllocation, lease time.Duration) bool {
+	d := a.Status.ExpiresAt.Sub(a.Status.RetainedAt.Time)
+	return d == lease || d == lease+time.Second
+}
+
 func retainedCondition(t *testing.T, a *ipam.IPAllocation) *metav1.Condition {
 	t.Helper()
 	c := meta.FindStatusCondition(a.Status.Conditions, ipamv1alpha1.AllocationConditionRetained)
@@ -55,8 +64,8 @@ func TestRetainPublishesTheLeaseOnTheAllocation(t *testing.T) {
 	if a.Status.RetainedAt == nil || a.Status.ExpiresAt == nil {
 		t.Fatalf("retainedAt = %v, expiresAt = %v; want both set", a.Status.RetainedAt, a.Status.ExpiresAt)
 	}
-	if d := a.Status.ExpiresAt.Sub(a.Status.RetainedAt.Time); d != time.Hour {
-		t.Errorf("expiresAt - retainedAt = %s, want the class's 1h lease", d)
+	if !isLease(a, time.Hour) {
+		t.Errorf("expiresAt - retainedAt = %s, want the class's 1h lease", a.Status.ExpiresAt.Sub(a.Status.RetainedAt.Time))
 	}
 	c := retainedCondition(t, a)
 	if c.Status != metav1.ConditionTrue || c.Reason != ipamv1alpha1.RetainedReasonLeaseActive {
@@ -150,7 +159,7 @@ func TestARetainedRowsClassIsKeyedOffTheRowAlone(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	a := getAllocation(t, allocREST, ctx, claim)
-	if a.Status.ExpiresAt == nil || a.Status.ExpiresAt.Sub(a.Status.RetainedAt.Time) != 90*time.Minute {
+	if a.Status.ExpiresAt == nil || !isLease(a, 90*time.Minute) {
 		t.Errorf("expiresAt = %v, want the definition's 90m lease from %v", a.Status.ExpiresAt, a.Status.RetainedAt)
 	}
 }

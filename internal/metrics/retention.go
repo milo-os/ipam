@@ -70,14 +70,54 @@ var RetentionSweepDuration = metrics.NewHistogram(
 	},
 )
 
-// RetentionSweepErrors counts failures inside sweep passes: a query, a pool's
-// transaction, or a lease that could not be evaluated. A pass with any error
-// does not advance RetentionSweepLastSuccess.
+// RetentionSweepErrors counts failures of a pass or of one pool's transaction
+// within it. A pass that fails does not advance RetentionSweepLastSuccess; a
+// pass that carries on past a failed pool does, because the rest of its work
+// was done.
 var RetentionSweepErrors = metrics.NewCounter(
 	&metrics.CounterOpts{
 		Namespace:      "ipam",
 		Name:           "retention_sweep_errors_total",
-		Help:           "Failures during retention sweep passes",
+		Help:           "Failures of retention sweep passes, or of one pool's transaction within a pass",
+		StabilityLevel: metrics.ALPHA,
+	},
+)
+
+// RetentionSweepRowErrors counts single allocations the sweeper could not act
+// on: a release, a lease write, or a status publication that failed. Each is
+// isolated under a savepoint, so its pool is swept regardless, and the row is
+// tried again on a later pass.
+var RetentionSweepRowErrors = metrics.NewCounter(
+	&metrics.CounterOpts{
+		Namespace:      "ipam",
+		Name:           "retention_sweep_row_errors_total",
+		Help:           "Retained allocations the retention sweeper could not act on, one at a time",
+		StabilityLevel: metrics.ALPHA,
+	},
+)
+
+// RetentionLeaseUnevaluable counts attempts to evaluate a retained allocation's
+// lease that failed because its class could not be read. The row stays
+// unevaluated, and so held, and is tried again on a later pass; the evaluation
+// pages past it meanwhile.
+var RetentionLeaseUnevaluable = metrics.NewCounter(
+	&metrics.CounterOpts{
+		Namespace:      "ipam",
+		Name:           "retention_lease_unevaluable_total",
+		Help:           "Retained allocations whose lease could not be evaluated because their class could not be read",
+		StabilityLevel: metrics.ALPHA,
+	},
+)
+
+// RetentionCapApplyFailures counts IPPool updates whose maxRetentionLease could
+// not be applied to the pool's retained allocations straight after the update
+// committed. The update succeeds regardless; the next sweep pass applies the
+// cap.
+var RetentionCapApplyFailures = metrics.NewCounter(
+	&metrics.CounterOpts{
+		Namespace:      "ipam",
+		Name:           "retention_cap_apply_failures_total",
+		Help:           "IPPool updates whose retention cap was left for the sweeper to apply",
 		StabilityLevel: metrics.ALPHA,
 	},
 )
@@ -95,8 +135,9 @@ var RetentionSweepPoolsSkipped = metrics.NewCounter(
 )
 
 // RetentionSweepLastSuccess is the Unix time this replica last completed a
-// pass with no error. Only the replica holding the advisory lock runs a pass,
-// so alert on the max across replicas.
+// pass. Failures of single pools or rows within a completed pass do not hold
+// it back; they are counted on their own. Only the replica holding the
+// advisory lock runs a pass, so alert on the max across replicas.
 var RetentionSweepLastSuccess = metrics.NewGauge(
 	&metrics.GaugeOpts{
 		Namespace:      "ipam",

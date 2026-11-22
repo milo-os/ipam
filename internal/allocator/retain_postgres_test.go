@@ -23,7 +23,7 @@ func allocateWithPolicy(t *testing.T, db *pgxpool.Pool, poolKey, claim, allocati
 	cidr, err := NewPostgresPrefixAllocator().AllocatePrefix(ctx, tx, PrefixRequest{
 		PoolKey: poolKey, PrefixLen: 24, IPFamily: "IPv4",
 		ClaimKey: claim, AllocationKey: allocationKey,
-		OwnerProject: testProject, ClassName: "standard", ReclaimPolicy: policy,
+		OwnerProject: testProject, ClassName: "standard", ClassProject: testProject, ReclaimPolicy: policy,
 	})
 	if err != nil {
 		_ = tx.Rollback(ctx)

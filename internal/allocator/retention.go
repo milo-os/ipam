@@ -5,52 +5,62 @@ package allocator
 // A retained allocation's deadline is fixed when its claim is deleted and
 // stored as expires_at (see lease.go). The sweeper is what acts on it. It runs
 // in every apiserver replica, and each pass is taken by whichever replica gets
-// a Postgres advisory lock first; the others skip that pass. The lock is only
-// there so two replicas do not do the same work: correctness rests on the pool
-// lock, as it does for every other writer of allocation rows.
+// a Postgres advisory lock first; the others skip that pass.
 //
 // # One pass
 //
-//  1. Evaluate rows whose lease is still unknown (expires_at NULL), a bounded
-//     batch per pass, one short transaction per pool.
-//  2. Find the due set: one scan of the expiry index, oldest deadline first,
-//     across all pools. A pool full of rows with no lease ('infinity') sorts
-//     last and cannot hold back a due row anywhere else.
-//  3. Enforce: per pool, one transaction. Take the pool row with SKIP LOCKED,
-//     so a live claim is never queued behind the sweeper and the pool is left
-//     for the next pass instead; then delete exactly the due rows still
-//     retained and still due. That predicate is the compare-and-set against a
-//     reclaim that won the pool lock first. Capacity is republished and the
-//     IPAllocation objects deleted, with DELETED changelog entries, in the
-//     same transaction.
-//
-//     Observe: count what enforce would release, once per deadline, and
+//  1. Apply pool caps: for each pool with a maxRetentionLease, bring forward
+//     any deadline the cap cuts short (tightenLocked). An IPPool update does
+//     this straight away, best effort; this is what makes it certain.
+//  2. Evaluate rows whose lease is still unknown (expires_at NULL).
+//  3. Enforce: release due rows, oldest deadline first across all pools, so a
+//     pool full of rows with no lease ('infinity') cannot hold back a due row
+//     anywhere else. Observe: record each due deadline not yet counted, and
 //     release nothing.
 //
-// The retained-set gauges are read on every replica every pass, whether or not
-// it holds the lock, so each replica exports current values.
+// Steps 1 to 3 take each pool's lock with SKIP LOCKED, in short transactions
+// of at most a chunk of rows, so a live claim is never queued behind the
+// sweeper; a pool it holds is left for the next pass. Steps 2 and 3 page
+// through their sets by key, under a row budget, and resume on the next pass
+// where this one stopped, wrapping round at the end. Rows and pools that fail,
+// or are skipped, are paged past rather than retried, so no prefix of bad rows
+// can starve the rest. A single row that fails is undone under a savepoint, so
+// it costs its own release, not its pool's.
+//
+// # What the advisory lock is for
+//
+// Only to stop two replicas doing the same work. It is a session lock, and if
+// the session holding it dies mid-pass another replica can start a pass while
+// the first finishes its current pool. That is safe: every write is made under
+// the pool's row lock and predicated on the row still being retained and due
+// (the compare-and-set a reclaim races), exactly as for any other writer of
+// allocation rows. The pass checks its session before each pool transaction and
+// stops when it has gone. The lock needs a session to live on, so a connection
+// pooler between IPAM and Postgres must run in session mode.
 //
 // # Lock order
 //
 // A pass never holds two pool locks: every row it writes is in the one pool
-// its transaction locked, and a claim row is only ever in its own pool. The
-// advisory lock is a session lock on a connection of its own, which no
-// transaction waits on.
+// its transaction locked, and a claim row is only ever in its own pool. Within
+// a pool it locks the pool, then rows, then objects, as every other writer
+// does. The observe ledger is written in a transaction that locks no pool.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
+	"net"
 	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
 	"go.miloapis.com/ipam/internal/metrics"
@@ -83,26 +93,47 @@ func ParseSweepMode(s string) (SweepMode, error) {
 const sweepLockKey int64 = 0x6970616d5f727377
 
 const (
-	// defaultEvaluateBatch bounds the rows of unknown lease one pass evaluates.
-	defaultEvaluateBatch = 500
-	// defaultDueBatch bounds the due rows one pass reads. A pool's share is
-	// deleted in one transaction holding that pool's lock, so this also bounds
-	// how long a claim against the pool can be made to wait.
-	defaultDueBatch = 200
+	// defaultPageSize is how many rows one read of a set returns.
+	defaultPageSize = 200
+	// defaultRowBudget bounds the rows one pass reads from each set, so a
+	// backlog is worked through over several passes rather than in one long
+	// one.
+	defaultRowBudget = 2000
+	// defaultChunk bounds the rows one pool transaction acts on. The
+	// transaction holds the pool's lock, so this bounds how long a claim
+	// against the pool can find it taken, and how many rows share one
+	// republication of the pool's capacity.
+	defaultChunk = 25
+	// defaultCapPools bounds the capped pools one pass checks.
+	defaultCapPools = 200
 )
 
-// Sweeper runs retention sweep passes against one database.
+// Sweeper runs retention sweep passes against one database. It is not safe
+// for concurrent use; Run drives one.
 type Sweeper struct {
 	db   *pgxpool.Pool
 	mode SweepMode
 
-	evaluateBatch int
-	dueBatch      int
+	pageSize, rowBudget, chunk, capPools int
+
+	// Where the previous pass stopped in each set, so the next resumes there.
+	evaluateFrom, dueFrom keyset
+	capFrom               string
+}
+
+// keyset is a position in a set ordered by (time, allocation key).
+type keyset struct {
+	set bool
+	at  time.Time
+	key string
 }
 
 // NewSweeper returns a sweeper in mode.
 func NewSweeper(db *pgxpool.Pool, mode SweepMode) *Sweeper {
-	return &Sweeper{db: db, mode: mode, evaluateBatch: defaultEvaluateBatch, dueBatch: defaultDueBatch}
+	return &Sweeper{
+		db: db, mode: mode,
+		pageSize: defaultPageSize, rowBudget: defaultRowBudget, chunk: defaultChunk, capPools: defaultCapPools,
+	}
 }
 
 // SweepResult is what one pass did.
@@ -110,10 +141,13 @@ type SweepResult struct {
 	// Ran is false when another replica held the pass's lock and this one
 	// did nothing but publish gauges.
 	Ran bool
+	// Tightened is deadlines a pool's cap brought forward.
+	Tightened int
 	// Evaluated is rows whose lease this pass resolved.
 	Evaluated int
-	// Due is due rows the pass found: in observe mode, those that fell due
-	// since the last count.
+	// Unevaluable is rows whose class could not be read, left unevaluated.
+	Unevaluable int
+	// Due is due rows the pass read: in observe mode, those not counted yet.
 	Due int
 	// Released is rows released (enforce).
 	Released int
@@ -121,35 +155,59 @@ type SweepResult struct {
 	WouldRelease int
 	// PoolsSkipped is pools left for the next pass because a claim held them.
 	PoolsSkipped int
-	// Errors is failures the pass carried on past.
+	// Errors is pools whose transaction failed; the pass carried on.
 	Errors int
+	// RowErrors is single rows the pass could not act on; their pools were
+	// swept regardless.
+	RowErrors int
 }
 
-// Run sweeps every interval until ctx is done, starting with a pass at once. A
-// pass that fails is logged and counted; the loop carries on, because a sweep
-// that cannot run is a capacity problem, not a serving one.
+// Run sweeps every interval until ctx is done, starting with a pass at once.
+//
+// A pass that fails is logged and counted, and the loop carries on: a sweep
+// that cannot run is a capacity problem, not a serving one. A pass that panics
+// is recovered for the same reason, and the loop backs off before the next,
+// doubling up to ten intervals while it keeps panicking.
 func (s *Sweeper) Run(ctx context.Context, interval time.Duration) {
 	metrics.RetentionSweepInterval.Set(interval.Seconds())
 	klog.InfoS("Retention sweeper started", "interval", interval.String(), "mode", string(s.mode))
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	backoff := interval
 	for {
-		passCtx, cancel := context.WithTimeout(ctx, max(interval, time.Minute))
-		if _, err := s.Sweep(passCtx); err != nil && ctx.Err() == nil {
-			klog.ErrorS(err, "Retention sweep pass failed")
+		wait := interval
+		if s.safePass(ctx, interval) {
+			wait = backoff
+			backoff = min(backoff*2, 10*interval)
+		} else {
+			backoff = interval
 		}
-		cancel()
 		select {
 		case <-ctx.Done():
 			klog.InfoS("Retention sweeper stopped")
 			return
-		case <-ticker.C:
+		case <-time.After(wait):
 		}
 	}
 }
 
+// safePass runs one pass, and reports whether it panicked.
+func (s *Sweeper) safePass(ctx context.Context, interval time.Duration) (panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+			metrics.RetentionSweepErrors.Inc()
+			klog.ErrorS(fmt.Errorf("%v", r), "Retention sweep pass panicked; the apiserver carries on and the sweeper retries after a backoff")
+		}
+	}()
+	passCtx, cancel := context.WithTimeout(ctx, max(interval, time.Minute))
+	defer cancel()
+	if _, err := s.Sweep(passCtx); err != nil && ctx.Err() == nil {
+		klog.ErrorS(err, "Retention sweep pass failed")
+	}
+	return false
+}
+
 // Sweep runs one pass. The error is a failure that stopped the pass; failures
-// it carried on past are counted in the result and in the errors metric.
+// it carried on past are counted in the result and the metrics.
 func (s *Sweeper) Sweep(ctx context.Context) (res SweepResult, err error) {
 	start := time.Now()
 	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanRetentionSweep)
@@ -167,10 +225,12 @@ func (s *Sweeper) Sweep(ctx context.Context) (res SweepResult, err error) {
 			span.SetStatus(codes.Error, err.Error())
 		}
 		metrics.RetentionSweepErrors.Add(float64(res.Errors))
+		metrics.RetentionSweepRowErrors.Add(float64(res.RowErrors))
+		metrics.RetentionLeaseUnevaluable.Add(float64(res.Unevaluable))
 		metrics.RetentionSweepPoolsSkipped.Add(float64(res.PoolsSkipped))
 		if res.Ran {
 			metrics.RetentionSweepDuration.Observe(time.Since(start).Seconds())
-			if res.Errors == 0 {
+			if err == nil {
 				metrics.RetentionSweepLastSuccess.Set(float64(time.Now().Unix()))
 			}
 		}
@@ -198,15 +258,20 @@ func (s *Sweeper) Sweep(ctx context.Context) (res SweepResult, err error) {
 	defer releaseSweepLock(conn)
 	res.Ran = true
 
-	state, err := s.readState(ctx)
-	if err != nil {
+	held := func() error {
+		if _, err := conn.Exec(ctx, `SELECT 1`); err != nil {
+			return fmt.Errorf("lost the sweep lock's session: %w", err)
+		}
+		return nil
+	}
+	if err := s.applyCaps(ctx, held, &res); err != nil {
 		return res, err
 	}
-	if err := s.evaluate(ctx, state, &res); err != nil {
+	if err := s.evaluate(ctx, held, &res); err != nil {
 		return res, err
 	}
 	if s.mode == SweepEnforce {
-		err = s.release(ctx, &res)
+		err = s.release(ctx, held, &res)
 	} else {
 		err = s.observe(ctx, &res)
 	}
@@ -214,11 +279,11 @@ func (s *Sweeper) Sweep(ctx context.Context) (res SweepResult, err error) {
 		return res, err
 	}
 	metrics.RecordRetentionReleases(string(SweepEnforce), res.Released)
-	metrics.RecordRetentionReleases(string(SweepObserve), res.WouldRelease)
 
 	klog.V(2).InfoS("Retention sweep pass complete", "mode", string(s.mode),
-		"evaluated", res.Evaluated, "due", res.Due, "released", res.Released,
-		"wouldRelease", res.WouldRelease, "poolsSkipped", res.PoolsSkipped, "errors", res.Errors)
+		"tightened", res.Tightened, "evaluated", res.Evaluated, "unevaluable", res.Unevaluable,
+		"due", res.Due, "released", res.Released, "wouldRelease", res.WouldRelease,
+		"poolsSkipped", res.PoolsSkipped, "errors", res.Errors, "rowErrors", res.RowErrors)
 	return res, nil
 }
 
@@ -234,42 +299,6 @@ func releaseSweepLock(conn *pgxpool.Conn) {
 		return
 	}
 	conn.Release()
-}
-
-// sweepState is the observing sweeper's progress: the last deadline it counted.
-type sweepState struct {
-	countedThrough    pgtype.Timestamptz
-	countedThroughKey string
-}
-
-// readState writes this pass's mode and reads where counting stopped. The row
-// is created on first use, with nothing counted yet.
-func (s *Sweeper) readState(ctx context.Context) (sweepState, error) {
-	var st sweepState
-	err := s.db.QueryRow(ctx,
-		`INSERT INTO ipam_retention_sweep_state (id, mode, counted_through, counted_through_key)
-		 VALUES (1, $1, '-infinity', '')
-		 ON CONFLICT (id) DO UPDATE SET mode = EXCLUDED.mode, updated_at = NOW()
-		 RETURNING counted_through, counted_through_key`, string(s.mode),
-	).Scan(&st.countedThrough, &st.countedThroughKey)
-	if err != nil {
-		return st, fmt.Errorf("read sweep state: %w", err)
-	}
-	return st, nil
-}
-
-// countedBefore reports whether a deadline at expiresAt, under allocationKey,
-// sorts at or before where counting stopped: written too late for a scan to
-// count it.
-func (st sweepState) countedBefore(expiresAt time.Time, allocationKey string) bool {
-	switch st.countedThrough.InfinityModifier {
-	case pgtype.NegativeInfinity:
-		return false
-	case pgtype.Infinity:
-		return true
-	}
-	through := st.countedThrough.Time
-	return expiresAt.Before(through) || (expiresAt.Equal(through) && allocationKey <= st.countedThroughKey)
 }
 
 // candidate is a row the pass found to act on.
@@ -296,72 +325,225 @@ func byPool(rows []candidate) ([]string, map[string][]candidate) {
 	return keys, groups
 }
 
-// evaluate resolves the lease of retained rows that do not have one yet.
-func (s *Sweeper) evaluate(ctx context.Context, state sweepState, res *SweepResult) error {
-	defer metrics.ObserveQuery("find_unevaluated_retained", time.Now())
-	rows, err := s.db.Query(ctx,
-		`SELECT allocation_key, pool_key, class_name, class_project, retained_at
-		   FROM ipam_cidr_allocations
-		  WHERE claim_key IS NULL AND purpose = 'Claim' AND retained_at IS NOT NULL AND expires_at IS NULL
-		  ORDER BY retained_at
-		  LIMIT $1`, s.evaluateBatch)
-	if err != nil {
-		return fmt.Errorf("find retained allocations to evaluate: %w", err)
+// chunks splits rows into runs of at most n.
+func chunks(rows []candidate, n int) [][]candidate {
+	var out [][]candidate
+	for len(rows) > n {
+		out = append(out, rows[:n])
+		rows = rows[n:]
 	}
-	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
-		var c candidate
-		err := row.Scan(&c.allocationKey, &c.poolKey, &c.className, &c.classProject, &c.retainedAt)
-		return c, err
-	})
-	if err != nil {
-		return fmt.Errorf("read retained allocations to evaluate: %w", err)
+	if len(rows) > 0 {
+		out = append(out, rows)
 	}
+	return out
+}
 
-	keys, groups := byPool(found)
+// pageThrough reads a set a page at a time from *from, under the pass's row
+// budget, handing each page to act, and leaves *from where the next pass should
+// start: after the last row read, or at the beginning once the end is reached.
+func (s *Sweeper) pageThrough(from *keyset, read func(after keyset, limit int) ([]candidate, error), at func(candidate) time.Time, act func([]candidate) error) error {
+	for budget := s.rowBudget; budget > 0; {
+		page, err := read(*from, min(s.pageSize, budget))
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			*from = keyset{}
+			return nil
+		}
+		last := page[len(page)-1]
+		*from = keyset{set: true, at: at(last), key: last.allocationKey}
+		budget -= len(page)
+		if err := act(page); err != nil {
+			return err
+		}
+		if len(page) < s.pageSize {
+			*from = keyset{}
+			return nil
+		}
+	}
+	return nil
+}
+
+// afterClause is the keyset predicate continuing a scan ordered by (col,
+// allocation_key) from k, and its arguments, numbered from n.
+func afterClause(col string, k keyset, n int) (string, []any) {
+	if !k.set {
+		return "", nil
+	}
+	return fmt.Sprintf(" AND (%s, allocation_key) > ($%d, $%d)", col, n, n+1), []any{k.at, k.key}
+}
+
+// applyCaps brings retained deadlines in every capped pool forward to the cap.
+// Pools are found by an unlocked read and tightened one transaction each.
+func (s *Sweeper) applyCaps(ctx context.Context, held func() error, res *SweepResult) error {
+	defer metrics.ObserveQuery("find_capped_pools", time.Now())
+	rows, err := s.db.Query(ctx,
+		`SELECT o.key FROM ipam_objects o
+		  WHERE o.kind = 'IPPool' AND o.key > $1
+		    AND ipam_data_to_jsonb(o.data) -> 'spec' ? 'maxRetentionLease'
+		    AND EXISTS (SELECT 1 FROM ipam_cidr_allocations a
+		                 WHERE a.pool_key = o.key AND a.claim_key IS NULL AND a.purpose = 'Claim'
+		                   AND a.retained_at IS NOT NULL AND a.expires_at > now())
+		  ORDER BY o.key
+		  LIMIT $2`, s.capFrom, s.capPools)
+	if err != nil {
+		return fmt.Errorf("find capped pools: %w", err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("read capped pools: %w", err)
+	}
+	if len(keys) < s.capPools {
+		s.capFrom = ""
+	} else {
+		s.capFrom = keys[len(keys)-1]
+	}
 	for _, poolKey := range keys {
-		s.inPool(ctx, poolKey, "evaluate", res, func(tx pgx.Tx, pool *ipamv1alpha1.IPPool) (func(), error) {
-			evaluated, late := 0, 0
-			for _, c := range groups[poolKey] {
-				lease, ok, err := leaseFor(ctx, tx, pool, poolKey, c.className, c.classProject)
-				if !ok {
-					klog.ErrorS(err, "Could not evaluate a retained allocation's lease", "allocation", c.allocationKey, "class", c.className)
-					res.Errors++
-					continue
-				}
-				r, changed, err := writeLease(ctx, tx, c.allocationKey, lease)
-				if err != nil {
-					return nil, err
-				}
-				if !changed {
-					continue
-				}
-				if err := writeRetentionStatus(ctx, tx, r); err != nil {
-					return nil, err
-				}
-				evaluated++
-				if s.mode == SweepObserve && r.Lease == LeaseFinite && state.countedBefore(r.ExpiresAt, r.AllocationKey) {
-					late++
-				}
+		if err := held(); err != nil {
+			return err
+		}
+		s.inPool(ctx, poolKey, "cap", res, func(tx pgx.Tx, pool *ipamv1alpha1.IPPool) (func(), error) {
+			n, err := tightenLocked(ctx, tx, poolKey, pool)
+			if err != nil {
+				return nil, err
 			}
-			return func() {
-				res.Evaluated += evaluated
-				res.WouldRelease += late
-			}, nil
+			return func() { res.Tightened += n }, nil
 		})
 	}
 	return nil
 }
 
-// findDue reads the due set. The predicate is the expiry index's, plus the
-// deadline, so the scan starts at the oldest deadline and stops at now.
-func (s *Sweeper) findDue(ctx context.Context, after string, args ...any) ([]candidate, error) {
+// leaseMemo remembers each class's lease, and each failure to read one, for
+// one pass: a pass's rows are overwhelmingly of a few classes, and a class
+// that cannot be read should cost one read, not one per row.
+type leaseMemo map[string]memoLease
+
+type memoLease struct {
+	lease *metav1.Duration
+	err   error
+}
+
+func (m leaseMemo) read(ctx context.Context, tx pgx.Tx, project, name string) (*metav1.Duration, error) {
+	key := project + "/" + name
+	if v, ok := m[key]; ok {
+		return v.lease, v.err
+	}
+	lease, err := classRetentionLease(ctx, tx, project, name)
+	m[key] = memoLease{lease, err}
+	return lease, err
+}
+
+// evaluate resolves the lease of retained rows that do not have one yet.
+//
+// A row whose class cannot be read is counted and paged past, as is a pool
+// that is skipped or fails, for the rest of the pass; neither holds back the
+// rows after it.
+func (s *Sweeper) evaluate(ctx context.Context, held func() error, res *SweepResult) error {
+	memo := leaseMemo{}
+	passedOver := map[string]bool{}
+	read := func(after keyset, limit int) ([]candidate, error) {
+		defer metrics.ObserveQuery("find_unevaluated_retained", time.Now())
+		clause, args := afterClause("retained_at", after, 2)
+		rows, err := s.db.Query(ctx,
+			`SELECT allocation_key, pool_key, class_name, class_project, retained_at
+			   FROM ipam_cidr_allocations
+			  WHERE claim_key IS NULL AND purpose = 'Claim' AND retained_at IS NOT NULL AND expires_at IS NULL`+clause+`
+			  ORDER BY retained_at, allocation_key
+			  LIMIT $1`, append([]any{limit}, args...)...)
+		if err != nil {
+			return nil, fmt.Errorf("find retained allocations to evaluate: %w", err)
+		}
+		found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (candidate, error) {
+			var c candidate
+			err := row.Scan(&c.allocationKey, &c.poolKey, &c.className, &c.classProject, &c.retainedAt)
+			return c, err
+		})
+		if err != nil {
+			return nil, fmt.Errorf("read retained allocations to evaluate: %w", err)
+		}
+		return found, nil
+	}
+	return s.pageThrough(&s.evaluateFrom, read, func(c candidate) time.Time { return c.retainedAt }, func(page []candidate) error {
+		keys, groups := byPool(page)
+		for _, poolKey := range keys {
+			if passedOver[poolKey] {
+				continue
+			}
+			for _, chunk := range chunks(groups[poolKey], s.chunk) {
+				if err := held(); err != nil {
+					return err
+				}
+				if !s.inPool(ctx, poolKey, "evaluate", res, func(tx pgx.Tx, pool *ipamv1alpha1.IPPool) (func(), error) {
+					evaluated, unevaluable, rowErrors := evaluateChunk(ctx, tx, poolKey, pool, chunk, memo)
+					return func() {
+						res.Evaluated += evaluated
+						res.Unevaluable += unevaluable
+						res.RowErrors += rowErrors
+					}, nil
+				}) {
+					passedOver[poolKey] = true
+					break
+				}
+			}
+		}
+		return nil
+	})
+}
+
+// evaluateChunk fixes the leases of rows in one pool, which tx holds locked.
+// Each lease is written under a savepoint, so one that fails is undone alone
+// and the row is left for a later pass.
+func evaluateChunk(ctx context.Context, tx pgx.Tx, poolKey string, pool *ipamv1alpha1.IPPool, rows []candidate, memo leaseMemo) (evaluated, unevaluable, rowErrors int) {
+	for _, c := range rows {
+		lease, ok, err := leaseWith(ctx, tx, pool, poolKey, c.className, c.classProject, memo.read)
+		if !ok {
+			klog.ErrorS(err, "Could not evaluate a retained allocation's lease", "allocation", c.allocationKey, "class", c.className)
+			unevaluable++
+			continue
+		}
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			klog.ErrorS(err, "Could not open a savepoint to evaluate a lease", "allocation", c.allocationKey)
+			rowErrors++
+			continue
+		}
+		r, changed, err := writeLease(ctx, sp, c.allocationKey, lease)
+		if err == nil {
+			err = sp.Commit(ctx)
+		} else {
+			_ = sp.Rollback(ctx)
+		}
+		if err != nil {
+			klog.ErrorS(err, "Could not write a retained allocation's lease", "allocation", c.allocationKey)
+			rowErrors++
+			continue
+		}
+		if !changed {
+			continue
+		}
+		evaluated++
+		// A publication that fails is counted by publishRetention; the lease
+		// stands.
+		publishRetention(ctx, tx, r)
+	}
+	return evaluated, unevaluable, rowErrors
+}
+
+// findDue reads a page of the due set from after. The predicate is the expiry
+// index's, plus the deadline, so the scan starts at the oldest deadline and
+// stops at now.
+func (s *Sweeper) findDue(ctx context.Context, after keyset, limit int) ([]candidate, error) {
 	defer metrics.ObserveQuery("find_due_retained", time.Now())
+	clause, args := afterClause("expires_at", after, 2)
 	rows, err := s.db.Query(ctx,
 		`SELECT allocation_key, pool_key, class_name, retained_at, ip_family,
 		        host(allocated_cidr) || '/' || masklen(allocated_cidr), owner_project, expires_at
 		   FROM ipam_cidr_allocations
 		  WHERE claim_key IS NULL AND purpose = 'Claim' AND expires_at IS NOT NULL
-		    AND retained_at IS NOT NULL AND expires_at <= now()`+after, args...)
+		    AND retained_at IS NOT NULL AND expires_at <= now()`+clause+`
+		  ORDER BY expires_at, allocation_key
+		  LIMIT $1`, append([]any{limit}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("find due retained allocations: %w", err)
 	}
@@ -377,50 +559,125 @@ func (s *Sweeper) findDue(ctx context.Context, after string, args ...any) ([]can
 	return due, nil
 }
 
-// release frees what is due, pool by pool.
-func (s *Sweeper) release(ctx context.Context, res *SweepResult) error {
-	due, err := s.findDue(ctx, ` ORDER BY expires_at LIMIT $1`, s.dueBatch)
-	if err != nil {
-		return err
-	}
-	res.Due = len(due)
-
-	keys, groups := byPool(due)
-	for _, poolKey := range keys {
-		s.inPool(ctx, poolKey, "release", res, func(tx pgx.Tx, pool *ipamv1alpha1.IPPool) (func(), error) {
-			released, err := releaseDue(ctx, tx, poolKey, pool, groups[poolKey])
-			if err != nil {
-				return nil, err
+// release frees what is due, pool by pool, a chunk per transaction. A pool
+// that is skipped or fails is left alone for the rest of the pass, and its
+// rows are paged past.
+func (s *Sweeper) release(ctx context.Context, held func() error, res *SweepResult) error {
+	passedOver := map[string]bool{}
+	read := func(after keyset, limit int) ([]candidate, error) { return s.findDue(ctx, after, limit) }
+	return s.pageThrough(&s.dueFrom, read, func(c candidate) time.Time { return c.expiresAt }, func(page []candidate) error {
+		res.Due += len(page)
+		keys, groups := byPool(page)
+		for _, poolKey := range keys {
+			if passedOver[poolKey] {
+				continue
 			}
-			return func() {
-				res.Released += len(released)
-				logReleased(poolKey, released, groups[poolKey])
-			}, nil
-		})
-	}
-	return nil
+			for _, chunk := range chunks(groups[poolKey], s.chunk) {
+				if err := held(); err != nil {
+					return err
+				}
+				if !s.inPool(ctx, poolKey, "release", res, func(tx pgx.Tx, pool *ipamv1alpha1.IPPool) (func(), error) {
+					released, rowErrors, err := releaseDue(ctx, tx, poolKey, pool, chunk)
+					if err != nil {
+						return nil, err
+					}
+					return func() {
+						res.Released += len(released)
+						res.RowErrors += rowErrors
+						logReleased(poolKey, released, chunk)
+					}, nil
+				}) {
+					passedOver[poolKey] = true
+					break
+				}
+			}
+		}
+		return nil
+	})
 }
 
 // releaseDue frees the rows of one pool, which tx holds locked, that were due
-// when read and still are. A row a reclaim bound, or something released, since
-// it was read is not matched by the delete and is left alone.
-func releaseDue(ctx context.Context, tx pgx.Tx, poolKey string, pool *ipamv1alpha1.IPPool, due []candidate) ([]releasedAllocation, error) {
-	keys := make([]string, 0, len(due))
-	for _, c := range due {
-		keys = append(keys, c.allocationKey)
-	}
-	released, err := deleteLockedAllocations(ctx, tx, map[string]*ipamv1alpha1.IPPool{poolKey: pool},
-		`allocation_key = ANY($1::text[]) AND claim_key IS NULL AND purpose = 'Claim'
-		 AND retained_at IS NOT NULL AND expires_at <= now()`, keys)
+// when read and still are, and republishes the pool's capacity once for all of
+// them. A row a reclaim bound, or something released, since it was read is not
+// matched and is left alone.
+//
+// Each row is released under a savepoint, so one whose release fails (its
+// object cannot be deleted, say) is undone alone, left held, and counted; the
+// rest of the chunk goes ahead. Rows are released one at a time because the
+// pool's running consumption is adjusted per block, against what still holds
+// its addresses after it goes.
+func releaseDue(ctx context.Context, tx pgx.Tx, poolKey string, pool *ipamv1alpha1.IPPool, due []candidate) ([]releasedAllocation, int, error) {
+	parents, err := parsePoolCIDR(pool)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	for _, r := range released {
-		if _, err := deleteObject(ctx, tx, r.allocationKey); err != nil {
-			return nil, fmt.Errorf("delete IPAllocation %q: %w", r.allocationKey, err)
+	var (
+		released  []releasedAllocation
+		consumed  *big.Int
+		rowErrors int
+	)
+	for _, c := range due {
+		sp, err := tx.Begin(ctx)
+		if err != nil {
+			return nil, 0, fmt.Errorf("open savepoint: %w", err)
+		}
+		r, total, err := releaseOne(ctx, sp, poolKey, parents, c.allocationKey)
+		if err == nil {
+			err = sp.Commit(ctx)
+		} else {
+			_ = sp.Rollback(ctx)
+		}
+		if err != nil {
+			klog.ErrorS(err, "Could not release a retained allocation whose lease ran out; it stays held", "allocation", c.allocationKey, "pool", poolKey)
+			rowErrors++
+			continue
+		}
+		if r != nil {
+			released = append(released, *r)
+			consumed = total
 		}
 	}
-	return released, nil
+	if len(released) > 0 {
+		if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, consumed); err != nil {
+			return nil, 0, fmt.Errorf("update pool capacity after release: %w", err)
+		}
+	}
+	return released, rowErrors, nil
+}
+
+// releaseOne frees one due row and its IPAllocation, and returns the pool's
+// consumption once it is gone; nil when the row is no longer due.
+func releaseOne(ctx context.Context, tx pgx.Tx, poolKey string, parents []net.IPNet, allocationKey string) (*releasedAllocation, *big.Int, error) {
+	r := releasedAllocation{allocationKey: allocationKey, poolKey: poolKey}
+	err := tx.QueryRow(ctx,
+		`DELETE FROM ipam_cidr_allocations
+		  WHERE allocation_key = $1 AND pool_key = $2 AND claim_key IS NULL AND purpose = 'Claim'
+		    AND retained_at IS NOT NULL AND expires_at <= now()
+		 RETURNING ip_family, host(allocated_cidr) || '/' || masklen(allocated_cidr)`, allocationKey, poolKey,
+	).Scan(&r.ipFamily, &r.cidr)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("release %q: %w", allocationKey, err)
+	}
+	_, block, err := net.ParseCIDR(r.cidr)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse released cidr %q: %w", r.cidr, err)
+	}
+	// After the delete, so the overlap query sees what still holds these
+	// addresses.
+	consumed, err := consumptionAfterRelease(ctx, tx, poolKey, parents, *block)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := writeConsumed(ctx, tx, poolKey, consumed); err != nil {
+		return nil, nil, err
+	}
+	if _, err := deleteObject(ctx, tx, allocationKey); err != nil {
+		return nil, nil, fmt.Errorf("delete IPAllocation %q: %w", allocationKey, err)
+	}
+	return &r, consumed, nil
 }
 
 // logReleased records each release at a level an operator sees without a debug
@@ -441,14 +698,15 @@ func logReleased(poolKey string, released []releasedAllocation, due []candidate)
 	}
 }
 
-// observe counts the deadlines that have passed since the last count, and
-// moves the count on past them. It releases nothing, so a due row stays due;
-// counting it once, as its deadline passes, is what keeps the would-release
-// rate the rate enforce will have.
+// observe counts each due deadline once, by recording it in the observe ledger
+// in the transaction that counts it, and releases nothing. A due row stays due
+// in observe mode, so counting the due set itself would count one row on every
+// pass; the ledger is what makes the would-release rate the rate enforce will
+// have. A deadline counts the first time a pass sees it due, however it came
+// to be due: a retention that committed late, an evaluation, a tightened cap.
 //
-// The state row is locked for the count, so a pool's retention cap tightened
-// meanwhile (TightenRetention) either commits before the count reads, or sees
-// where this count stopped.
+// The insert takes no pool lock, and its primary key makes the count exact
+// even if two passes ever ran at once.
 func (s *Sweeper) observe(ctx context.Context, res *SweepResult) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -456,78 +714,75 @@ func (s *Sweeper) observe(ctx context.Context, res *SweepResult) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var st sweepState
-	if err := tx.QueryRow(ctx,
-		`SELECT counted_through, counted_through_key FROM ipam_retention_sweep_state WHERE id = 1 FOR UPDATE`,
-	).Scan(&st.countedThrough, &st.countedThroughKey); err != nil {
-		return fmt.Errorf("lock sweep state: %w", err)
+	start := time.Now()
+	rows, err := tx.Query(ctx,
+		`INSERT INTO ipam_retention_observed (allocation_key, expires_at)
+		 SELECT a.allocation_key, a.expires_at
+		   FROM ipam_cidr_allocations a
+		  WHERE a.claim_key IS NULL AND a.purpose = 'Claim' AND a.expires_at IS NOT NULL
+		    AND a.retained_at IS NOT NULL AND a.expires_at <= now()
+		    AND NOT EXISTS (SELECT 1 FROM ipam_retention_observed o
+		                     WHERE o.allocation_key = a.allocation_key AND o.expires_at = a.expires_at)
+		  ORDER BY a.expires_at, a.allocation_key
+		  LIMIT $1
+		 ON CONFLICT DO NOTHING
+		 RETURNING allocation_key, expires_at`, s.rowBudget)
+	if err != nil {
+		return fmt.Errorf("record newly due retained allocations: %w", err)
+	}
+	type counted struct {
+		key string
+		at  time.Time
+	}
+	newly, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (counted, error) {
+		var c counted
+		err := row.Scan(&c.key, &c.at)
+		return c, err
+	})
+	metrics.ObserveQuery("record_newly_due_retained", start)
+	if err != nil {
+		return fmt.Errorf("read newly due retained allocations: %w", err)
 	}
 
-	var (
-		lastAt  pgtype.Timestamptz
-		lastKey string
-	)
-	n := 0
-	queryStart := time.Now()
-	rows, err := tx.Query(ctx,
-		`SELECT allocation_key, expires_at,
-		        host(allocated_cidr) || '/' || masklen(allocated_cidr), pool_key
-		   FROM ipam_cidr_allocations
-		  WHERE claim_key IS NULL AND purpose = 'Claim' AND expires_at IS NOT NULL
-		    AND retained_at IS NOT NULL AND expires_at <= now()
-		    AND (expires_at, allocation_key) > ($1, $2)
-		  ORDER BY expires_at, allocation_key
-		  LIMIT $3`, st.countedThrough, st.countedThroughKey, s.dueBatch)
-	if err != nil {
-		return fmt.Errorf("find newly due retained allocations: %w", err)
-	}
-	for rows.Next() {
-		var key, cidr, poolKey string
-		if err := rows.Scan(&key, &lastAt, &cidr, &poolKey); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan newly due retained allocation: %w", err)
-		}
-		lastKey = key
-		n++
-		klog.V(2).InfoS("A retained allocation's lease ran out; observe mode leaves it held",
-			"allocation", key, "cidr", cidr, "pool", poolKey, "expiresAt", lastAt.Time.UTC().Format(time.RFC3339))
-	}
-	rows.Close()
-	metrics.ObserveQuery("find_newly_due_retained", queryStart)
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate newly due retained allocations: %w", err)
-	}
-	res.Due = n
-	if n == 0 {
-		return nil
-	}
+	// Entries whose row is no longer retained under that deadline count
+	// nothing any more.
 	if _, err := tx.Exec(ctx,
-		`UPDATE ipam_retention_sweep_state
-		    SET counted_through = $1, counted_through_key = $2, updated_at = NOW()
-		  WHERE id = 1`, lastAt, lastKey); err != nil {
-		return fmt.Errorf("record observe progress: %w", err)
+		`DELETE FROM ipam_retention_observed o
+		  WHERE NOT EXISTS (SELECT 1 FROM ipam_cidr_allocations a
+		                     WHERE a.allocation_key = o.allocation_key AND a.expires_at = o.expires_at
+		                       AND a.claim_key IS NULL)`); err != nil {
+		return fmt.Errorf("prune the observe ledger: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit observe progress: %w", err)
+		return fmt.Errorf("commit observe ledger: %w", err)
 	}
-	res.WouldRelease += n
+
+	res.Due = len(newly)
+	res.WouldRelease = len(newly)
+	metrics.RecordRetentionReleases(string(SweepObserve), len(newly))
+	for _, c := range newly {
+		klog.V(2).InfoS("A retained allocation's lease ran out; observe mode leaves it held",
+			"allocation", c.key, "expiresAt", c.at.UTC().Format(time.RFC3339))
+	}
 	return nil
 }
 
 // inPool runs fn in one transaction holding poolKey's lock, taken without
-// waiting. A pool a live claim holds is skipped and left for the next pass.
-// A failure is logged and counted, and the pass carries on with the next
-// pool: one pool that cannot be swept must not stop the rest.
+// waiting, and reports whether it ran and committed. A pool a live claim holds
+// is skipped and left for the next pass. A failure is logged and counted, and
+// the pass carries on with the next pool: one pool that cannot be swept must
+// not stop the rest.
 //
 // fn may return a func to run once the transaction has committed, for what
 // must only be said of work that happened.
-func (s *Sweeper) inPool(ctx context.Context, poolKey, phase string, res *SweepResult, fn func(pgx.Tx, *ipamv1alpha1.IPPool) (func(), error)) {
+func (s *Sweeper) inPool(ctx context.Context, poolKey, phase string, res *SweepResult, fn func(pgx.Tx, *ipamv1alpha1.IPPool) (func(), error)) bool {
 	ctx, span := tracing.Tracer().Start(ctx, tracing.SpanRetentionSweepPool, trace.WithAttributes(
 		attribute.String(tracing.AttrPoolName, poolNameOf(poolKey)),
 		attribute.String(tracing.AttrSweepPhase, phase),
 	))
 	defer span.End()
 
+	committed := false
 	err := func() error {
 		tx, err := s.db.Begin(ctx)
 		if err != nil {
@@ -550,6 +805,7 @@ func (s *Sweeper) inPool(ctx context.Context, poolKey, phase string, res *SweepR
 		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("commit sweep transaction: %w", err)
 		}
+		committed = true
 		if afterCommit != nil {
 			afterCommit()
 		}
@@ -560,12 +816,13 @@ func (s *Sweeper) inPool(ctx context.Context, poolKey, phase string, res *SweepR
 		span.SetStatus(codes.Error, err.Error())
 		klog.ErrorS(err, "Retention sweep of a pool failed", "pool", poolKey, "phase", phase)
 	}
+	return committed
 }
 
 // lockPoolNoWait locks and decodes a pool row if no one else holds it. It
 // returns nil, and no error, when the row is locked, which is the sweeper's
-// cue to yield. A pool with rows cannot be deleted, so a missing row is a
-// locked one in practice, and is skipped the same way.
+// cue to yield, or when there is no pool row at all: rows whose pool is gone
+// have nothing to serialise against, and are left alone.
 func lockPoolNoWait(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alpha1.IPPool, error) {
 	defer metrics.ObserveQuery("select_pool_for_update_skip_locked", time.Now())
 	var data []byte

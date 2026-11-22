@@ -17,7 +17,8 @@ import (
 
 // Update applies the same offer check as Create to the object the update
 // produces, and once it has committed applies the pool's maxRetentionLease to
-// the allocations the pool already retains (see applyRetentionCap).
+// the allocations the pool already retains, best effort (see
+// applyRetentionCap).
 //
 // A pool that already breaks the rule gets no exemption. The check compares the
 // classes as the pool will read after the write, so an update that leaves two
@@ -42,9 +43,7 @@ func (r *AllocatingIPPoolREST) Update(ctx context.Context, name string, objInfo 
 	if err != nil {
 		return obj, created, err
 	}
-	if err := r.applyRetentionCap(ctx, name, obj, options); err != nil {
-		return nil, false, err
-	}
+	r.applyRetentionCap(ctx, name, obj, options)
 	return obj, created, nil
 }
 

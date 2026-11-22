@@ -375,7 +375,7 @@ func holdForSweep(t *testing.T, db *pgxpool.Pool, poolKey string) (pgx.Tx, *ipam
 
 func dueCandidates(t *testing.T, db *pgxpool.Pool) []candidate {
 	t.Helper()
-	due, err := NewSweeper(db, SweepEnforce).findDue(context.Background(), ` ORDER BY expires_at`)
+	due, err := NewSweeper(db, SweepEnforce).findDue(context.Background(), keyset{}, 1000)
 	if err != nil {
 		t.Fatalf("find due: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestASweepAndAReclaimOfOneRowHaveOneWinner(t *testing.T) {
 		}()
 		testdb.WaitForLockWaiters(t, db, 1)
 
-		released, err := releaseDue(ctx, sweepTx, poolKey, pool, due)
+		released, _, err := releaseDue(ctx, sweepTx, poolKey, pool, due)
 		if err != nil || len(released) != 1 {
 			t.Fatalf("sweep release = %v, %v; want one row", released, err)
 		}
@@ -517,7 +517,7 @@ func TestASweepAndAnExplicitReleaseOfOneRowHaveOneWinner(t *testing.T) {
 		}()
 		testdb.WaitForLockWaiters(t, db, 1)
 
-		if released, err := releaseDue(ctx, sweepTx, poolKey, pool, due); err != nil || len(released) != 1 {
+		if released, _, err := releaseDue(ctx, sweepTx, poolKey, pool, due); err != nil || len(released) != 1 {
 			t.Fatalf("sweep release = %v, %v; want one row", released, err)
 		}
 		if err := sweepTx.Commit(ctx); err != nil {
@@ -535,51 +535,399 @@ func TestASweepAndAnExplicitReleaseOfOneRowHaveOneWinner(t *testing.T) {
 	})
 }
 
-// One pass at a time: a replica that finds the advisory lock held skips the
-// pass, and two replicas sweeping at once release a due row once.
-func TestTwoSweepersReleaseADueRowOnce(t *testing.T) {
-	db := testdb.Pool(t, testdb.MaxConns(8))
+// holdRow locks one allocation row in its own transaction, so a sweep that
+// reaches the row waits there, mid-pass, still holding the sweep lock.
+func holdRow(t *testing.T, db *pgxpool.Pool, allocationKey string) pgx.Tx {
+	t.Helper()
+	h, err := db.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Rollback(context.Background()) })
+	if _, err := h.Exec(context.Background(),
+		`SELECT 1 FROM ipam_cidr_allocations WHERE allocation_key = $1 FOR UPDATE`, allocationKey); err != nil {
+		t.Fatalf("hold %s: %v", allocationKey, err)
+	}
+	return h
+}
+
+func sweepLockHolders(t *testing.T, db *pgxpool.Pool) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(context.Background(),
+		`SELECT count(*) FROM pg_locks
+		  WHERE locktype = 'advisory' AND granted
+		    AND classid = ($1::bigint >> 32)::oid AND objid = ($1::bigint & x'ffffffff'::bigint)::oid`,
+		sweepLockKey).Scan(&n); err != nil {
+		t.Fatalf("count sweep lock holders: %v", err)
+	}
+	return n
+}
+
+// While one replica is mid-pass, another skips its pass rather than sweeping
+// alongside it, and once the first finishes the lock is free again.
+func TestASecondSweeperSkipsWhileTheFirstIsMidPass(t *testing.T) {
+	db := testdb.Pool(t, testdb.MaxConns(10))
 	ctx := context.Background()
 	poolKey := seedPool(t, db, "race-sweepers", "10.83.0.0/16")
+	seedLeaseClass(t, db, dur(time.Hour))
 	retain(t, db, poolKey, "claim-a", "alloc-a")
+	if _, err := db.Exec(ctx, `UPDATE ipam_cidr_allocations SET expires_at = NULL WHERE allocation_key = 'alloc-a'`); err != nil {
+		t.Fatalf("unevaluate: %v", err)
+	}
+	h := holdRow(t, db, "alloc-a")
+
+	type outcome struct {
+		res SweepResult
+		err error
+	}
+	first := make(chan outcome, 1)
+	go func() {
+		res, err := NewSweeper(db, SweepObserve).Sweep(ctx)
+		first <- outcome{res, err}
+	}()
+	testdb.WaitForLockWaiters(t, db, 1)
+
+	second, err := NewSweeper(db, SweepObserve).Sweep(ctx)
+	if err != nil || second.Ran {
+		t.Errorf("the second sweeper ran a pass (%+v, %v) while the first held the lock mid-pass", second, err)
+	}
+	_ = h.Rollback(ctx)
+	a := <-first
+	if a.err != nil || !a.res.Ran || a.res.Evaluated != 1 {
+		t.Errorf("the first sweeper's pass = %+v, %v; want it to finish and evaluate the row", a.res, a.err)
+	}
+	if n := sweepLockHolders(t, db); n != 0 {
+		t.Errorf("%d session(s) hold the sweep lock after the pass, want 0", n)
+	}
+	if res := sweep(t, db, SweepObserve); !res.Ran {
+		t.Error("a pass after the first finished did not get the lock")
+	}
+}
+
+// Two replicas sweeping one due row at once release it once, however the two
+// interleave.
+func TestConcurrentSweepersReleaseADueRowOnce(t *testing.T) {
+	for i := range 10 {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			db := testdb.Pool(t, testdb.MaxConns(8))
+			ctx := context.Background()
+			poolKey := seedPool(t, db, "race-sweepers", "10.83.0.0/16")
+			retain(t, db, poolKey, "claim-a", "alloc-a")
+			makeDue(t, db, "alloc-a")
+
+			type outcome struct {
+				res SweepResult
+				err error
+			}
+			out := make(chan outcome, 2)
+			for range 2 {
+				go func() {
+					res, err := NewSweeper(db, SweepEnforce).Sweep(ctx)
+					out <- outcome{res, err}
+				}()
+			}
+			released := 0
+			for range 2 {
+				o := <-out
+				if o.err != nil || o.res.Errors != 0 {
+					t.Errorf("concurrent sweep: %+v, %v", o.res, o.err)
+				}
+				released += o.res.Released
+			}
+			if released != 1 || rowExists(t, db, "alloc-a") {
+				t.Errorf("two concurrent sweepers released %d, want exactly 1", released)
+			}
+		})
+	}
+}
+
+// A pass whose lock session dies stops before its next pool transaction,
+// rather than carrying on as though it still held the lock. The pool it was in
+// finishes under that pool's lock, which is what keeps it safe.
+func TestAPassStopsWhenItsLockSessionDies(t *testing.T) {
+	db := testdb.Pool(t, testdb.MaxConns(10))
+	ctx := context.Background()
+	seedLeaseClass(t, db, dur(time.Hour))
+	first := seedPool(t, db, "a-lock-first", "10.84.0.0/16")
+	second := seedPool(t, db, "b-lock-second", "10.85.0.0/16")
+	retain(t, db, first, "claim-a", "alloc-a")
+	retain(t, db, second, "claim-b", "alloc-b")
+	if _, err := db.Exec(ctx, `UPDATE ipam_cidr_allocations SET expires_at = NULL`); err != nil {
+		t.Fatalf("unevaluate: %v", err)
+	}
+	h := holdRow(t, db, "alloc-a")
+
+	type outcome struct {
+		res SweepResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := NewSweeper(db, SweepObserve).Sweep(ctx)
+		done <- outcome{res, err}
+	}()
+	testdb.WaitForLockWaiters(t, db, 1)
+	if _, err := db.Exec(ctx,
+		`SELECT pg_terminate_backend(pid) FROM pg_locks
+		  WHERE locktype = 'advisory' AND granted
+		    AND classid = ($1::bigint >> 32)::oid AND objid = ($1::bigint & x'ffffffff'::bigint)::oid`,
+		sweepLockKey); err != nil {
+		t.Fatalf("terminate the lock session: %v", err)
+	}
+	_ = h.Rollback(ctx)
+	o := <-done
+	if o.err == nil {
+		t.Fatalf("a pass that lost its lock session carried on: %+v", o.res)
+	}
+	if retainedRetention(t, db, "alloc-b").Lease != LeaseUnevaluated {
+		t.Error("the pass went on to the next pool after losing its lock")
+	}
+}
+
+// Evaluation pages past rows whose class cannot be read, so they cannot keep a
+// row behind them from ever being evaluated, and a pass that carried on past
+// them still counts as having run.
+func TestUnreadableClassesDoNotStarveEvaluation(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "starve-eval", "10.90.0.0/16")
+	seedLeaseClass(t, db, dur(time.Hour))
+	retain(t, db, poolKey, "claim-good", "alloc-good")
+	if _, err := db.Exec(ctx, `UPDATE ipam_cidr_allocations SET expires_at = NULL WHERE allocation_key = 'alloc-good'`); err != nil {
+		t.Fatalf("unevaluate: %v", err)
+	}
+	if _, err := db.Exec(ctx,
+		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ($1, 'IPClass', 'broken', '{"spec": "x"}')`,
+		classStorageKey(testProject, "broken")); err != nil {
+		t.Fatalf("seed unreadable class: %v", err)
+	}
+	if _, err := db.Exec(ctx,
+		`INSERT INTO ipam_cidr_allocations
+		    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family, purpose, class_name, class_project, retained_at, expires_at)
+		 SELECT $1, ('10.90.' || (100 + g / 256) || '.' || (g % 256) || '/32')::cidr, NULL,
+		        'bad-' || g, 'IPv4', 'Claim', 'broken', $2, now() - interval '30 days', NULL
+		   FROM generate_series(0, 499) g`, poolKey, testProject); err != nil {
+		t.Fatalf("seed rows of the unreadable class: %v", err)
+	}
+	before, _ := testutil.GetCounterMetricValue(metrics.RetentionLeaseUnevaluable)
+	metrics.RetentionSweepLastSuccess.Set(0)
+
+	res := sweep(t, db, SweepEnforce)
+	if res.Evaluated != 1 || retainedRetention(t, db, "alloc-good").Lease != LeaseFinite {
+		t.Errorf("pass = %+v; the readable row behind 500 unreadable ones was not evaluated", res)
+	}
+	if res.Unevaluable != 500 {
+		t.Errorf("unevaluable = %d, want 500", res.Unevaluable)
+	}
+	if got, _ := testutil.GetCounterMetricValue(metrics.RetentionLeaseUnevaluable); got-before != 500 {
+		t.Errorf("ipam_retention_lease_unevaluable_total moved by %v, want 500", got-before)
+	}
+	if v, _ := testutil.GetGaugeMetricValue(metrics.RetentionSweepLastSuccess); v == 0 {
+		t.Error("a pass that completed past unevaluable rows did not advance the last-success timestamp")
+	}
+}
+
+// Due rows in a pool a claim holds, or whose pool is gone, are paged past, so
+// they cannot keep a due row in another pool from being released.
+func TestDueRowsInAnUnavailablePoolDoNotStarveOthers(t *testing.T) {
+	for _, tc := range []struct{ name, why string }{{"held", "held by a claim"}, {"gone", "pool object gone"}} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testdb.Pool(t)
+			ctx := context.Background()
+			hot := seedPool(t, db, "a-hot", "10.91.0.0/16")
+			if _, err := db.Exec(ctx,
+				`INSERT INTO ipam_cidr_allocations
+				    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family, purpose, retained_at, expires_at)
+				 SELECT $1, ('10.91.' || (g / 256) || '.' || (g % 256) || '/32')::cidr, NULL,
+				        'hot-' || g, 'IPv4', 'Claim', now() - interval '30 days', now() - interval '20 days'
+				   FROM generate_series(0, 249) g`, hot); err != nil {
+				t.Fatalf("seed due rows: %v", err)
+			}
+			other := seedPool(t, db, "b-other", "10.92.0.0/16")
+			retain(t, db, other, "claim-a", "alloc-a")
+			makeDue(t, db, "alloc-a")
+
+			if tc.name == "held" {
+				holder, err := db.Begin(ctx)
+				if err != nil {
+					t.Fatalf("begin: %v", err)
+				}
+				defer func() { _ = holder.Rollback(ctx) }()
+				if _, err := lockAndDecodeIPPool(ctx, holder, hot); err != nil {
+					t.Fatalf("hold the pool: %v", err)
+				}
+			} else {
+				// The foreign key keeps a pool with rows from being deleted, so
+				// drop it for the length of the test to make the rows orphans.
+				if _, err := db.Exec(ctx, `ALTER TABLE ipam_cidr_allocations DROP CONSTRAINT IF EXISTS ipam_cidr_allocations_pool_key_fkey`); err != nil {
+					t.Fatalf("drop the foreign key: %v", err)
+				}
+				if _, err := db.Exec(ctx, `DELETE FROM ipam_objects WHERE key = $1`, hot); err != nil {
+					t.Fatalf("delete the pool: %v", err)
+				}
+			}
+			res := sweep(t, db, SweepEnforce)
+			if res.Released != 1 || rowExists(t, db, "alloc-a") {
+				t.Errorf("pass = %+v; a due row was not released behind 250 due rows in a pool %s", res, tc.why)
+			}
+		})
+	}
+}
+
+// One row whose release fails, here because its IPAllocation cannot be
+// deleted, is undone alone: it stays held and is counted, and the rest of its
+// pool is released.
+func TestARowThatCannotBeReleasedDoesNotHoldUpItsPool(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	const cidr = "10.86.0.0/16"
+	poolKey := seedPool(t, db, "bad-row", cidr)
+	retain(t, db, poolKey, "claim-a", "alloc-a")
+	retain(t, db, poolKey, "claim-b", "alloc-b")
 	makeDue(t, db, "alloc-a")
+	makeDue(t, db, "alloc-b")
+	if _, err := db.Exec(ctx, `
+		CREATE FUNCTION refuse_delete() RETURNS trigger AS $$
+		BEGIN RAISE EXCEPTION 'refused'; END; $$ LANGUAGE plpgsql;
+		CREATE TRIGGER refuse_alloc_a BEFORE DELETE ON ipam_objects
+		    FOR EACH ROW WHEN (OLD.key = 'alloc-a') EXECUTE FUNCTION refuse_delete();`); err != nil {
+		t.Fatalf("make alloc-a's object undeletable: %v", err)
+	}
 
-	other, err := db.Acquire(ctx)
+	res, err := NewSweeper(db, SweepEnforce).Sweep(ctx)
+	if err != nil || res.Errors != 0 {
+		t.Fatalf("pass = %+v, %v; want it to complete", res, err)
+	}
+	if res.Released != 1 || res.RowErrors != 1 {
+		t.Errorf("pass = %+v; want one released and one row error", res)
+	}
+	if !rowExists(t, db, "alloc-a") || !objectExists(t, db, "alloc-a") {
+		t.Error("the row whose release failed was half released")
+	}
+	if rowExists(t, db, "alloc-b") {
+		t.Error("the healthy row in the same pool was not released")
+	}
+	if got, want := storedConsumption(t, db, poolKey), measureNow(t, db, poolKey, cidr); got != want {
+		t.Errorf("consumption = %s after a partly failed release, fresh measurement %s", got, want)
+	}
+}
+
+// Releasing a pool's due rows republishes its capacity once per chunk, not once
+// per row: 200 releases are a handful of pool writes, not 200.
+func TestReleasingAPoolsDueRowsRepublishesItsCapacityPerChunk(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	const cidr = "10.101.0.0/16"
+	poolKey := seedPool(t, db, "hold", cidr)
+	if _, err := db.Exec(ctx,
+		`INSERT INTO ipam_cidr_allocations
+		    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family, purpose, retained_at, expires_at)
+		 SELECT $1, ('10.101.' || g || '.0/24')::cidr, NULL, 'a-' || g, 'IPv4', 'Claim',
+		        now() - interval '2 days', now() - interval '1 day'
+		   FROM generate_series(0, 199) g`, poolKey); err != nil {
+		t.Fatalf("seed due rows: %v", err)
+	}
+	var before int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM ipam_changelog WHERE key = $1`, poolKey).Scan(&before); err != nil {
+		t.Fatalf("count changelog: %v", err)
+	}
+	res := sweep(t, db, SweepEnforce)
+	var after int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM ipam_changelog WHERE key = $1`, poolKey).Scan(&after); err != nil {
+		t.Fatalf("count changelog: %v", err)
+	}
+	if res.Released != 200 {
+		t.Fatalf("released %d, want 200", res.Released)
+	}
+	if writes, want := after-before, 200/defaultChunk; writes != want {
+		t.Errorf("the pool was rewritten %d times for 200 releases, want %d (once per chunk)", writes, want)
+	}
+	if got := storedConsumption(t, db, poolKey); got != "0" || got != measureNow(t, db, poolKey, cidr) {
+		t.Errorf("consumption = %s after releasing everything, want 0", got)
+	}
+}
+
+// A retention that commits after an observe pass has counted past its
+// deadline is still counted, once: the ledger records deadlines, not a point
+// in the due set.
+func TestObserveCountsADeadlineThatCommitsLate(t *testing.T) {
+	db := testdb.Pool(t, testdb.MaxConns(8))
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "obs-late", "10.95.0.0/16")
+	setPoolCap(t, db, poolKey, dur(time.Nanosecond))
+	allocateWithPolicy(t, db, poolKey, "claim-a", "alloc-a", ipamv1alpha1.ReclaimRetain)
+	allocateWithPolicy(t, db, poolKey, "claim-x", "alloc-x", ipamv1alpha1.ReclaimRetain)
+
+	// claim-a's retention is timestamped now (NOW() is its transaction's start)
+	// and commits only after a pass has counted a later deadline.
+	late, err := db.Begin(ctx)
 	if err != nil {
-		t.Fatalf("acquire: %v", err)
+		t.Fatalf("begin: %v", err)
 	}
-	if _, err := other.Exec(ctx, `SELECT pg_advisory_lock($1)`, sweepLockKey); err != nil {
-		t.Fatalf("hold the sweep lock: %v", err)
+	if _, err := late.Exec(ctx, `SELECT now()`); err != nil {
+		t.Fatalf("start the late retention: %v", err)
 	}
-	if res := sweep(t, db, SweepEnforce); res.Ran || res.Released != 0 {
-		t.Errorf("sweep while another replica holds the lock = %+v, want it skipped", res)
+	time.Sleep(1100 * time.Millisecond)
+	releaseRetained(t, db, "claim-x")
+	time.Sleep(1100 * time.Millisecond)
+	before := releasesCounted(t, SweepObserve)
+	if res := sweep(t, db, SweepObserve); res.WouldRelease != 1 {
+		t.Fatalf("first observe pass = %+v, want claim-x's deadline counted", res)
 	}
-	if _, err := other.Exec(ctx, `SELECT pg_advisory_unlock($1)`, sweepLockKey); err != nil {
-		t.Fatalf("release the sweep lock: %v", err)
+	if _, err := NewPostgresPrefixAllocator().Release(ctx, late, "claim-a"); err != nil {
+		t.Fatalf("late retention: %v", err)
 	}
-	other.Release()
+	if err := late.Commit(ctx); err != nil {
+		t.Fatalf("commit late retention: %v", err)
+	}
+	sweep(t, db, SweepObserve)
+	sweep(t, db, SweepObserve)
+	if got := releasesCounted(t, SweepObserve) - before; got != 2 {
+		t.Errorf("observe counted %v would-be releases; enforce would release 2", got)
+	}
+	if res := sweep(t, db, SweepEnforce); res.Released != 2 {
+		t.Errorf("enforce released %d, want 2", res.Released)
+	}
+}
 
-	results := make(chan SweepResult, 2)
-	errs := make(chan error, 2)
-	for range 2 {
-		go func() {
-			res, err := NewSweeper(db, SweepEnforce).Sweep(ctx)
-			results <- res
-			errs <- err
-		}()
+// A deadline is stored to the whole second, rounded up, so the deadline the
+// IPAllocation shows is exactly the one the sweeper acts on, and not before
+// retention plus the full lease.
+func TestTheShownDeadlineIsTheStoredOne(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "precision", "10.97.0.0/16")
+	lease := 90*time.Minute + 500*time.Millisecond
+	setPoolCap(t, db, poolKey, dur(lease))
+	retain(t, db, poolKey, "claim-a", "alloc-a")
+	if _, err := db.Exec(ctx, `UPDATE ipam_cidr_allocations SET expires_at = NULL WHERE allocation_key = 'alloc-a'`); err != nil {
+		t.Fatalf("unevaluate: %v", err)
 	}
-	released := 0
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Errorf("concurrent sweep: %v", err)
-		}
-		res := <-results
-		if res.Errors != 0 {
-			t.Errorf("concurrent sweep carried on past %d error(s)", res.Errors)
-		}
-		released += res.Released
+	sweep(t, db, SweepObserve)
+
+	stored := retainedRetention(t, db, "alloc-a")
+	shown := readAllocationObject(t, db, "alloc-a").Status.ExpiresAt
+	if shown == nil || !shown.Time.Equal(stored.ExpiresAt) {
+		t.Errorf("status.expiresAt = %v, stored deadline %s; want them equal", shown, stored.ExpiresAt)
 	}
-	if released != 1 || rowExists(t, db, "alloc-a") {
-		t.Errorf("two concurrent sweepers released %d, want exactly 1", released)
+	if stored.ExpiresAt.Before(stored.RetainedAt.Add(lease)) {
+		t.Errorf("deadline %s is before retention plus the lease, %s", stored.ExpiresAt, stored.RetainedAt.Add(lease))
+	}
+	if got := stored.ExpiresAt.Sub(stored.RetainedAt); got >= lease+time.Second {
+		t.Errorf("deadline is %s after retention, want less than a second past the %s lease", got, lease)
+	}
+}
+
+// A pass that panics is recovered, counted, and followed by another after a
+// backoff; the process carries on.
+func TestTheSweepLoopSurvivesAPanickingPass(t *testing.T) {
+	before, _ := testutil.GetCounterMetricValue(metrics.RetentionSweepErrors)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	// A sweeper with no database panics on its first query.
+	NewSweeper(nil, SweepObserve).Run(ctx, 10*time.Millisecond)
+	if got, _ := testutil.GetCounterMetricValue(metrics.RetentionSweepErrors); got-before < 2 {
+		t.Errorf("errors moved by %v; want the loop to have recovered and retried at least twice", got-before)
 	}
 }

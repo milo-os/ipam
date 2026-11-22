@@ -2,13 +2,18 @@ package ippool
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/component-base/metrics/testutil"
 
+	"go.miloapis.com/ipam/internal/allocator"
+	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/testdb"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 )
@@ -89,5 +94,81 @@ func TestUpdatingAPoolsCapTightensWhatItRetains(t *testing.T) {
 	update(func(p *ipam.IPPool) { p.Labels = map[string]string{"team": "edge"} })
 	if got := leaseOfRow(t, db, "later"); got != "01:30:00" {
 		t.Errorf("a stored negative cap moved the lease to %s, want 01:30:00", got)
+	}
+}
+
+// A pool update whose cap could not be applied straight away still succeeds,
+// because it has already committed, and the failure is counted; the next sweep
+// pass applies the cap.
+func TestACapTheUpdateCouldNotApplyIsAppliedByTheSweeper(t *testing.T) {
+	db := testdb.Pool(t)
+	s := newPostgresPoolStorage(t, db)
+	ctx := poolCtx("tenant-a")
+	if err := createPool(t, s, ctx, rootPoolObj("capped", "10.64.0.0/16", ipam.IPv4)); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	poolKey := poolStorageKey("tenant-a", "capped")
+	seedRetained(t, db, poolKey, "long", "10.64.1.0/24", `date_trunc('second', now()) + interval '9 hours'`)
+
+	tightenRetention = func(context.Context, pgx.Tx, string) (int, error) { return 0, errors.New("injected") }
+	t.Cleanup(func() { tightenRetention = allocator.TightenRetention })
+	before, _ := testutil.GetCounterMetricValue(metrics.RetentionCapApplyFailures)
+
+	obj, err := s.Get(ctx, "capped", &metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	p := obj.(*ipam.IPPool).DeepCopy()
+	p.Spec.MaxRetentionLease = &metav1.Duration{Duration: 2 * time.Hour}
+	if _, _, err := s.Update(ctx, "capped", rest.DefaultUpdatedObjectInfo(p),
+		nil, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("an update whose cap could not be applied returned %v, want success", err)
+	}
+	if got, _ := testutil.GetCounterMetricValue(metrics.RetentionCapApplyFailures); got-before != 1 {
+		t.Errorf("ipam_retention_cap_apply_failures_total moved by %v, want 1", got-before)
+	}
+	if got := leaseOfRow(t, db, "long"); got != "10:00:00" {
+		t.Fatalf("setup: lease %s before the sweep, want the untouched 10:00:00", got)
+	}
+
+	if _, err := allocator.NewSweeper(db, allocator.SweepObserve).Sweep(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if got := leaseOfRow(t, db, "long"); got != "02:00:00" {
+		t.Errorf("lease %s after a sweep pass, want the pool's 2h cap", got)
+	}
+}
+
+// An IPAllocation that cannot be written costs its own status, not the cap:
+// the update succeeds and every retained deadline is brought forward.
+func TestACapAppliesPastAnAllocationItCannotRepublish(t *testing.T) {
+	db := testdb.Pool(t)
+	s := newPostgresPoolStorage(t, db)
+	ctx := poolCtx("tenant-a")
+	if err := createPool(t, s, ctx, rootPoolObj("capped", "10.64.0.0/16", ipam.IPv4)); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	poolKey := poolStorageKey("tenant-a", "capped")
+	seedRetained(t, db, poolKey, "bad", "10.64.1.0/24", `date_trunc('second', now()) + interval '9 hours'`)
+	seedRetained(t, db, poolKey, "good", "10.64.2.0/24", `date_trunc('second', now()) + interval '9 hours'`)
+	if _, err := db.Exec(context.Background(),
+		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ('bad', 'IPAllocation', 'bad', '{"status": "x"}')`); err != nil {
+		t.Fatalf("seed an undecodable IPAllocation: %v", err)
+	}
+
+	obj, err := s.Get(ctx, "capped", &metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	p := obj.(*ipam.IPPool).DeepCopy()
+	p.Spec.MaxRetentionLease = &metav1.Duration{Duration: 2 * time.Hour}
+	if _, _, err := s.Update(ctx, "capped", rest.DefaultUpdatedObjectInfo(p),
+		nil, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	for _, key := range []string{"bad", "good"} {
+		if got := leaseOfRow(t, db, key); got != "02:00:00" {
+			t.Errorf("%s: lease %s, want the 2h cap", key, got)
+		}
 	}
 }
