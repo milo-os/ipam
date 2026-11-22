@@ -10,10 +10,45 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apiserver/pkg/registry/rest"
 
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
+
+// Patching claimRef off a bound allocation is the first half of handing its
+// address out twice: the second half is deleting the now unbound-looking
+// object. The update is refused, so the object keeps naming its claim.
+func TestClearingClaimRefOnABoundAllocationIsRefused(t *testing.T) {
+	r, allocREST, _ := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	ctx := claimCtx(testProject)
+
+	created, err := r.Create(ctx, retainClaim("claim-1", ""), nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	allocationName := created.(*ipam.IPClaim).Status.BoundAllocationRef.Name
+
+	obj, err := allocREST.Get(ctx, allocationName, &metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get IPAllocation: %v", err)
+	}
+	unbound := obj.(*ipam.IPAllocation).DeepCopy()
+	unbound.Spec.ClaimRef = nil
+	_, _, err = allocREST.Update(ctx, allocationName, rest.DefaultUpdatedObjectInfo(unbound),
+		nil, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{})
+	if !apierrors.IsInvalid(err) {
+		t.Fatalf("clearing spec.claimRef returned %v, want 422 Invalid", err)
+	}
+
+	// Metadata is still the caller's.
+	labelled := obj.(*ipam.IPAllocation).DeepCopy()
+	labelled.Labels = map[string]string{"team": "edge"}
+	if _, _, err := allocREST.Update(ctx, allocationName, rest.DefaultUpdatedObjectInfo(labelled),
+		nil, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{}); err != nil {
+		t.Errorf("a label-only update was refused: %v", err)
+	}
+}
 
 // An object that already reads as unbound over a bound row — written before
 // spec was immutable, or by hand — does not get its address released. The row

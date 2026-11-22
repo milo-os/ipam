@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -69,16 +70,18 @@ func (ipAllocationStrategy) AllowCreateOnUpdate(_ context.Context) bool      { r
 func (ipAllocationStrategy) AllowUnconditionalUpdate(_ context.Context) bool { return true }
 func (ipAllocationStrategy) Canonicalize(_ runtime.Object)                   {}
 
+// ValidateUpdate refuses any change to spec. An allocation's spec is the
+// server's record of what the allocation row holds and for whom, and every
+// field of it is written in the transaction that writes the row. An edited
+// claimRef in particular would make a bound allocation read as releasable.
+// Labels and annotations remain the caller's.
 func (ipAllocationStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object) field.ErrorList {
 	n := obj.(*ipam.IPAllocation)
 	o := old.(*ipam.IPAllocation)
 	allErrs := validateIPAllocation(n)
-	specPath := field.NewPath("spec")
-	if n.Spec.IPFamily != o.Spec.IPFamily {
-		allErrs = append(allErrs, field.Forbidden(specPath.Child("ipFamily"), "spec.ipFamily is immutable"))
-	}
-	if n.Spec.PoolRef.Name != o.Spec.PoolRef.Name {
-		allErrs = append(allErrs, field.Forbidden(specPath.Child("poolRef"), "spec.poolRef is immutable"))
+	if !equality.Semantic.DeepEqual(n.Spec, o.Spec) {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec"),
+			"spec is immutable; it records the allocation the server made"))
 	}
 	return allErrs
 }
@@ -90,8 +93,9 @@ func (ipAllocationStrategy) WarningsOnUpdate(_ context.Context, _, _ runtime.Obj
 // ValidateDelete protects a bound allocation from being deleted out from
 // under the claim that holds it. The ipclaim Delete handler calls
 // allocator.DeleteObject directly (bypassing strategy validation) when it
-// tears down the claim, so this guard only fires for clients hitting the
-// /ipallocations endpoint with `kubectl delete`.
+// tears down the claim, and ReleasingREST.Delete refuses a bound allocation
+// itself, against the row as well as the object; this states the same rule
+// for any path that reaches the store directly.
 //
 // A retained allocation has no claim — spec.claimRef is nil — and deleting it
 // is the only way to give its address back. Refusing that would make Retain a
