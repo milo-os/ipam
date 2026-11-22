@@ -102,16 +102,22 @@ block.
 `IPAllocation` is namespace-scoped (`shortName: ipalloc`) and system-created; it
 records the block granted to an IPClaim. Its status is written only by the
 server: `ipallocations/status` serves get and nothing else. Deleting an
-IPAllocation releases its address, and it is refused with 409 while a claim is bound to the allocation. Who may release a retained one depends on its deadline:
+IPAllocation releases its address, and it is refused with 409 while a claim is bound to the allocation.
+
+Its table output has an `Expires` column: the time left on the lease, `never` with no lease, `<pending>` while unevaluated, and `<none>` while a claim holds it.
+
+Who may release a retained allocation depends on its deadline:
 
 | Retained allocation | Who can release it |
 |---|---|
 | Has a lease deadline (`status.expiresAt` set, running or passed) | IPAM Consumer (`ipallocations.delete`) or IPAM Admin |
-| No lease deadline (`expiresAt` unset: reason `NoLease`, or `LeasePending` while unevaluated) | IPAM Admin only (`ipallocations.release-unleased`, on top of delete) |
+| No lease deadline (`expiresAt` unset: reason `NoLease`, or `LeasePending` while unevaluated) | IPAM Admin only (`ipallocations.release-unleased`, on top of delete), or deleting its namespace |
 
-An address held with no deadline is held on purpose, typically because whatever owned it, such as a VPC or a subnet whose class retains by default with no lease, still uses it; freeing it would let the next claim take an address in use. The server checks `release-unleased` itself, against the row it is about to delete and under the locks it deletes it under, and refuses a caller without it with 403. A server with no authorizer configured refuses every such release. The same permission is needed to take such an address back under `reclaimPolicy: Delete`: recreating the claim under its own name with a `Delete` policy, its own or its class's, would free the address when that claim is deleted. Without it the create is refused with 403 and the allocation stays retained; a reclaim under `Retain`, or of an address with a lease deadline, needs nothing more than creating the claim. A dry run is answered the same way. Its table output has an `Expires`
-column: the time left on the lease, `never` with no lease, `<pending>` while
-unevaluated, and `<none>` while a claim holds it.
+An address held with no deadline is held on purpose, typically because whatever owned it, such as a VPC or a subnet whose class retains by default with no lease, still uses it; freeing it would let the next claim take an address in use. The server checks `release-unleased` itself, against the row it is about to delete and under the locks it deletes it under, and refuses a caller without it with 403. A server with no authorizer configured refuses every such release.
+
+Deleting a namespace still frees every address its allocations hold, with or without a deadline. The server also admits the release for a caller allowed `deletecollection` on `ipallocations` in the namespace, which the namespace controller holds through Kubernetes RBAC on every resource. No Milo IAM role can grant it: the ipallocations ProtectedResource does not declare it.
+
+The same permission is needed to take an address with no deadline back under `reclaimPolicy: Delete`. Recreating the claim under its own name with a `Delete` policy, its own or its class's, would free the address when that claim is deleted, so without the permission the create is refused with 403 and the allocation stays retained. A reclaim under `Retain`, or of an address with a lease deadline, needs nothing more than creating the claim. A dry run is answered the same way.
 
 ## Retention leases
 

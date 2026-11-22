@@ -122,7 +122,9 @@ the IPAM Admin role grants. The same goes for taking it back under
 create is refused with 403 and the address stays retained. Recreate the claim
 with `reclaimPolicy: Retain`, or under a class whose default is `Retain`, to
 take the address back; if your service needs to give it up, ask an admin to
-release it.
+release it. Deleting the namespace still frees it: the namespace controller's
+`deletecollection` on IPAllocations admits the release, and no IAM role grants
+that verb to a consumer.
 
 A claim cannot retain indefinitely on its own say-so. Setting
 `reclaimPolicy: Retain` on a claim whose class defaults to `Delete` is refused
