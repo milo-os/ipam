@@ -11,10 +11,13 @@ intervals. A pass that carries on past a pool or a row it could not act on
 still completes, and counts those in `ipam_retention_sweep_errors_total`,
 `ipam_retention_sweep_row_errors_total` and
 `ipam_retention_lease_unevaluable_total`. This alert therefore means passes
-are not running, or are failing outright. The sweeper runs in every apiserver replica as a
-post-start hook; each pass is taken by whichever replica gets the Postgres
-advisory lock `pg_try_advisory_lock(0x6970616d5f727377)` first, and only that
-replica stamps `ipam_retention_sweep_last_success_timestamp_seconds`.
+are not running, or are failing outright; rows that keep failing inside
+completed passes raise
+[`IPAMRetentionRowsStuck`](ipam-retention-rows-stuck.md) instead.
+
+The sweeper runs in every apiserver replica as a post-start hook; each pass
+is taken by whichever replica gets the Postgres advisory lock
+`pg_try_advisory_lock(0x6970616d5f727377)` first, and only that replica stamps `ipam_retention_sweep_last_success_timestamp_seconds`.
 
 While it is stalled:
 
