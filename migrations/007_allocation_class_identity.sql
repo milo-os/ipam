@@ -42,6 +42,12 @@ COMMENT ON COLUMN ipam_cidr_allocations.address_scope IS
     'NULL when not recorded.';
 
 -- +goose Down
+--
+-- Down drops both columns and the identity they record, which cannot be
+-- rebuilt. If Up runs again, every row reads as not recorded, so a retained
+-- address can then be reclaimed only under a class with no parent chain and
+-- no address scope; others must be released by hand. goose.Up takes no
+-- session lock, so run migrations from one Job at a time.
 
 ALTER TABLE ipam_cidr_allocations DROP COLUMN IF EXISTS address_scope;
 ALTER TABLE ipam_cidr_allocations DROP COLUMN IF EXISTS class_project;
