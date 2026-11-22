@@ -535,6 +535,60 @@ spec:
               pass; the rest of the retained set is swept normally.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-rows-stuck.md"
 
+        - alert: IPAMRetentionReleasesStalled
+          # Passes complete, the sweeper enforces, and yet a retained
+          # allocation stays past its deadline. The stall alert covers passes
+          # that do not complete, so this one requires that they do; rows the
+          # sweeper counts as errors raise IPAMRetentionRowsStuck as well.
+          #
+          # A healthy enforcing sweep frees a row within one interval of its
+          # deadline, so five intervals overdue is late. Overdue age alone
+          # cannot tell a stall from a backlog drain, though: after a switch
+          # from observe, rows overdue by days drain at the 2000-row budget a
+          # pass, and a backlog sharing one deadline (a bulk delete under one
+          # lease) keeps its oldest row as old as ever until the last pass.
+          # So the alert also needs the overdue count not to have fallen over
+          # 30 minutes. A drain lowers it every pass, so it holds off however
+          # large the backlog; once the drain ends, rows left behind fire it.
+          # Inflow above the budget also fires it, rightly: releases are not
+          # keeping up. The 30m window needs a pass inside it, so this holds
+          # for intervals up to about 15 minutes (the default is 1m).
+          #
+          # Every replica publishes the same gauges. max() is the overdue age,
+          # as in the sibling alerts; min() of the per-replica change means
+          # one replica whose read is failing, and whose gauges are frozen,
+          # cannot make a drain look stalled. Observe mode (enforcing 0) and a
+          # disabled sweeper (enforcing 0, interval 0) are never alerted on;
+          # "for: 15m" covers a rollout where an old replica still holds the
+          # sweep lock in the old mode.
+          expr: |
+            (
+              max by (ip_family) (ipam_retained_oldest_overdue_seconds)
+              > on() group_left() 5 * max(ipam_retention_sweep_interval_seconds)
+            )
+            and on(ip_family) (
+              min by (ip_family) (delta(ipam_retained_overdue_allocations[30m])) >= 0
+            )
+            and on() (max(ipam_retention_sweep_enforcing) == 1)
+            and on() (max(ipam_retention_sweep_interval_seconds) > 0)
+            and on() (
+              time() - max(ipam_retention_sweep_last_success_timestamp_seconds)
+              <= 5 * max(ipam_retention_sweep_interval_seconds)
+            )
+          for: 15m
+          labels:
+            severity: warning
+            service: ipam
+            slo: retention
+          annotations:
+            summary: "IPAM {{ $labels.ip_family }} retained allocations are not being released ({{ $value | humanizeDuration }} past their deadline)"
+            description: |
+              The retention sweeper is in enforce mode and its passes complete, but retained
+              {{ $labels.ip_family }} allocations have been past their lease deadline for more
+              than five sweep intervals, and their number has not fallen in 30 minutes. Those
+              addresses stay held instead of returning to their pools.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-releases-stalled.md"
+
         - alert: IPAMRetainedWithoutLeaseRising
           # lease="none" is the leak meter: retained addresses nothing will ever
           # release on a schedule. Every replica publishes the same count, so

@@ -549,6 +549,44 @@ local retentionLastPassPanel = common.statPanel(
   description='Time since any replica completed a sweep pass. IPAMRetentionSweeperStalled fires past five intervals.'
 );
 
+// Overdue is what an enforcing sweep should have released already: past a
+// finite deadline, by the database clock, on the predicate the sweeper
+// releases by.
+local retainedOverduePanel = common.tsPanel(
+  'Overdue retained allocations',
+  [
+    {
+      expr: 'max by (ip_family) (ipam_retained_overdue_allocations{%(sel)s})' % { sel: ipamSel },
+      legend: '{{ip_family}}',
+    },
+  ],
+  unit='short',
+  description='Retained allocations past their lease deadline and due for release. In enforce mode it should fall to zero within a pass or two of each deadline; after a switch from observe it falls by up to 2000 (the per-pass budget) each interval. In observe mode it only grows, since nothing is released.'
+);
+
+local retainedOldestOverduePanel = common.tsPanel(
+  'Most overdue retained allocation',
+  [
+    {
+      expr: 'max by (ip_family) (ipam_retained_oldest_overdue_seconds{%(sel)s})' % { sel: ipamSel },
+      legend: '{{ip_family}}',
+    },
+    {
+      expr: '5 * max(ipam_retention_sweep_interval_seconds{%(sel)s})' % { sel: ipamSel },
+      legend: 'alert threshold (5 intervals)',
+    },
+  ],
+  unit='s',
+  description='How long the most overdue retained allocation of each family has been past its deadline; 0 when none is due. IPAMRetentionReleasesStalled fires in enforce mode when this stays above five intervals and the overdue count has not fallen in 30 minutes.'
+);
+
+local retentionModePanel = common.statPanel(
+  'Sweeper enforcing',
+  'min(ipam_retention_sweep_enforcing{%(sel)s})' % { sel: ipamSel },
+  unit='none',
+  description='1 when every replica runs the sweeper in enforce mode; 0 when any is in observe mode or the sweeper is disabled. Any replica that wins the sweep lock runs the pass in its own mode.'
+);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Layout helper: place a panel on the grid.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -625,4 +663,7 @@ dashboard.new('IPAM — Provider')
   at(retentionReleasesPanel, 0, 116, 10, 7),
   at(retentionSweepPanel, 10, 116, 10, 7),
   at(retentionLastPassPanel, 20, 116, 4, 7),
+  at(retainedOverduePanel, 0, 123, 10, 7),
+  at(retainedOldestOverduePanel, 10, 123, 10, 7),
+  at(retentionModePanel, 20, 123, 4, 7),
 ])

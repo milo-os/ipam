@@ -1814,6 +1814,159 @@
          ],
          "title": "Since the last sweep pass",
          "type": "stat"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "Retained allocations past their lease deadline and due for release. In enforce mode it should fall to zero within a pass or two of each deadline; after a switch from observe it falls by up to 2000 (the per-pass budget) each interval. In observe mode it only grows, since nothing is released.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "short"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 10,
+            "x": 0,
+            "y": 123
+         },
+         "id": 42,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "max by (ip_family) (ipam_retained_overdue_allocations{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "{{ip_family}}"
+            }
+         ],
+         "title": "Overdue retained allocations",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "How long the most overdue retained allocation of each family has been past its deadline; 0 when none is due. IPAMRetentionReleasesStalled fires in enforce mode when this stays above five intervals and the overdue count has not fallen in 30 minutes.",
+         "fieldConfig": {
+            "defaults": {
+               "custom": {
+                  "fillOpacity": 10,
+                  "lineWidth": 1,
+                  "showPoints": "never"
+               },
+               "unit": "s"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 10,
+            "x": 10,
+            "y": 123
+         },
+         "id": 43,
+         "options": {
+            "legend": {
+               "calcs": [
+                  "lastNotNull",
+                  "max",
+                  "mean"
+               ],
+               "displayMode": "table",
+               "placement": "bottom"
+            },
+            "tooltip": {
+               "mode": "multi",
+               "sort": "desc"
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "max by (ip_family) (ipam_retained_oldest_overdue_seconds{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "{{ip_family}}"
+            },
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "5 * max(ipam_retention_sweep_interval_seconds{job=\"$job\", instance=~\"$instance\"})",
+               "legendFormat": "alert threshold (5 intervals)"
+            }
+         ],
+         "title": "Most overdue retained allocation",
+         "type": "timeseries"
+      },
+      {
+         "datasource": {
+            "type": "datasource",
+            "uid": "-- Mixed --"
+         },
+         "description": "1 when every replica runs the sweeper in enforce mode; 0 when any is in observe mode or the sweeper is disabled. Any replica that wins the sweep lock runs the pass in its own mode.",
+         "fieldConfig": {
+            "defaults": {
+               "unit": "none"
+            }
+         },
+         "gridPos": {
+            "h": 7,
+            "w": 4,
+            "x": 20,
+            "y": 123
+         },
+         "id": 44,
+         "options": {
+            "colorMode": "value",
+            "graphMode": "area",
+            "justifyMode": "auto",
+            "reduceOptions": {
+               "calcs": [
+                  "lastNotNull"
+               ]
+            }
+         },
+         "pluginVersion": "v11.4.0",
+         "targets": [
+            {
+               "datasource": {
+                  "type": "prometheus",
+                  "uid": "$datasource"
+               },
+               "expr": "min(ipam_retention_sweep_enforcing{job=\"$job\", instance=~\"$instance\"})"
+            }
+         ],
+         "title": "Sweeper enforcing",
+         "type": "stat"
       }
    ],
    "refresh": "30s",

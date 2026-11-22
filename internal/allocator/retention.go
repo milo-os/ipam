@@ -170,6 +170,11 @@ type SweepResult struct {
 // doubling up to ten intervals while it keeps panicking.
 func (s *Sweeper) Run(ctx context.Context, interval time.Duration) {
 	metrics.RetentionSweepInterval.Set(interval.Seconds())
+	enforcing := 0.0
+	if s.mode == SweepEnforce {
+		enforcing = 1
+	}
+	metrics.RetentionSweepEnforcing.Set(enforcing)
 	klog.InfoS("Retention sweeper started", "interval", interval.String(), "mode", string(s.mode))
 	backoff := interval
 	for {
@@ -851,7 +856,9 @@ func lockPoolNoWait(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alph
 
 // publishRetainedGauges reads the retained set in one aggregate query and
 // replaces the gauges with it. Rows retained before retention was timestamped
-// count as no lease: nothing will ever release them on a schedule.
+// count as no lease: nothing will ever release them on a schedule. A row is
+// overdue on the predicate findDue releases by, against the database clock
+// that predicate uses; 'infinity' never passes now(), so needs no exclusion.
 func publishRetainedGauges(ctx context.Context, db Querier) error {
 	defer metrics.ObserveQuery("retained_set_gauges", time.Now())
 	rows, err := db.Query(ctx,
@@ -859,7 +866,9 @@ func publishRetainedGauges(ctx context.Context, db Querier) error {
 		        count(*) FILTER (WHERE retained_at IS NOT NULL AND expires_at IS NOT NULL AND expires_at <> 'infinity'),
 		        count(*) FILTER (WHERE retained_at IS NULL OR expires_at = 'infinity'),
 		        count(*) FILTER (WHERE retained_at IS NOT NULL AND expires_at IS NULL),
-		        COALESCE(EXTRACT(EPOCH FROM now() - min(retained_at)), 0)::float8
+		        COALESCE(EXTRACT(EPOCH FROM now() - min(retained_at)), 0)::float8,
+		        count(*) FILTER (WHERE retained_at IS NOT NULL AND expires_at <= now()),
+		        COALESCE(EXTRACT(EPOCH FROM now() - min(expires_at) FILTER (WHERE retained_at IS NOT NULL AND expires_at <= now())), 0)::float8
 		   FROM ipam_cidr_allocations
 		  WHERE claim_key IS NULL AND purpose = 'Claim'
 		  GROUP BY ip_family`)
@@ -868,7 +877,8 @@ func publishRetainedGauges(ctx context.Context, db Querier) error {
 	}
 	families, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (metrics.RetainedFamily, error) {
 		var f metrics.RetainedFamily
-		err := row.Scan(&f.IPFamily, &f.Finite, &f.None, &f.Unevaluated, &f.OldestAgeSeconds)
+		err := row.Scan(&f.IPFamily, &f.Finite, &f.None, &f.Unevaluated, &f.OldestAgeSeconds,
+			&f.Overdue, &f.OldestOverdueSeconds)
 		return f, err
 	})
 	if err != nil {

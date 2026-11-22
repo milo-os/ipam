@@ -408,6 +408,8 @@ func init() {
 		CascadeResolutionDuration,
 		RetainedAllocations,
 		RetainedOldestAge,
+		RetainedOverdue,
+		RetainedOldestOverdue,
 		RetentionReleases,
 		RetentionSweepDuration,
 		RetentionSweepErrors,
@@ -417,6 +419,7 @@ func init() {
 		RetentionSweepPoolsSkipped,
 		RetentionSweepLastSuccess,
 		RetentionSweepInterval,
+		RetentionSweepEnforcing,
 	)
 	legacyregistry.CustomMustRegister(poolGauges)
 	initRetentionSeries()
