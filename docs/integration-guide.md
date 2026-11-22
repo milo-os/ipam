@@ -135,8 +135,16 @@ case ipamerrors.ReasonClassNotFound, ipamerrors.ReasonNoDefaultClass, ipamerrors
 case ipamerrors.ReasonScopeRolesMissing:
     // The claim is short the scope roles its class requires; the caller must
     // fill them in. MissingScopeRoles names them.
+case ipamerrors.ReasonRetainedAllocationMismatch:
+    // An earlier claim of this name retained its address, and this claim asks
+    // for it on other terms. RetainedAllocationMismatch names the IPAllocation
+    // and the field that differs: recreate on the retained terms to take the
+    // address back, or delete the IPAllocation to claim afresh.
+    allocation, field, _ := ipamerrors.RetainedAllocationMismatch(err)
+    ...
 case ipamerrors.ReasonAllocationRetained:
-    // An earlier claim of this name retained its address. RetainedAllocation
+    // Returned by IPAM releases that refused a recreate over a retained
+    // allocation; current releases reclaim it instead. RetainedAllocation
     // names the IPAllocation that has to go for the name to be reusable.
 }
 ```

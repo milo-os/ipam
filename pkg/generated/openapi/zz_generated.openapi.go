@@ -163,7 +163,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocation(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "IPAllocation records an address or block handed out of an IPPool. It is created by the system, never by a consumer.\n\nAn allocation may outlive the claim that created it: a claim released under ReclaimPolicy Retain leaves its allocation in place with ClaimRef cleared, still held and still counted against its holder, until something releases it explicitly.",
+				Description: "IPAllocation records an address or block handed out of an IPPool. It is created by the system, never by a consumer.\n\nAn allocation may outlive the claim that created it: a claim released under ReclaimPolicy Retain leaves its allocation in place with ClaimRef cleared, still held and still counted against its holder. A claim created again under the same name in the same namespace takes it back; otherwise it is held until something releases it explicitly.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -288,7 +288,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationSpec(ref common.ReferenceCallback
 					},
 					"claimRef": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ClaimRef names the claim currently bound to this allocation. Nil on reservations, and nil on a retained allocation whose claim has been deleted — which is what makes retention visible rather than inferred.",
+							Description: "ClaimRef names the claim currently bound to this allocation. Nil on reservations, and nil on a retained allocation whose claim has been deleted — which is what makes retention visible rather than inferred. Set again when a claim of the same name is recreated and reclaims it.",
 							Ref:         ref(v1alpha1.LocalRef{}.OpenAPIModelName()),
 						},
 					},
@@ -546,7 +546,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPClaimSpec(ref common.ReferenceCallback) com
 					},
 					"reclaimPolicy": {
 						SchemaProps: spec.SchemaProps{
-							Description: "ReclaimPolicy overrides the class default for this claim.",
+							Description: "ReclaimPolicy overrides the class default for this claim.\n\nUnder Retain, deleting the claim leaves its address held. Creating a claim of the same name in the same namespace takes that address back, provided it asks for the same class, scope, address family, prefix length and, if it names one, address; a claim that states no prefix length takes the retained one. A claim that differs on any of them is refused with reason RetainedAllocationMismatch rather than given a second address. The recreated claim's own reclaim policy applies from then on.",
 							Type:        []string{"string"},
 							Format:      "",
 						},

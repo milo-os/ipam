@@ -417,7 +417,8 @@ const (
 
 // IPAllocation records an address or block handed out of an IPPool. An
 // allocation may outlive the claim that created it: a claim released under
-// ReclaimRetain leaves its allocation in place with ClaimRef cleared.
+// ReclaimRetain leaves its allocation in place with ClaimRef cleared, until a
+// claim of the same name takes it back or it is released explicitly.
 type IPAllocation struct {
 	metav1.TypeMeta
 	metav1.ObjectMeta
