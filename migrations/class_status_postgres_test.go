@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,10 +13,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pressly/goose/v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	"k8s.io/apiserver/pkg/authentication/user"
+	genericapirequest "k8s.io/apiserver/pkg/endpoints/request"
 
 	"go.miloapis.com/ipam/internal/registry/ipam/ipclass"
+	pgstore "go.miloapis.com/ipam/internal/storage/postgres"
+	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/testdb"
 	"go.miloapis.com/ipam/migrations"
+	"go.miloapis.com/ipam/pkg/apis/ipam"
+	ipaminstall "go.miloapis.com/ipam/pkg/apis/ipam/install"
 	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
@@ -66,7 +75,7 @@ func classDoc(name string, status any) map[string]any {
 			"labels":            map[string]any{"team": "network"},
 			"annotations":       map[string]any{"note": "keep me"},
 		},
-		"spec": map[string]any{"ipFamily": "IPv6", "prefixLength": 48},
+		"spec": map[string]any{"ipFamily": "IPv6", "parentClassName": "datum-vpc-ipv6"},
 	}
 	if status != nil {
 		doc["status"] = status
@@ -211,6 +220,41 @@ func TestBackfillMarksLegacyClassesAccepted(t *testing.T) {
 		}
 	}
 
+	// The repaired document has to be one the server can serve, not only valid
+	// JSON. Read it back the way a GET does: through the postgres storage layer
+	// and the codec the apiserver installs.
+	{
+		const name = "legacy-pending"
+		store, codec := classStore(t, pool)
+		obj, err := store.Get(datumCloudCtx(), name, &metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("%s: get through storage: %v", name, err)
+		}
+		got := obj.(*ipam.IPClass)
+		if got.Status.Phase != ipam.ClassReady {
+			t.Errorf("%s: served phase = %q, want %q", name, got.Status.Phase, ipam.ClassReady)
+		}
+		if len(got.Status.Conditions) != 1 ||
+			got.Status.Conditions[0].Type != "Accepted" ||
+			got.Status.Conditions[0].Status != metav1.ConditionTrue ||
+			got.Status.Conditions[0].Reason != "ClassAccepted" {
+			t.Errorf("%s: served conditions = %+v, want one Accepted=True with reason ClassAccepted", name, got.Status.Conditions)
+		} else if got.Status.Conditions[0].LastTransitionTime.IsZero() {
+			t.Errorf("%s: served lastTransitionTime is zero, want the time of the repair", name)
+		}
+
+		seeded, err := runtime.Decode(codec, before[name].data)
+		if err != nil {
+			t.Fatalf("%s: decode seeded class: %v", name, err)
+		}
+		if !reflect.DeepEqual(got.Spec, seeded.(*ipam.IPClass).Spec) {
+			t.Errorf("%s: served spec = %+v, want the seeded %+v", name, got.Spec, seeded.(*ipam.IPClass).Spec)
+		}
+		if want := fmt.Sprint(readObject(t, pool, classKeyPrefix+name).rv); got.ResourceVersion != want {
+			t.Errorf("%s: served resourceVersion = %q, want the bumped column %s", name, got.ResourceVersion, want)
+		}
+	}
+
 	for _, name := range untouched {
 		after := readObject(t, pool, classKeyPrefix+name)
 		if after.rv != before[name].rv || string(after.data) != string(before[name].data) {
@@ -341,4 +385,40 @@ func upStatement(t *testing.T) string {
 		t.Fatal("006 has no StatementEnd")
 	}
 	return stmt
+}
+
+// classStore is the IPClass storage the apiserver serves from, over pool, and
+// the codec it reads and writes with. It mirrors the registry's own test setup.
+func classStore(t *testing.T, pool *pgxpool.Pool) (*ipclass.IPClassStorage, runtime.Codec) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	ipaminstall.Install(scheme)
+	codec := serializer.NewCodecFactory(scheme).LegacyCodec(v1alpha1.SchemeGroupVersion)
+
+	getter, err := pgstore.NewRESTOptionsGetter(pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("rest options getter: %v", err)
+	}
+	getter.SetCodec(codec)
+
+	store, _, err := ipclass.NewClassStorage(scheme, getter, nil, pool)
+	if err != nil {
+		t.Fatalf("class storage: %v", err)
+	}
+	t.Cleanup(store.Destroy)
+	return store, codec
+}
+
+// datumCloudCtx is a request from the datum-cloud project, whose keys the
+// fixtures are seeded under.
+func datumCloudCtx() context.Context {
+	ctx := genericapirequest.WithUser(context.Background(), &user.DefaultInfo{
+		Name: "someone",
+		Extra: map[string][]string{
+			tenant.ExtraParentAPIGroup: {tenant.ParentAPIGroupProject},
+			tenant.ExtraParentType:     {tenant.ParentTypeProject},
+			tenant.ExtraParentName:     {"datum-cloud"},
+		},
+	})
+	return genericapirequest.WithNamespace(ctx, metav1.NamespaceNone)
 }

@@ -1,6 +1,11 @@
 -- 006: give classes created before admission stamped their status the status
 -- admission stamps now.
 --
+-- THIS MIGRATES DATA AND CANNOT BE UNDONE. It rewrites the status of existing
+-- classes and records nothing about what they held, so Down is a no-op by
+-- design. Only status changes. The production release that carries this
+-- migration must say that it migrates data.
+--
 -- WHAT WAS WRONG
 --
 -- A class used to be stored with status {phase: Pending} and nothing ever
