@@ -9,11 +9,6 @@ resources:
   # prometheusrule.yaml (which referenced a non-existent metric) and consolidates
   # all alert rules under alerts/.
   - alerts/ipam-alerts.yaml
-  # ClusterRoleBinding granting the ipam-apiserver ServiceAccount the
-  # `system:auth-delegator` role so vmagent's bearer-token scrapes of /metrics
-  # authenticate (TokenReview / SubjectAccessReview). Without this, scrapes
-  # return 401 and all metrics-derived alerts go silent.
-  - clusterrolebinding-auth-delegator.yaml
   # Grafana dashboards (managed by the Grafana operator via GrafanaDashboard CRs).
   - grafana-dashboards/ipam-provider.yaml
   - grafana-dashboards/ipam-consumer.yaml
