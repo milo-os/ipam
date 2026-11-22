@@ -27,7 +27,9 @@ spec:
     property from retention itself: a retained address that can never be
     reclaimed is a permanent loss of capacity rather than a deliberate hold.
     Deleting the unbound allocation is the operator gesture; deleting a bound
-    one must be refused.
+    one must be refused. The other way out, recreating the claim under its own
+    name to take the address back, is class-retain-replacement's; every claim
+    here that must not get a retained address carries a different name.
 
     Retention leases are not enforced yet (milo-os/ipam#107), so nothing here
     waits for one: a retained address is held until its allocation is deleted.

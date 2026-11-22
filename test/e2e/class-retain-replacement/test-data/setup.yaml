@@ -1,0 +1,78 @@
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: rr-retain
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+# A second class offered by the same pool, so a recreate naming it reaches the
+# retained row's pool and differs from it on the class alone.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: rr-other
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: rr-pool
+spec:
+  cidr: 10.205.0.0/28
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - rr-retain
+    - rr-other
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
+---
+# The full-pool proof gets a class and a pool of its own, so "the pool is
+# exhausted" is a statement about one pool rather than a guess about which of
+# several a claim would land in.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: rr-tiny-cls
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 32
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+# Two addresses: two claims fill it.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: rr-tiny
+spec:
+  cidr: 10.205.1.0/31
+  ipFamily: IPv4
+  visibility: consumer
+  classNames:
+    - rr-tiny-cls
+  allocation:
+    minPrefixLength: 32
+    maxPrefixLength: 32
+    strategy: FirstFit
