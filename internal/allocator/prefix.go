@@ -256,24 +256,80 @@ func (a *PostgresPrefixAllocator) ReleaseRetainedAllocation(ctx context.Context,
 }
 
 // ReleasePoolReservations implements PrefixAllocator.ReleasePoolReservations.
+//
+// The pool is known, so it is locked by key rather than discovered from its
+// rows: a reservation materialised after a discovery read would otherwise be
+// deleted out from under the allocation that wrote it.
 func (a *PostgresPrefixAllocator) ReleasePoolReservations(ctx context.Context, tx pgx.Tx, poolKey string) error {
-	return deleteAllocations(ctx, tx, "pool_key = $1 AND purpose = 'Reservation'", poolKey)
+	pool, err := lockAndDecodeIPPool(ctx, tx, poolKey)
+	if err != nil && !errors.Is(err, ErrPoolNotFound) {
+		return err
+	}
+	_, err = deleteLockedAllocations(ctx, tx, map[string]*ipamv1alpha1.IPPool{poolKey: pool},
+		"pool_key = $1 AND purpose = 'Reservation'", poolKey)
+	return err
+}
+
+// ReleaseChildPool frees what a child pool holds: the positions it reserves
+// for itself and the block it occupies in its parent. The pool object is the
+// caller's to delete, in the same transaction.
+func ReleaseChildPool(ctx context.Context, tx pgx.Tx, alloc PrefixAllocator, poolKey string) error {
+	if err := LockPoolLineage(ctx, tx, poolKey); err != nil {
+		return fmt.Errorf("lock child pool and its parent: %w", err)
+	}
+	if err := alloc.ReleasePoolReservations(ctx, tx, poolKey); err != nil {
+		return fmt.Errorf("release child-pool reservations: %w", err)
+	}
+	if _, err := alloc.Release(ctx, tx, poolKey); err != nil {
+		return fmt.Errorf("release child-pool allocation: %w", err)
+	}
+	return nil
+}
+
+// LockPoolLineage locks the pool poolKey is carved from, then poolKey itself.
+//
+// A transaction that writes rows in more than one pool must lock them ancestor
+// first, which is the order the cascade, PlaceScopeRange and ReleaseScopeRange
+// take them in. Deleting a child pool frees its own reservations and then its
+// place in its parent; done in that order, call by call, it locked the child
+// before the parent, and deadlocked against a scope-range release that held
+// the parent and wanted the child. ReleaseChildPool calls this first, so both
+// locks are taken in the right order up front, and the release calls that
+// follow re-lock what they already hold.
+func LockPoolLineage(ctx context.Context, tx pgx.Tx, poolKey string) error {
+	var source string
+	err := tx.QueryRow(ctx,
+		`SELECT pool_key FROM ipam_cidr_allocations WHERE allocation_key = $1`, poolKey,
+	).Scan(&source)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("find the source of %q: %w", poolKey, err)
+	}
+	if source != "" {
+		if err := lockPoolRow(ctx, tx, source); err != nil {
+			return err
+		}
+	}
+	return lockPoolRow(ctx, tx, poolKey)
 }
 
 // lockPoolsOf locks the pool row of every allocation matching cond, which must
 // be a single-parameter predicate, and returns the decoded pools by key. A pool
 // that no longer exists maps to nil.
 //
-// The locks are taken before any allocation row is written, and in key order.
-// AllocatePrefix locks the pool and then writes rows, so a path that wrote a
-// row and then locked its pool would hold what an allocation waits for while
-// waiting for what the allocation holds: Postgres breaks that cycle by killing
-// one side with 40P01, and the caller sees a 500. Key order does the same for
-// two paths that each lock several pools.
+// The locks are taken before any allocation row is written. AllocatePrefix
+// locks the pool and then writes rows, so a path that wrote a row and then
+// locked its pool would hold what an allocation waits for while waiting for
+// what the allocation holds: Postgres breaks that cycle by killing one side
+// with 40P01, and the caller sees a 500.
 //
-// The read that finds the pools takes no lock. A row matching cond that lands
-// after it, in a pool not in the map, is locked late by the caller; none of
-// the predicates used today can match a row inserted later.
+// Every predicate used with it identifies at most one row, so it locks at most
+// one pool. The sort is a tie-break, not a lock order: key order is not
+// ancestor order, and a transaction that locks several pools must take them
+// ancestor first itself, before calling this (see LockPoolLineage).
+//
+// The read that finds the pools takes no lock, so a matching row committed
+// after it can sit in a pool missing from the map. deleteLockedAllocations
+// never deletes such a row: it is restricted to the pools locked here.
 func lockPoolsOf(ctx context.Context, tx pgx.Tx, cond string, arg any) (map[string]*ipamv1alpha1.IPPool, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT DISTINCT pool_key FROM ipam_cidr_allocations WHERE `+cond, arg)
@@ -356,19 +412,25 @@ func deleteAllocations(ctx context.Context, tx pgx.Tx, cond string, arg any) err
 	return err
 }
 
-// deleteLockedAllocations frees every allocation row matching cond and
-// republishes the capacity of each pool it touched, returning how many rows it
-// freed. pools is what lockPoolsOf returned for a predicate covering cond.
+// deleteLockedAllocations frees every allocation row matching cond in one of
+// the pools in pools, and republishes the capacity of each pool it touched,
+// returning how many rows it freed. pools holds the pools the caller has
+// locked; a row in any other pool is left alone, because deleting it would
+// write a pool this transaction does not hold.
 //
 // RETURNING surfaces the pool_key/ip_family so the post-release utilization
 // gauge can be refreshed without an extra round-trip on the read path. Pool
 // rows that have already been hard-deleted (orphaned allocations) have nothing
 // to publish; in that case the gauge update is silently skipped.
 func deleteLockedAllocations(ctx context.Context, tx pgx.Tx, pools map[string]*ipamv1alpha1.IPPool, cond string, arg any) (int, error) {
+	locked := make([]string, 0, len(pools))
+	for key := range pools {
+		locked = append(locked, key)
+	}
 	rows, err := tx.Query(ctx,
-		`DELETE FROM ipam_cidr_allocations WHERE `+cond+`
+		`DELETE FROM ipam_cidr_allocations WHERE (`+cond+`) AND pool_key = ANY($2::text[])
 		 RETURNING pool_key, ip_family,
-		           host(allocated_cidr) || '/' || masklen(allocated_cidr)`, arg,
+		           host(allocated_cidr) || '/' || masklen(allocated_cidr)`, arg, locked,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("release prefix: %w", err)
@@ -393,18 +455,8 @@ func deleteLockedAllocations(ctx context.Context, tx pgx.Tx, pools map[string]*i
 	}
 
 	for _, r := range releases {
-		pool, locked := pools[r.poolKey]
-		if !locked {
-			// A row the unlocked read did not see. Locked now, late, rather
-			// than published unlocked.
-			var perr error
-			pool, perr = lockAndDecodeIPPool(ctx, tx, r.poolKey)
-			if perr != nil && !errors.Is(perr, ErrPoolNotFound) {
-				return 0, fmt.Errorf("reload pool after release: %w", perr)
-			}
-			pools[r.poolKey] = pool
-		}
 		// Pool already gone (cascading delete); nothing to publish.
+		pool := pools[r.poolKey]
 		if pool == nil {
 			continue
 		}

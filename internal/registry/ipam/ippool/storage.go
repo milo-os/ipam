@@ -315,13 +315,9 @@ func (r *AllocatingIPPoolREST) Delete(ctx context.Context, name string, deleteVa
 	if err != nil {
 		return nil, false, fmt.Errorf("begin child-pool delete transaction: %w", err)
 	}
-	if err := r.allocator.ReleasePoolReservations(ctx, tx, poolKey); err != nil {
+	if err := allocator.ReleaseChildPool(ctx, tx, r.allocator, poolKey); err != nil {
 		_ = tx.Rollback(ctx)
-		return nil, false, fmt.Errorf("release child-pool reservations: %w", err)
-	}
-	if _, err := r.allocator.Release(ctx, tx, poolKey); err != nil {
-		_ = tx.Rollback(ctx)
-		return nil, false, fmt.Errorf("release child-pool allocation: %w", err)
+		return nil, false, err
 	}
 	if _, err := r.allocator.DeleteObject(ctx, tx, poolKey); err != nil {
 		_ = tx.Rollback(ctx)

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // database/sql driver for goose
@@ -292,5 +293,30 @@ func stopContainer() {
 	if container != nil {
 		_ = testcontainers.TerminateContainer(container)
 		container = nil
+	}
+}
+
+// WaitForLockWaiters blocks until at least n sessions on db's database are
+// waiting on a lock, or fails the test after a few seconds. Concurrency tests
+// use it to start one transaction only once another is known to be queued,
+// which makes an interleaving deterministic instead of likely.
+func WaitForLockWaiters(t *testing.T, db *pgxpool.Pool, n int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := db.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity
+			  WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+		).Scan(&waiting); err != nil {
+			t.Fatalf("count lock waiters: %v", err)
+		}
+		if waiting >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d session(s) waiting on a lock after 10s, want %d", waiting, n)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
