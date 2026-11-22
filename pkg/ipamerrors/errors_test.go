@@ -45,6 +45,7 @@ func TestReasonForEveryRefusal(t *testing.T) {
 		{"prefix length", New(ReasonPrefixLengthRejected, "prefixLength 20 is outside class range"), ReasonPrefixLengthRejected, http.StatusBadRequest},
 		{"scope roles", NewScopeRolesMissing([]string{"location"}, "scope is missing role \"location\""), ReasonScopeRolesMissing, http.StatusBadRequest},
 		{"retained allocation", NewRetainedAllocation(ipclaims, "web", "alloc-1234", "retained by an earlier claim"), ReasonAllocationRetained, http.StatusConflict},
+		{"retained allocation mismatch", NewRetainedAllocationMismatch(ipclaims, "web", "alloc-1234", "spec.className", "retained under another class"), ReasonRetainedAllocationMismatch, http.StatusConflict},
 		{"claim exists", NewClaimExists(ipclaims, "web", "already holds an allocation"), ReasonClaimExists, http.StatusConflict},
 		{"no project scope", New(ReasonNoProjectScope, "ipam: request carries no project scope"), ReasonNoProjectScope, http.StatusBadRequest},
 		{"address in use", NewAddressInUse(ipclaims, "web", Holder{Namespace: "default", Name: "alloc-1234"}, "address 10.0.0.1/32 is held"), ReasonAddressInUse, http.StatusConflict},
@@ -145,6 +146,26 @@ func TestConflictsAreDistinguishable(t *testing.T) {
 	}
 	if _, ok := RetainedAllocation(exists); ok {
 		t.Error("a duplicate claim reports a retained allocation")
+	}
+}
+
+// A mismatch names the allocation and the field that differs, and is not read
+// as the older refusal: deleting the allocation is one answer to it, not the
+// only one.
+func TestRetainedAllocationMismatchNamesTheAllocationAndField(t *testing.T) {
+	err := roundTrip(t, NewRetainedAllocationMismatch(ipclaims, "web", "alloc-1234", "spec.className", "retained under another class"))
+	name, field, ok := RetainedAllocationMismatch(err)
+	if !ok || name != "alloc-1234" || field != "spec.className" {
+		t.Errorf("RetainedAllocationMismatch = %q, %q, %v; want alloc-1234, spec.className", name, field, ok)
+	}
+	if !apierrors.IsConflict(err) {
+		t.Error("a retained-allocation mismatch is not a conflict to client-go")
+	}
+	if _, ok := RetainedAllocation(err); ok {
+		t.Error("a mismatch reads as the AllocationRetained refusal")
+	}
+	if _, _, ok := RetainedAllocationMismatch(roundTrip(t, NewRetainedAllocation(ipclaims, "web", "alloc-1234", "retained"))); ok {
+		t.Error("an AllocationRetained refusal reads as a mismatch")
 	}
 }
 

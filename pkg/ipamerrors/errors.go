@@ -79,7 +79,21 @@ const (
 	// ReasonAllocationRetained reports that an earlier claim of the same name
 	// retained its address, so the identity the new claim would take is
 	// occupied. RetainedAllocation names the IPAllocation holding it.
+	//
+	// A claim recreated under that name now takes the retained address back,
+	// so IPAM no longer answers that case with this reason. It remains for
+	// what still collides with a retained identity, such as a generated name
+	// drawn onto one, and so that a client built against an older IPAM keeps
+	// decoding it.
 	ReasonAllocationRetained Reason = "AllocationRetained"
+
+	// ReasonRetainedAllocationMismatch reports that a claim was recreated under
+	// the name of one whose address was retained, and asked for something the
+	// retained allocation does not hold: another class, scope, family, size or
+	// address. The address is not handed back on terms it was never held under.
+	// RetainedAllocationMismatch names the IPAllocation and the claim field that
+	// differs.
+	ReasonRetainedAllocationMismatch Reason = "RetainedAllocationMismatch"
 
 	// ReasonClaimExists reports that a live claim of this name already holds an
 	// allocation.
@@ -273,6 +287,22 @@ func RetainedAllocation(err error) (string, bool) {
 	return "", false
 }
 
+// RetainedAllocationMismatch returns the IPAllocation a recreated claim could
+// not reclaim and the claim field that disagrees with it, such as
+// spec.className, and whether err is that refusal.
+func RetainedAllocationMismatch(err error) (allocationName, field string, ok bool) {
+	status, isStatus := statusOf(err)
+	if !isStatus {
+		return "", "", false
+	}
+	for _, cause := range causes(status) {
+		if Reason(cause.Type) == ReasonRetainedAllocationMismatch {
+			return cause.Message, cause.Field, true
+		}
+	}
+	return "", "", false
+}
+
 // New returns the status IPAM answers a refusal with, carrying reason as a
 // cause so a client can classify it without reading the message. The HTTP code
 // follows from the reason.
@@ -320,6 +350,16 @@ func NewRetainedAllocation(gr schema.GroupResource, claimName, allocationName, m
 	return newConflict(ReasonAllocationRetained, gr, claimName, message, allocationName)
 }
 
+// NewRetainedAllocationMismatch returns the conflict for a claim recreated
+// under the name of one whose address was retained, disagreeing with the
+// retained allocation on field. The allocation is named so the caller can read
+// what it holds, or release it to claim on new terms.
+func NewRetainedAllocationMismatch(gr schema.GroupResource, claimName, allocationName, field, message string) *apierrors.StatusError {
+	err := newConflict(ReasonRetainedAllocationMismatch, gr, claimName, message, allocationName)
+	err.ErrStatus.Details.Causes[0].Field = field
+	return err
+}
+
 // NewAddressInUse returns the conflict for an address something already holds.
 // holder names the IPAllocation holding it, when there is one the caller may
 // see; the zero Holder says only that the address is taken.
@@ -362,23 +402,24 @@ const addressField = "spec.address"
 const GroupName = "ipam.miloapis.com"
 
 var knownReasons = map[Reason]bool{
-	ReasonExhausted:            true,
-	ReasonClassNotFound:        true,
-	ReasonNoDefaultClass:       true,
-	ReasonNoOfferingPool:       true,
-	ReasonPrefixLengthRejected: true,
-	ReasonFamilyMismatch:       true,
-	ReasonAddressScopeMismatch: true,
-	ReasonScopeRolesMissing:    true,
-	ReasonAllocationRetained:   true,
-	ReasonClaimExists:          true,
-	ReasonNoProjectScope:       true,
-	ReasonAddressInUse:         true,
-	ReasonAddressReserved:      true,
-	ReasonAddressOutsidePool:   true,
-	ReasonAddressUnaligned:     true,
-	ReasonSharedPoolUnplaced:   true,
-	ReasonRangeUnplaced:        true,
+	ReasonExhausted:                  true,
+	ReasonClassNotFound:              true,
+	ReasonNoDefaultClass:             true,
+	ReasonNoOfferingPool:             true,
+	ReasonPrefixLengthRejected:       true,
+	ReasonFamilyMismatch:             true,
+	ReasonAddressScopeMismatch:       true,
+	ReasonScopeRolesMissing:          true,
+	ReasonAllocationRetained:         true,
+	ReasonClaimExists:                true,
+	ReasonRetainedAllocationMismatch: true,
+	ReasonNoProjectScope:             true,
+	ReasonAddressInUse:               true,
+	ReasonAddressReserved:            true,
+	ReasonAddressOutsidePool:         true,
+	ReasonAddressUnaligned:           true,
+	ReasonSharedPoolUnplaced:         true,
+	ReasonRangeUnplaced:              true,
 }
 
 // KnownReasons returns every reason ReasonFor can report, sorted. It is for
@@ -403,7 +444,7 @@ func codeFor(reason Reason) int32 {
 	switch reason {
 	case ReasonExhausted:
 		return http.StatusInsufficientStorage
-	case ReasonAllocationRetained, ReasonClaimExists, ReasonAddressInUse, ReasonAddressReserved:
+	case ReasonAllocationRetained, ReasonRetainedAllocationMismatch, ReasonClaimExists, ReasonAddressInUse, ReasonAddressReserved:
 		return http.StatusConflict
 	default:
 		return http.StatusBadRequest
@@ -417,7 +458,7 @@ func statusReasonFor(reason Reason) metav1.StatusReason {
 	switch reason {
 	case ReasonExhausted:
 		return metav1.StatusReason("InsufficientStorage")
-	case ReasonAllocationRetained, ReasonClaimExists, ReasonAddressInUse, ReasonAddressReserved:
+	case ReasonAllocationRetained, ReasonRetainedAllocationMismatch, ReasonClaimExists, ReasonAddressInUse, ReasonAddressReserved:
 		return metav1.StatusReasonConflict
 	default:
 		return metav1.StatusReasonBadRequest
