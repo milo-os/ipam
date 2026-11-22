@@ -83,7 +83,7 @@ func ipamReasonLabel(err error) (string, bool) {
 		ipamerrors.ReasonAddressScopeMismatch, ipamerrors.ReasonScopeRolesMissing,
 		ipamerrors.ReasonNoProjectScope, ipamerrors.ReasonAddressOutsidePool,
 		ipamerrors.ReasonAddressUnaligned, ipamerrors.ReasonSharedPoolUnplaced,
-		ipamerrors.ReasonRangeUnplaced:
+		ipamerrors.ReasonRangeUnplaced, ipamerrors.ReasonRetentionLeaseRequired:
 		return reasonInvalid, true
 	}
 	return "", false

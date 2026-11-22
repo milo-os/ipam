@@ -54,6 +54,7 @@ func TestReasonForEveryRefusal(t *testing.T) {
 		{"address unaligned", New(ReasonAddressUnaligned, "10.0.0.5 is not the start of a /28"), ReasonAddressUnaligned, http.StatusBadRequest},
 		{"shared pool unplaced", New(ReasonSharedPoolUnplaced, "class \"public\" holds one pool for every consumer"), ReasonSharedPoolUnplaced, http.StatusBadRequest},
 		{"range unplaced", New(ReasonRangeUnplaced, "class \"subnet\" has no pool for this scope yet"), ReasonRangeUnplaced, http.StatusBadRequest},
+		{"retention lease required", NewRetentionLeaseRequired(ipclaims, "web", "class \"public\" does not allow retaining addresses indefinitely"), ReasonRetentionLeaseRequired, http.StatusUnprocessableEntity},
 	}
 
 	for _, tc := range cases {
@@ -253,5 +254,30 @@ func TestAddressHolder(t *testing.T) {
 	}
 	if _, ok := RetainedAllocation(retained); ok {
 		t.Error("an address-in-use refusal reads as a retained claim name")
+	}
+}
+
+// The refusal of an unleased Retain override is an invalid claim to client-go,
+// names the claim, and points at the field the caller has to change.
+func TestRetentionLeaseRequiredIsAnInvalidReclaimPolicy(t *testing.T) {
+	err := roundTrip(t, NewRetentionLeaseRequired(ipclaims, "web", "no lease"))
+	if !apierrors.IsInvalid(err) {
+		t.Error("a RetentionLeaseRequired refusal is not Invalid to client-go")
+	}
+	if apierrors.IsBadRequest(err) || apierrors.IsConflict(err) {
+		t.Error("a RetentionLeaseRequired refusal reads as a bad request or a conflict")
+	}
+	status, _ := statusOf(err)
+	if status.Details == nil || status.Details.Name != "web" {
+		t.Errorf("details = %+v, want the claim named", status.Details)
+	}
+	var field string
+	for _, cause := range causes(status) {
+		if Reason(cause.Type) == ReasonRetentionLeaseRequired {
+			field = cause.Field
+		}
+	}
+	if field != "spec.reclaimPolicy" {
+		t.Errorf("cause field = %q, want spec.reclaimPolicy", field)
 	}
 }

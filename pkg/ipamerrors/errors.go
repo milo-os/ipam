@@ -151,6 +151,23 @@ const (
 	// and repeating the request unchanged is refused until the caller does
 	// something else first.
 	ReasonRangeUnplaced Reason = "RangeUnplaced"
+
+	// ReasonRetentionLeaseRequired reports that a claim set reclaimPolicy
+	// Retain against a class whose own default is Delete, and no lease would
+	// bound that retention: the class sets no retentionLease and the pool the
+	// claim would be placed in sets no maxRetentionLease. Its address would be
+	// held indefinitely once the claim is deleted, outside anything that
+	// reclaims it. The message names the class and the pool. The way out is a
+	// lease on either, set by its owner, or a claim that leaves reclaimPolicy
+	// to its class.
+	//
+	// A class whose own default is Retain is never refused this: retaining
+	// without a lease is then the operator's stated decision, not the
+	// claimant's.
+	//
+	// It is a 422: the claim is well formed, and the field it sets is refused
+	// for what it would do under the class and pool it resolves to.
+	ReasonRetentionLeaseRequired Reason = "RetentionLeaseRequired"
 )
 
 // scopeFieldPrefix is the field path under which a missing scope role is
@@ -303,6 +320,25 @@ func RetainedAllocationMismatch(err error) (allocationName, field string, ok boo
 	return "", "", false
 }
 
+// RetentionLeaseRequiredField is the claim field a RetentionLeaseRequired
+// refusal names.
+const RetentionLeaseRequiredField = "spec.reclaimPolicy"
+
+// NewRetentionLeaseRequired returns the refusal for a claim whose Retain
+// override would retain its address with no lease. It names the claim, as an
+// invalid object is named, and points its cause at spec.reclaimPolicy.
+func NewRetentionLeaseRequired(gr schema.GroupResource, name, message string) *apierrors.StatusError {
+	return newStatus(ReasonRetentionLeaseRequired, message, &metav1.StatusDetails{
+		Name:  name,
+		Group: gr.Group,
+		Kind:  gr.Resource,
+	}, []metav1.StatusCause{{
+		Type:    metav1.CauseType(ReasonRetentionLeaseRequired),
+		Field:   RetentionLeaseRequiredField,
+		Message: message,
+	}})
+}
+
 // New returns the status IPAM answers a refusal with, carrying reason as a
 // cause so a client can classify it without reading the message. The HTTP code
 // follows from the reason.
@@ -420,6 +456,7 @@ var knownReasons = map[Reason]bool{
 	ReasonAddressUnaligned:           true,
 	ReasonSharedPoolUnplaced:         true,
 	ReasonRangeUnplaced:              true,
+	ReasonRetentionLeaseRequired:     true,
 }
 
 // KnownReasons returns every reason ReasonFor can report, sorted. It is for
@@ -440,10 +477,13 @@ func KnownReasons() []Reason {
 // server will keep refusing until the caller or an operator changes something.
 // A named address that is held or withheld is a conflict too: the request is
 // well formed and would succeed against a different state of the pool.
+// RetentionLeaseRequired is 422, the code a field refused for its value gets.
 func codeFor(reason Reason) int32 {
 	switch reason {
 	case ReasonExhausted:
 		return http.StatusInsufficientStorage
+	case ReasonRetentionLeaseRequired:
+		return http.StatusUnprocessableEntity
 	case ReasonAllocationRetained, ReasonRetainedAllocationMismatch, ReasonClaimExists, ReasonAddressInUse, ReasonAddressReserved:
 		return http.StatusConflict
 	default:
@@ -458,6 +498,8 @@ func statusReasonFor(reason Reason) metav1.StatusReason {
 	switch reason {
 	case ReasonExhausted:
 		return metav1.StatusReason("InsufficientStorage")
+	case ReasonRetentionLeaseRequired:
+		return metav1.StatusReasonInvalid
 	case ReasonAllocationRetained, ReasonRetainedAllocationMismatch, ReasonClaimExists, ReasonAddressInUse, ReasonAddressReserved:
 		return metav1.StatusReasonConflict
 	default:

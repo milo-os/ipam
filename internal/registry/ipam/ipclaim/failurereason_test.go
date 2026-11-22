@@ -53,6 +53,8 @@ func TestFailureReasonLabelsRefusalsByWhatTheCallerIsTold(t *testing.T) {
 		{"AllocationRetained", retainedAllocationConflict("c", "a"), reasonTxError, reasonConflict},
 		{"RetainedAllocationMismatch", retainedMismatchConflict("c", "a", &reclaimMismatch{field: "spec.className", message: "x"}), reasonTxError, reasonConflict},
 		{"RangeUnplaced", ipamerrors.New(ipamerrors.ReasonRangeUnplaced, "x"), reasonTxError, reasonInvalid},
+		// Found inside the allocation transaction, whose step label is a fault.
+		{"RetentionLeaseRequired", ipamerrors.NewRetentionLeaseRequired(gr, "c", "x"), reasonTxError, reasonInvalid},
 		{"SharedPoolUnplaced", ipamerrors.New(ipamerrors.ReasonSharedPoolUnplaced, "x"), reasonTxError, reasonInvalid},
 		{"AddressUnaligned", ipamerrors.New(ipamerrors.ReasonAddressUnaligned, "x"), reasonTxError, reasonInvalid},
 		{"AddressOutsidePool", ipamerrors.New(ipamerrors.ReasonAddressOutsidePool, "x"), reasonTxError, reasonInvalid},
