@@ -36,9 +36,9 @@ type ClaimAllocation struct {
 	AddressScope  ipamv1alpha1.AddressScope
 }
 
-// Querier is the slice of a connection pool a read outside any transaction
-// needs.
-type Querier interface {
+// RowQuerier is the slice of a connection pool a single-row read outside any
+// transaction needs.
+type RowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
@@ -46,7 +46,7 @@ type Querier interface {
 // allocationKey. It takes no lock and needs no transaction: it is the cheap
 // miss every create pays, and a hit is re-read under the pool's lock by
 // LockClaimAllocation before anything is decided from it.
-func HasClaimAllocation(ctx context.Context, db Querier, allocationKey string) (bool, error) {
+func HasClaimAllocation(ctx context.Context, db RowQuerier, allocationKey string) (bool, error) {
 	defer metrics.ObserveQuery("has_claim_allocation", time.Now())
 	var exists bool
 	err := db.QueryRow(ctx,
