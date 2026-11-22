@@ -46,6 +46,18 @@ var ErrScopeRangeCarveMissing = errors.New("ipam: pool holds no carve against a 
 // level must already exist and contain the range.
 var ErrSharedPoolUnplaced = errors.New("ipam: a shared pool cannot be placed by one consumer")
 
+// sharedLevelMissing explains a missing shared level to a claim that named an
+// address. It sends the caller to the class's owner rather than to a claim of
+// their own: a ScopeRange claim would make one consumer the holder of a pool
+// every consumer shares, and a claim without an address would place every
+// per-consumer level beneath it by first-free, which never moves.
+func sharedLevelMissing(className string) string {
+	return fmt.Sprintf("class %q holds one pool for this scope for every consumer, and it does not exist yet; "+
+		"ask the owner of class %q to create it, then name ranges inside it. "+
+		"Do not claim without spec.address to have it created: that also places every per-project range beneath it at the first free block, and a placed pool is never moved",
+		className, className)
+}
+
 // ResolveScopeRange provisions the pool a class holds for a scope, and every
 // level above it, returning that pool's key.
 //
@@ -461,9 +473,7 @@ func placeLevel(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKe
 
 	// Before the identity row is claimed, so a refusal holds nothing.
 	if level.Tenancy.Consumer == "" {
-		return "", false, fmt.Errorf("%w: class %q holds one pool for this scope for every consumer, and it does not exist yet; "+
-			"claim the range without spec.address to have it placed, then name ranges inside it",
-			ErrSharedPoolUnplaced, level.Class.Name)
+		return "", false, fmt.Errorf("%w: %s", ErrSharedPoolUnplaced, sharedLevelMissing(level.Class.Name))
 	}
 
 	poolKey, won, err := claimPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest, level.PoolKey)

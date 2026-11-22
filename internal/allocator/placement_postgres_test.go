@@ -358,8 +358,16 @@ func TestASharedLevelIsPlacedOnlyWhenItExists(t *testing.T) {
 	if !errors.Is(err, ErrRangeUnplaced) {
 		t.Fatalf("addressed claim under a missing shared level: %v, want ErrRangeUnplaced", err)
 	}
-	if strings.Contains(err.Error(), "ScopeRange claim of class") || !strings.Contains(err.Error(), "shared") {
-		t.Errorf("refusal %q should explain the shared pool, not point at an addressed ScopeRange claim", err)
+	// Neither a ScopeRange claim nor a claim without an address is the way
+	// out, so the refusal sends the caller to the class's owner and warns off
+	// the unaddressed claim.
+	for _, part := range []string{`owner of class "pubvpc"`, "Do not claim without spec.address", "never moved"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("refusal %q does not say %q", err, part)
+		}
+	}
+	if strings.Contains(err.Error(), "ScopeRange claim of class") {
+		t.Errorf("refusal %q points at an addressed ScopeRange claim, which is refused for a shared level", err)
 	}
 	expectUnchanged(t, db, before, "an addressed claim under a missing shared level")
 

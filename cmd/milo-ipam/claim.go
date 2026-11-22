@@ -482,7 +482,10 @@ func addressRefusalError(err error, o *claimOptions) *cliError {
 		return newCLIError(exitInvalid, fmt.Sprintf("address %s has no range placed for it yet: %s", o.address, apiMessage(err))).
 			withFix("a claim naming an address never has its class's pools placed for it.\n" +
 				"       Place the range first with an IPClaim of target: ScopeRange whose spec.address\n" +
-				"       is the range the message names, then claim the address again.").withCause(err)
+				"       is the range the message names, then claim the address again.\n" +
+				"       If the message says the pool is shared by every consumer, ask the class's\n" +
+				"       owner to create it instead; claiming without --address would place every\n" +
+				"       per-project range beneath it at the first free block, for good.").withCause(err)
 	case ipamerrors.ReasonAddressUnaligned:
 		return newCLIError(exitInvalid, fmt.Sprintf("address %s does not start a block of the requested size: %s", o.address, apiMessage(err))).
 			withFix("name the first address of the block, or pass the block as a CIDR\n" +

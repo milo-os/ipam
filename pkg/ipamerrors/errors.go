@@ -119,7 +119,9 @@ const (
 	// range, and a pool of its class chain that does not exist yet is shared
 	// by every consumer of its class. One consumer cannot choose where a
 	// shared pool goes; it must already exist and contain the range, so the
-	// caller claims without an address to have it placed by the allocator.
+	// caller asks the class's owner to create it. A claim without an address
+	// is not the way out: it would also place every per-project range beneath
+	// the shared pool at the first free block, and a placed pool never moves.
 	ReasonSharedPoolUnplaced Reason = "SharedPoolUnplaced"
 
 	// ReasonRangeUnplaced reports that a claim named an address under a class

@@ -327,12 +327,12 @@ func existingChainFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, c
 	}
 	// A missing shared level cannot be placed by an addressed ScopeRange claim
 	// (ErrSharedPoolUnplaced), so pointing at one would send the caller to a
-	// second refusal.
+	// second refusal. Nor is a claim without an address the way out: it would
+	// place every per-consumer level beneath the shared one by first-free too,
+	// and those never move.
 	for _, level := range pending {
 		if level.Tenancy.Consumer == "" {
-			return "", fmt.Errorf("%w: class %q has no pool for this scope yet, and its pool is shared by every consumer, so no one consumer's address places it; "+
-				"it is placed first-free by a claim without spec.address, after which %s can be claimed only if it falls inside that pool",
-				ErrRangeUnplaced, level.Class.Name, want.String())
+			return "", fmt.Errorf("%w: %s", ErrRangeUnplaced, sharedLevelMissing(level.Class.Name))
 		}
 	}
 	// The pool the claim draws from is the last level's: that is the range

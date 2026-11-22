@@ -446,6 +446,8 @@ func TestAddressRefusalFixIts(t *testing.T) {
 			exitInvalid, "first address of the block"},
 		{"range unplaced", ipamerrors.New(ipamerrors.ReasonRangeUnplaced, "place the range first"),
 			exitInvalid, "target: ScopeRange"},
+		{"range unplaced under a shared pool", ipamerrors.New(ipamerrors.ReasonRangeUnplaced, "shared by every consumer"),
+			exitInvalid, "ask the class's\n       owner"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
