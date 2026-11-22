@@ -1,0 +1,21 @@
+# The network-services-operator internal-DNS consumer shape, field for field:
+# a generated name, the family and length stated, a bare address, and the
+# network it is unique within.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  generateName: csa-dns-
+  labels:
+    suite: claim-specific-address
+    csa-case: dns-a
+spec:
+  className: csa-host-v6
+  ipFamily: IPv6
+  prefixLength: 128
+  address: "fd83:183::53"
+  reclaimPolicy: Delete
+  scope:
+    network:
+      apiGroup: networking.datumapis.com
+      kind: Network
+      name: csa-net-a

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -15,6 +17,7 @@ import (
 	"k8s.io/apiserver/pkg/storage"
 	"k8s.io/klog/v2"
 
+	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/internal/registry/ipam/registryerrors"
@@ -35,6 +38,13 @@ import (
 // thing, and the block nobody asked for is exactly what this endpoint exists to
 // stop callers having to create.
 //
+// A claim naming its range (spec.address) places each missing level of the
+// chain there, in the transaction that binds it (allocator.PlaceScopeRange), so
+// a refusal at any level leaves no pool or carve behind. Without an address the
+// chain is provisioned level by level, each committing on its own, exactly as
+// it is for a block claim — except under dry-run, where every level runs in a
+// savepoint of the one transaction the dry-run rolls back.
+//
 // Returns the object, the reason label for the failure metric (empty when the
 // call succeeded), and the error.
 func (r *AllocatingREST) createScopeRange(
@@ -45,34 +55,56 @@ func (r *AllocatingREST) createScopeRange(
 	id tenant.Identity,
 	dryRun bool,
 ) (runtime.Object, string, error) {
-	poolKey, err := allocator.ResolveScopeRange(ctx, r.db, class, claim.Spec.Scope)
+	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
+
+	var want *net.IPNet
+	if claim.Spec.Address != "" {
+		block, reason, err := requestedRange(claim, class)
+		if err != nil {
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonPoolNotFound))
+			span.SetStatus(codes.Error, "requested range")
+			return nil, reason, err
+		}
+		want = &block
+	}
+
+	var (
+		poolKey string
+		tx      pgx.Tx
+		err     error
+	)
+	switch {
+	case want != nil:
+		if tx, err = r.db.Begin(ctx); err != nil {
+			return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)
+		}
+		poolKey, err = allocator.PlaceScopeRange(ctx, tx, class, claim.Spec.Scope, *want)
+	case dryRun:
+		if tx, err = r.db.Begin(ctx); err != nil {
+			return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)
+		}
+		poolKey, err = allocator.ResolveScopeRange(ctx, tx, class, claim.Spec.Scope)
+	default:
+		poolKey, err = allocator.ResolveScopeRange(ctx, r.db, class, claim.Spec.Scope)
+	}
 	if err != nil {
+		if tx != nil {
+			_ = tx.Rollback(ctx)
+		}
 		span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonPoolNotFound))
 		span.SetStatus(codes.Error, "resolve scope range")
-		switch {
-		case errors.Is(err, allocator.ErrClassHoldsNoRange):
-			return nil, "class_holds_no_range", apierrors.NewBadRequest(err.Error())
-		case errors.Is(err, allocator.ErrNoOfferingPool):
-			return nil, "pool_not_found", ipamerrors.New(ipamerrors.ReasonNoOfferingPool, err.Error())
-		case errors.Is(err, allocator.ErrPoolExhausted):
-			return nil, "pool_exhausted", registryerrors.NewInsufficientStorage(err.Error())
+		reason, apiErr := scopeRangeError(err, claim.Name)
+		return nil, reason, apiErr
+	}
+	if tx == nil {
+		if tx, err = r.db.Begin(ctx); err != nil {
+			span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
+			return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)
 		}
-		var missingRole *scope.MissingRoleError
-		if errors.As(err, &missingRole) {
-			return nil, "pool_not_found", ipamerrors.NewScopeRolesMissing(missingRole.Roles, err.Error())
-		}
-		return nil, "tx_error", fmt.Errorf("resolve scope range: %w", err)
 	}
 
 	poolName := poolKey[strings.LastIndex(poolKey, "/")+1:]
 	span.SetAttributes(attribute.String(tracing.AttrPoolName, poolName))
-	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
-
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		span.SetAttributes(attribute.String(tracing.AttrErrorReason, tracing.ReasonTxError))
-		return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)
-	}
 
 	cidr, err := allocator.BindScopeRange(ctx, tx, poolKey, claimKey)
 	if err != nil {
@@ -126,6 +158,55 @@ func (r *AllocatingREST) createScopeRange(
 		return nil, "tx_error", fmt.Errorf("commit scope-range transaction: %w", err)
 	}
 	return claim, "", nil
+}
+
+// requestedRange returns the range a ScopeRange claim names, which must be the
+// class's own pool size and aligned to it. Returns the failure-metric reason
+// with the error.
+func requestedRange(claim *ipam.IPClaim, class *allocator.ResolvedClass) (net.IPNet, string, error) {
+	prefixLen, err := allocator.EffectivePrefixLength(class.IPClass, nil)
+	if err != nil {
+		return net.IPNet{}, "internal", ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error())
+	}
+	block, err := allocation.RequestedBlock(claim.Spec.Address, prefixLen)
+	switch {
+	case err == nil:
+		return block, "", nil
+	case errors.Is(err, allocation.ErrPrefixLenMismatch):
+		return net.IPNet{}, "invalid", ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, fmt.Sprintf(
+			"spec.address %s: class %q holds /%d ranges, so a range it holds is a /%d",
+			claim.Spec.Address, class.LocalName, prefixLen, prefixLen))
+	case errors.Is(err, allocation.ErrUnalignedAddress):
+		return net.IPNet{}, "invalid", ipamerrors.New(ipamerrors.ReasonAddressUnaligned, fmt.Sprintf(
+			"spec.address %s: %v", claim.Spec.Address, err))
+	default:
+		return net.IPNet{}, "invalid", apierrors.NewBadRequest(fmt.Sprintf("spec.address %s: %v", claim.Spec.Address, err))
+	}
+}
+
+// scopeRangeError maps a failure to find, provision or place a range onto the
+// status the caller sees, with its failure-metric reason.
+func scopeRangeError(err error, claimName string) (string, error) {
+	switch {
+	case errors.Is(err, allocator.ErrClassHoldsNoRange):
+		return "class_holds_no_range", apierrors.NewBadRequest(err.Error())
+	case errors.Is(err, allocator.ErrNoOfferingPool):
+		return "pool_not_found", ipamerrors.New(ipamerrors.ReasonNoOfferingPool, err.Error())
+	case errors.Is(err, allocator.ErrPoolExhausted):
+		return "pool_exhausted", registryerrors.NewInsufficientStorage(err.Error())
+	case errors.Is(err, allocator.ErrSharedPoolUnplaced):
+		return "invalid", ipamerrors.New(ipamerrors.ReasonSharedPoolUnplaced, err.Error())
+	case errors.Is(err, allocator.ErrAddressInUse), errors.Is(err, allocator.ErrAddressReserved),
+		errors.Is(err, allocator.ErrAddressOutsidePool):
+		// A level's pool is not a pool the caller named, so there is no pool
+		// name to report; the message carries the class and the range.
+		return allocationFailureReason(err), mapAllocationError(err, "", claimName)
+	}
+	var missingRole *scope.MissingRoleError
+	if errors.As(err, &missingRole) {
+		return "pool_not_found", ipamerrors.NewScopeRolesMissing(missingRole.Roles, err.Error())
+	}
+	return "tx_error", fmt.Errorf("resolve scope range: %w", err)
 }
 
 // deleteScopeRange releases the range a claim holds and deletes the claim, in

@@ -1,0 +1,601 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: scoperange-specific-address
+spec:
+  description: |
+    A ScopeRange claim that names its range places the class's chain there
+    (milo-os/ipam#183, "Option C").
+
+    Each level of a parent-class chain is one pool per class and scope, carved
+    once and never renumbered. Without a way to say where, the first claim into
+    a network decided its VPC and subnet by first-free, and an address that
+    already existed could never be adopted beneath them. A ScopeRange claim with
+    spec.address now walks the chain root-first: a level that exists must
+    contain the range, a level that does not is carved at the block containing
+    it, and the claim's own pool must be exactly the range.
+
+    Every positive step asserts the CIDR of each provisioned IPPool, not only
+    the claim's. Every refusal asserts the HTTP code, status.reason and the IPAM
+    reason in details.causes[0], then that no IPClaim was stored and that no
+    IPPool or carve appeared: the pool count and every suite pool's allocated
+    capacity are compared before and after.
+
+    See README.md for the address plan.
+
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    # ── Setup ───────────────────────────────────────────────────────────────
+    - name: setup
+      try:
+        - script:
+            timeout: 90s
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              kubectl apply -f test-data/setup.yaml >/dev/null
+              wait_pool_ready ssa-root
+              wait_pool_ready ssa-shared-root
+              for p in ssa-root ssa-shared-root; do
+                used=$(root_allocated "$p")
+                if [ -n "$used" ] && [ "$used" != "0" ]; then
+                  echo "FAIL: pool $p already holds $used address(es); clean up the earlier run first"
+                  exit 1
+                fi
+              done
+              echo "OK: roots Ready and empty"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: roots Ready and empty'))": true
+      cleanup:
+        - script:
+            timeout: 240s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              set +e
+              # Endpoints before the ranges holding them, subnets before VPCs:
+              # a range with anything inside it refuses to be released.
+              for tier in block subnet vpc misc; do
+                kubectl delete ipclaim -n "$NAMESPACE" -l suite=scoperange-specific-address,ssa-tier=$tier \
+                  --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1
+              done
+              for class in ssa-endpoint ssa-subnet ssa-vpc ssa-shared; do
+                for p in $(kubectl get ippool -o json 2>/dev/null \
+                    | jq -r --arg c "$class" '.items[] | select(.spec.classRef.name == $c) | .metadata.name'); do
+                  release_pool_allocations "$NAMESPACE" "$p"
+                  kubectl delete ippool "$p" --ignore-not-found >/dev/null 2>&1
+                done
+              done
+              release_pool_allocations "$NAMESPACE" ssa-root
+              release_pool_allocations "$NAMESPACE" ssa-shared-root
+              kubectl delete ippool ssa-root ssa-shared-root --ignore-not-found >/dev/null 2>&1
+              kubectl delete ipclass ssa-endpoint ssa-subnet ssa-vpc ssa-shared --ignore-not-found >/dev/null 2>&1
+              echo "scoperange-specific-address cleanup done"
+            check:
+              ($error == null): true
+
+    # ── Placement ───────────────────────────────────────────────────────────
+    - name: a-network-range-is-placed-at-the-range-it-names
+      description: |
+        The first step of the network-services-operator flow: the network's
+        range. fd83:185:a::/48 is deliberately not the first free /48 of the
+        root, so a server that ignores the address places fd83:185::/48.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              expect_pool_count 0 ssa-vpc network=ssa-net-a
+              json=$(claim_yaml ssa-vpc-a ssa-vpc ScopeRange fd83:185:a::/48 ssa-net-a "" vpc \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$json" fd83:185:a::/48 - "ssa-vpc-a (CREATE response)"
+              cidr=$(level_cidr ssa-vpc network=ssa-net-a)
+              assert_equal_addr "$cidr" fd83:185:a::/48 "the ssa-vpc pool for ssa-net-a"
+              pool=$(pools_for_scope ssa-vpc network=ssa-net-a)
+              ref=$(printf '%s' "$json" | jq -r '.status.poolRef.name // ""')
+              if [ "$ref" != "$pool" ]; then
+                echo "FAIL: ssa-vpc-a reports pool '$ref', the pool placed is '$pool'"
+                exit 1
+              fi
+              echo "OK: the network range was placed where it was named"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the network range was placed where it was named'))": true
+
+    - name: a-network-context-range-reuses-the-network-range-holding-it
+      description: |
+        The second step: a range per network and location, inside the network's
+        range. The VPC pool exists and contains it, so it is reused rather than
+        a second one placed; the subnet pool is carved at the named /64.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              json=$(claim_yaml ssa-subnet-a1 ssa-subnet ScopeRange fd83:185:a:10::/64 ssa-net-a loc-1 subnet \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$json" fd83:185:a:10::/64 - "ssa-subnet-a1 (CREATE response)"
+              expect_pool_count 1 ssa-vpc network=ssa-net-a
+              vpc=$(level_cidr ssa-vpc network=ssa-net-a)
+              assert_equal_addr "$vpc" fd83:185:a::/48 "the ssa-net-a VPC pool, after the subnet range"
+              subnet=$(level_cidr ssa-subnet network=ssa-net-a location=loc-1)
+              assert_equal_addr "$subnet" fd83:185:a:10::/64 "the ssa-net-a/loc-1 subnet pool"
+              parent=$(kubectl get ippool "$(pools_for_scope ssa-subnet network=ssa-net-a location=loc-1)" \
+                -o jsonpath='{.spec.parentPoolRef.name}')
+              if [ "$parent" != "$(pools_for_scope ssa-vpc network=ssa-net-a)" ]; then
+                echo "FAIL: the subnet pool was carved from '$parent', not the network's VPC pool"
+                exit 1
+              fi
+              echo "OK: the subnet range was placed inside the existing network range"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the subnet range was placed inside the existing network range'))": true
+
+    - name: an-addressed-endpoint-binds-inside-the-placed-chain
+      description: |
+        The third step: an endpoint names its /96. With the chain placed, the
+        Block claim's address is inside the subnet pool and binds exactly. The
+        subnet's first /96 is withheld for its router and is refused.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              json=$(claim_yaml ssa-ep-a1 ssa-endpoint Block fd83:185:a:10:0:5::/96 ssa-net-a loc-1 block \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$json" fd83:185:a:10:0:5::/96 - "ssa-ep-a1 (CREATE response)"
+              ref=$(printf '%s' "$json" | jq -r '.status.poolRef.name // ""')
+              if [ "$ref" != "$(pools_for_scope ssa-subnet network=ssa-net-a location=loc-1)" ]; then
+                echo "FAIL: ssa-ep-a1 was bound from '$ref', not the placed subnet pool"
+                exit 1
+              fi
+              before=$(allocation_count "$NAMESPACE")
+              claim_yaml ssa-ep-a1-router ssa-endpoint Block fd83:185:a:10::/96 ssa-net-a loc-1 block \
+                | expect_refusal "$NAMESPACE" 409 AddressReserved '' "the subnet's router /96"
+              expect_no_claim "$NAMESPACE" ssa-ep-a1-router
+              expect_unchanged "the allocation count" "$before" "$(allocation_count "$NAMESPACE")"
+              echo "OK: an addressed endpoint binds inside the placed chain"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: an addressed endpoint binds inside the placed chain'))": true
+
+    - name: an-endpoint-without-an-address-still-allocates
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              json=$(claim_yaml ssa-ep-a1-auto ssa-endpoint Block - ssa-net-a loc-1 block \
+                | create_claim_json "$NAMESPACE")
+              got=$(printf '%s' "$json" | jq -r '.status.allocatedCIDR // ""')
+              if [ -z "$got" ]; then
+                echo "FAIL: ssa-ep-a1-auto was not bound"
+                exit 1
+              fi
+              assert_within "$got" fd83:185:a:10::/64 "ssa-ep-a1-auto"
+              assert_prefix_len "$got" 96 "ssa-ep-a1-auto"
+              assert_disjoint "$got" fd83:185:a:10::/96 fd83:185:a:10:0:5::/96
+              echo "OK: an automatic endpoint took $got"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: an automatic endpoint took'))": true
+
+    - name: one-claim-places-every-missing-level
+      description: |
+        Nothing exists for ssa-net-b. One subnet range claim places the VPC at
+        the /48 containing it and the subnet at the /64 itself; an endpoint
+        address inside it then binds.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              expect_pool_count 0 ssa-vpc network=ssa-net-b
+              json=$(claim_yaml ssa-subnet-b1 ssa-subnet ScopeRange fd83:185:b:20::/64 ssa-net-b loc-1 subnet \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$json" fd83:185:b:20::/64 - "ssa-subnet-b1 (CREATE response)"
+              vpc=$(level_cidr ssa-vpc network=ssa-net-b)
+              assert_equal_addr "$vpc" fd83:185:b::/48 "the ssa-net-b VPC pool"
+              subnet=$(level_cidr ssa-subnet network=ssa-net-b location=loc-1)
+              assert_equal_addr "$subnet" fd83:185:b:20::/64 "the ssa-net-b/loc-1 subnet pool"
+
+              ep=$(claim_yaml ssa-ep-b1 ssa-endpoint Block fd83:185:b:20:0:7::/96 ssa-net-b loc-1 block \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$ep" fd83:185:b:20:0:7::/96 - "ssa-ep-b1 (CREATE response)"
+              echo "OK: one claim placed the whole chain"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: one claim placed the whole chain'))": true
+
+    - name: a-range-without-an-address-is-unchanged
+      description: |
+        No address, so the allocator chooses, exactly as before. An endpoint
+        without an address in that network then provisions its subnet as it
+        always has.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              json=$(claim_yaml ssa-vpc-auto ssa-vpc ScopeRange - ssa-net-auto "" vpc \
+                | create_claim_json "$NAMESPACE")
+              got=$(printf '%s' "$json" | jq -r '.status.allocatedCIDR // ""')
+              if [ "$(printf '%s' "$json" | jq -r '.status.phase')" != "Bound" ] || [ -z "$got" ]; then
+                echo "FAIL: ssa-vpc-auto was not bound"
+                exit 1
+              fi
+              assert_within "$got" fd83:185::/32 "ssa-vpc-auto"
+              assert_prefix_len "$got" 48 "ssa-vpc-auto"
+              assert_disjoint "$got" fd83:185:a::/48 fd83:185:b::/48
+              assert_equal_addr "$(level_cidr ssa-vpc network=ssa-net-auto)" "$got" "the ssa-net-auto VPC pool"
+
+              ep=$(claim_yaml ssa-ep-auto ssa-endpoint Block - ssa-net-auto loc-1 block \
+                | create_claim_json "$NAMESPACE")
+              epcidr=$(printf '%s' "$ep" | jq -r '.status.allocatedCIDR // ""')
+              assert_within "$epcidr" "$got" "ssa-ep-auto"
+              expect_pool_count 1 ssa-subnet network=ssa-net-auto location=loc-1
+              echo "OK: a range without an address took $got"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a range without an address took'))": true
+
+    # ── Refusals ────────────────────────────────────────────────────────────
+    - name: refused-a-range-outside-the-network-range-that-exists
+      description: |
+        ssa-net-a's VPC is fd83:185:a::/48. A subnet range elsewhere cannot be
+        placed under it, and the VPC is never moved: 400 AddressOutsidePool,
+        naming the VPC's actual range.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              claim_yaml ssa-subnet-a3 ssa-subnet ScopeRange fd83:185:c:10::/64 ssa-net-a loc-3 subnet \
+                | expect_refusal "$NAMESPACE" 400 AddressOutsidePool 'fd83:185:a::/48' \
+                    "fd83:185:c:10::/64 under ssa-net-a"
+              expect_no_claim "$NAMESPACE" ssa-subnet-a3
+              expect_pool_count 0 ssa-subnet network=ssa-net-a location=loc-3
+              expect_unchanged "the suite's pools" "$before" "$(ssa_snapshot)"
+              echo "OK: a range outside an existing level is refused, naming it"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a range outside an existing level is refused, naming it'))": true
+
+    - name: refused-a-range-whose-own-pool-already-exists-elsewhere
+      description: |
+        A range's own pool, once it exists, is where it is. Asking for the
+        ssa-net-a VPC somewhere else is refused naming where it is; so is a
+        subnet range for ssa-net-auto/loc-1, whose pool an endpoint claim
+        provisioned by first-free in the previous step and nobody holds.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              claim_yaml ssa-vpc-a-moved ssa-vpc ScopeRange fd83:185:d::/48 ssa-net-a "" vpc \
+                | expect_refusal "$NAMESPACE" 400 AddressOutsidePool 'fd83:185:a::/48' \
+                    "ssa-net-a's VPC at fd83:185:d::/48"
+              expect_no_claim "$NAMESPACE" ssa-vpc-a-moved
+
+              vpc=$(level_cidr ssa-vpc network=ssa-net-auto)
+              placed=$(level_cidr ssa-subnet network=ssa-net-auto location=loc-1)
+              other=$(python3 -c '
+              import ipaddress, sys
+              vpc, placed = ipaddress.ip_network(sys.argv[1]), ipaddress.ip_network(sys.argv[2])
+              print(next(s for i, s in enumerate(vpc.subnets(new_prefix=64)) if i >= 9 and s != placed))
+              ' "$vpc" "$placed")
+              echo "ssa-net-auto/loc-1 is $placed; asking for $other"
+              pattern=$(python3 -c 'import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1]).compressed)' "$placed")
+              claim_yaml ssa-subnet-auto1 ssa-subnet ScopeRange "$other" ssa-net-auto loc-1 subnet \
+                | expect_refusal "$NAMESPACE" 400 AddressOutsidePool "$pattern" \
+                    "ssa-net-auto/loc-1 at $other"
+              expect_no_claim "$NAMESPACE" ssa-subnet-auto1
+              expect_unchanged "the suite's pools" "$before" "$(ssa_snapshot)"
+              echo "OK: an existing range is never moved"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: an existing range is never moved'))": true
+
+    - name: refused-a-range-carved-to-another-network
+      description: |
+        fd83:185:a::/48 is ssa-net-a's. Naming it for ssa-net-c is 409
+        AddressInUse, and nothing is placed for ssa-net-c.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              claim_yaml ssa-vpc-c ssa-vpc ScopeRange fd83:185:a::/48 ssa-net-c "" vpc \
+                | expect_refusal "$NAMESPACE" 409 AddressInUse '' "fd83:185:a::/48 for ssa-net-c"
+              expect_no_claim "$NAMESPACE" ssa-vpc-c
+              expect_pool_count 0 ssa-vpc network=ssa-net-c
+
+              # A subnet for a NEW network inside ssa-net-a's VPC collides at the
+              # VPC level, before any subnet is considered.
+              claim_yaml ssa-subnet-c1 ssa-subnet ScopeRange fd83:185:a:30::/64 ssa-net-c loc-1 subnet \
+                | expect_refusal "$NAMESPACE" 409 AddressInUse '' "a subnet of ssa-net-a's VPC for ssa-net-c"
+              expect_no_claim "$NAMESPACE" ssa-subnet-c1
+              expect_pool_count 0 ssa-vpc network=ssa-net-c
+              expect_unchanged "the suite's pools" "$before" "$(ssa_snapshot)"
+              echo "OK: a range held by another network is in use"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a range held by another network is in use'))": true
+
+    - name: refused-a-range-its-network-range-withholds
+      description: |
+        ssa-vpc withholds the first /64 of every VPC. A subnet range there is
+        409 AddressReserved.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              claim_yaml ssa-subnet-ar ssa-subnet ScopeRange fd83:185:a::/64 ssa-net-a loc-r subnet \
+                | expect_refusal "$NAMESPACE" 409 AddressReserved '' "the first /64 of ssa-net-a"
+              expect_no_claim "$NAMESPACE" ssa-subnet-ar
+              expect_pool_count 0 ssa-subnet network=ssa-net-a location=loc-r
+              expect_unchanged "the suite's pools" "$before" "$(ssa_snapshot)"
+              echo "OK: a withheld range is reserved"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a withheld range is reserved'))": true
+
+    - name: refused-a-misshapen-range
+      description: |
+        The range is the class's pool size, aligned, and written as a CIDR. Not
+        on a /48 boundary is 400 AddressUnaligned; a /56 for a /48 class is 400
+        PrefixLengthRejected; a bare address is 422 on spec.address.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              claim_yaml ssa-vpc-e ssa-vpc ScopeRange fd83:185:e:1::/48 ssa-net-e "" vpc \
+                | expect_refusal "$NAMESPACE" 400 AddressUnaligned '' "fd83:185:e:1::/48"
+              expect_no_claim "$NAMESPACE" ssa-vpc-e
+              claim_yaml ssa-vpc-e ssa-vpc ScopeRange fd83:185:e::/56 ssa-net-e "" vpc \
+                | expect_refusal "$NAMESPACE" 400 PrefixLengthRejected '/48' "a /56 for a /48 class"
+              expect_no_claim "$NAMESPACE" ssa-vpc-e
+              claim_yaml ssa-vpc-e ssa-vpc ScopeRange fd83:185:e:: ssa-net-e "" vpc \
+                | expect_invalid "$NAMESPACE" spec.address 'CIDR' "a bare address on a range"
+              expect_no_claim "$NAMESPACE" ssa-vpc-e
+              expect_pool_count 0 ssa-vpc network=ssa-net-e
+              expect_unchanged "the suite's pools" "$before" "$(ssa_snapshot)"
+              echo "OK: misshapen ranges are refused"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: misshapen ranges are refused'))": true
+
+    - name: refused-placing-a-shared-pool
+      description: |
+        ssa-shared does not name the project role, so its pool for a network is
+        shared by every consumer. One consumer cannot choose where it goes:
+        400 SharedPoolUnplaced, and no pool is placed.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              claim_yaml ssa-shared-s ssa-shared ScopeRange fd83:186:1::/48 ssa-net-s "" misc \
+                | expect_refusal "$NAMESPACE" 400 SharedPoolUnplaced 'ssa-shared' "placing ssa-shared for ssa-net-s"
+              expect_no_claim "$NAMESPACE" ssa-shared-s
+              expect_pool_count 0 ssa-shared network=ssa-net-s
+              expect_unchanged "the suite's pools" "$before" "$(ssa_snapshot)"
+              echo "OK: a shared pool cannot be placed by one consumer"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a shared pool cannot be placed by one consumer'))": true
+
+    - name: refused-changing-the-address-of-a-range
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              expect_patch_invalid ipclaim "$NAMESPACE" ssa-vpc-a \
+                '{"spec":{"address":"fd83:185:9::/48"}}' spec.address immutable \
+                "moving ssa-vpc-a to fd83:185:9::/48"
+              stored=$(kubectl get ipclaim -n "$NAMESPACE" ssa-vpc-a -o json)
+              assert_bound_exactly "$stored" fd83:185:a::/48 - "ssa-vpc-a, after the refused patch"
+              assert_equal_addr "$(level_cidr ssa-vpc network=ssa-net-a)" fd83:185:a::/48 "the ssa-net-a VPC pool"
+              echo "OK: the address of a range is immutable"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the address of a range is immutable'))": true
+
+    - name: a-dry-run-places-nothing
+      description: |
+        A server-side dry-run reports the range the claim would hold, and the
+        pools it would place to hold it are not written. Also without an
+        address: a dry-run range claim used to provision its pool for real.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              json=$(claim_yaml ssa-subnet-dry ssa-subnet ScopeRange fd83:185:f:10::/64 ssa-net-d loc-1 subnet \
+                | kubectl create -n "$NAMESPACE" --dry-run=server -o json -f -)
+              assert_bound_exactly "$json" fd83:185:f:10::/64 - "ssa-subnet-dry (dry-run response)"
+              expect_no_claim "$NAMESPACE" ssa-subnet-dry
+              expect_pool_count 0 ssa-vpc network=ssa-net-d
+              expect_unchanged "the suite's pools after an addressed dry-run" "$before" "$(ssa_snapshot)"
+
+              json=$(claim_yaml ssa-vpc-dry ssa-vpc ScopeRange - ssa-net-dry2 "" vpc \
+                | kubectl create -n "$NAMESPACE" --dry-run=server -o json -f -)
+              if [ "$(printf '%s' "$json" | jq -r '.status.phase')" != "Bound" ]; then
+                echo "FAIL: the dry-run range claim did not report a bound range"
+                exit 1
+              fi
+              expect_no_claim "$NAMESPACE" ssa-vpc-dry
+              expect_pool_count 0 ssa-vpc network=ssa-net-dry2
+              expect_unchanged "the suite's pools after a dry-run" "$before" "$(ssa_snapshot)"
+              echo "OK: a dry-run places nothing"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a dry-run places nothing'))": true
+
+    - name: concurrent-ranges-for-one-network-place-one
+      description: |
+        Two claims race to place ssa-net-r's VPC at different /48s. One wins;
+        the other is refused naming the winner's range, and exactly one pool
+        and one carve exist.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_pool_count)
+              dir=$(mktemp -d)
+              for n in 21 22; do
+                ( claim_yaml ssa-vpc-r$n ssa-vpc ScopeRange fd83:185:$n::/48 ssa-net-r "" vpc \
+                    | kubectl create -n "$NAMESPACE" -v=9 -f - >"$dir/$n.out" 2>&1; echo $? >"$dir/$n.rc" ) &
+              done
+              wait
+              won=""; lost=""
+              for n in 21 22; do
+                if [ "$(cat "$dir/$n.rc")" = "0" ]; then won="$won $n"; else lost="$lost $n"; fi
+              done
+              won=$(echo $won); lost=$(echo $lost)
+              case "$won" in
+                21|22) : ;;
+                *) echo "FAIL: expected exactly one winner, got '$won'"; cat "$dir"/*.out | tail -20; exit 1 ;;
+              esac
+              _check_status "ssa-vpc-r$lost" 1 400 AddressOutsidePool "" "fd83:185:$won::/48" <"$dir/$lost.out"
+              expect_no_claim "$NAMESPACE" ssa-vpc-r$lost
+              expect_pool_count 1 ssa-vpc network=ssa-net-r
+              assert_equal_addr "$(level_cidr ssa-vpc network=ssa-net-r)" "fd83:185:$won::/48" "ssa-net-r's VPC"
+              expect_unchanged "the number of suite pools (one placed)" "$((before + 1))" "$(ssa_pool_count)"
+              # One carve for the winner and nothing for the loser: the root
+              # holds exactly the /48s this suite placed.
+              python3 -c '
+              import sys
+              got, want = int(sys.argv[1] or 0), 4 * 2**80
+              if got != want:
+                  print("FAIL: ssa-root has %d addresses allocated, expected %d (four /48s)" % (got, want)); sys.exit(1)
+              print("OK: ssa-root holds exactly four /48s")
+              ' "$(root_allocated ssa-root)"
+              echo "OK: one of two racing ranges was placed"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: one of two racing ranges was placed'))": true
+
+    - name: an-addressed-endpoint-never-places-its-chain
+      description: |
+        Nothing is placed for ssa-net-g. An endpoint naming its address there
+        is refused 400 RangeUnplaced, naming the subnet range to place first,
+        and places nothing: a VPC or subnet placed by first-free on its behalf
+        would never move and would refuse the placement below. The ScopeRange
+        claim the refusal names then succeeds, and the endpoint binds.
+        Also as a dry-run, which must be refused the same way.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              claim_yaml ssa-ep-g ssa-endpoint Block fd83:185:7:10:0:5::/96 ssa-net-g loc-1 block \
+                | expect_refusal "$NAMESPACE" 400 RangeUnplaced 'ssa-subnet[\s\S]*fd83:185:7:10::/64' \
+                    "an addressed endpoint under an unplaced chain"
+              expect_no_claim "$NAMESPACE" ssa-ep-g
+              expect_pool_count 0 ssa-vpc network=ssa-net-g
+              expect_pool_count 0 ssa-subnet network=ssa-net-g location=loc-1
+              expect_unchanged "the suite's pools" "$before" "$(ssa_snapshot)"
+
+              out=$(claim_yaml ssa-ep-g ssa-endpoint Block fd83:185:7:10:0:5::/96 ssa-net-g loc-1 block \
+                | kubectl create -n "$NAMESPACE" --dry-run=server -v=9 -f - 2>&1) && rc=0 || rc=$?
+              printf '%s\n' "$out" | _check_status "the same claim as a dry-run" "$rc" 400 RangeUnplaced "" ""
+              expect_unchanged "the suite's pools after the dry-run" "$before" "$(ssa_snapshot)"
+
+              json=$(claim_yaml ssa-subnet-g1 ssa-subnet ScopeRange fd83:185:7:10::/64 ssa-net-g loc-1 subnet \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$json" fd83:185:7:10::/64 - "ssa-subnet-g1, after the refusal"
+              assert_equal_addr "$(level_cidr ssa-vpc network=ssa-net-g)" fd83:185:7::/48 "the ssa-net-g VPC pool"
+
+              ep=$(claim_yaml ssa-ep-g ssa-endpoint Block fd83:185:7:10:0:5::/96 ssa-net-g loc-1 block \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$ep" fd83:185:7:10:0:5::/96 - "ssa-ep-g, once the chain is placed"
+              echo "OK: an addressed endpoint waits for its chain to be placed"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: an addressed endpoint waits for its chain to be placed'))": true

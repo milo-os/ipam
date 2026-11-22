@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/klog/v2"
 
 	"go.miloapis.com/ipam/internal/allocation"
@@ -77,24 +79,37 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
-	ctx, fbSpan := tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
-	fbSpan.SetAttributes(attribute.String(tracing.AttrStrategy, string(strategy)))
-
-	cidr, err := findBlock(ctx, tx, poolKey, req.ScopeDigest, parents, prefixLen, strategy)
-	if err != nil {
-		if errors.Is(err, allocation.ErrPoolExhausted) {
-			fbSpan.SetAttributes(attribute.Bool(tracing.AttrExhausted, true))
-			fbSpan.SetStatus(codes.Error, "pool exhausted")
-			fbSpan.End()
-			return "", ErrPoolExhausted
+	var cidr *net.IPNet
+	if req.Address != "" {
+		// A named block replaces the search, and only the search: the pool row
+		// is already locked and its reservations materialised above, so the
+		// overlap check below sees every row a search would have, and
+		// everything after it is the same write a searched block gets.
+		cidr, err = requestedBlock(ctx, tx, req, parents)
+		if err != nil {
+			return "", err
 		}
-		fbSpan.SetStatus(codes.Error, err.Error())
+	} else {
+		strategy := allocation.Strategy(pool.Spec.Allocation.Strategy)
+		var fbSpan trace.Span
+		ctx, fbSpan = tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
+		fbSpan.SetAttributes(attribute.String(tracing.AttrStrategy, string(strategy)))
+
+		cidr, err = findBlock(ctx, tx, poolKey, req.ScopeDigest, parents, prefixLen, strategy)
+		if err != nil {
+			if errors.Is(err, allocation.ErrPoolExhausted) {
+				fbSpan.SetAttributes(attribute.Bool(tracing.AttrExhausted, true))
+				fbSpan.SetStatus(codes.Error, "pool exhausted")
+				fbSpan.End()
+				return "", ErrPoolExhausted
+			}
+			fbSpan.SetStatus(codes.Error, err.Error())
+			fbSpan.End()
+			return "", fmt.Errorf("compute next prefix: %w", err)
+		}
+		fbSpan.SetAttributes(attribute.String(tracing.AttrResultCIDR, cidr.String()))
 		fbSpan.End()
-		return "", fmt.Errorf("compute next prefix: %w", err)
 	}
-	fbSpan.SetAttributes(attribute.String(tracing.AttrResultCIDR, cidr.String()))
-	fbSpan.End()
 
 	// Before the insert, so the overlap query does not return the new block.
 	consumed, err := consumptionAfterAllocate(ctx, tx, poolKey, parents, *cidr)
@@ -114,7 +129,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	}
 	publishPrefixUtilization(poolKey, ipFamily, parents, consumed)
 
-	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", req.ClaimKey, "ownerProject", req.OwnerProject)
+	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", req.ClaimKey, "ownerProject", req.OwnerProject, "requested", req.Address != "")
 	return cidr.String(), nil
 }
 
@@ -586,9 +601,26 @@ func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, c
 		req.ClassName, req.ScopeDigest, string(policy), req.OwnerProject,
 	)
 	if err != nil {
+		// A named block was checked free under the pool's lock, so this
+		// means a writer the lock does not exclude got there first. It is
+		// the same refusal the check would have given, not a server fault.
+		if req.Address != "" && isOverlapViolation(err) {
+			return &AddressInUseError{Address: cidr}
+		}
 		return fmt.Errorf("insert allocation: %w", err)
 	}
 	return nil
+}
+
+// overlapConstraint is the exclusion constraint that keeps two allocations of
+// one address space in one pool from overlapping.
+const overlapConstraint = "ipam_cidr_alloc_no_overlap"
+
+// isOverlapViolation reports whether err is that constraint refusing a row
+// (SQLSTATE 23P01, exclusion_violation).
+func isOverlapViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23P01" && pgErr.ConstraintName == overlapConstraint
 }
 
 // totalAddresses counts the addresses the pool's parents cover.

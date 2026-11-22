@@ -1,0 +1,118 @@
+# Classes and pools for scoperange-specific-address (milo-os/ipam#183).
+#
+# The network-services-operator shape, with every class defined in the tenant
+# project so one context drives the whole suite:
+#
+#   ssa-vpc       /48 per network and project   from ssa-root   fd83:185::/32
+#   ssa-subnet    /64 per network, location and project, carved from ssa-vpc
+#   ssa-endpoint  /96 Block claims, from ssa-subnet
+#   ssa-shared    /48 per network, SHARED by every project (no `project` role)
+#                                               from ssa-shared-root fd83:186::/32
+#
+# ssa-vpc withholds the first /64 of every VPC and ssa-subnet the first /96 of
+# every subnet, so a range or an address in those positions is refused as
+# reserved at both levels.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ssa-vpc
+spec:
+  ipFamily: IPv6
+  poolPer:
+    - network
+    - project
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 48
+    max: 48
+  defaultPrefixLength: 48
+  strategy: FirstFit
+  reservations:
+    leading: 1
+    unitPrefixLength: 64
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ssa-subnet
+spec:
+  ipFamily: IPv6
+  parentClassName: ssa-vpc
+  poolPer:
+    - network
+    - location
+    - project
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 64
+    max: 64
+  defaultPrefixLength: 64
+  strategy: FirstFit
+  reservations:
+    leading: 1
+    unitPrefixLength: 96
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ssa-endpoint
+spec:
+  ipFamily: IPv6
+  parentClassName: ssa-subnet
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 96
+    max: 96
+  defaultPrefixLength: 96
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+# Shared: one pool per network for every consumer. A claim cannot choose where
+# such a pool goes, because every other consumer of the class lives with it.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ssa-shared
+spec:
+  ipFamily: IPv6
+  poolPer:
+    - network
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 48
+    max: 48
+  defaultPrefixLength: 48
+  strategy: FirstFit
+  reclaimPolicy: Retain
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ssa-root
+spec:
+  cidr: fd83:185::/32
+  ipFamily: IPv6
+  visibility: platform
+  classNames:
+    - ssa-vpc
+  allocation:
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ssa-shared-root
+spec:
+  cidr: fd83:186::/32
+  ipFamily: IPv6
+  visibility: platform
+  classNames:
+    - ssa-shared
+  allocation:
+    minPrefixLength: 48
+    maxPrefixLength: 48
+    strategy: FirstFit

@@ -1,0 +1,32 @@
+# One class and one pool in the platform project, shared by every consumer:
+# no poolPer, uniqueWithin [], so two projects' claims land in one address
+# space of one pool. That is the shape in which a refusal could describe
+# another project's blocks.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClass
+metadata:
+  name: ari-blocks
+spec:
+  ipFamily: IPv4
+  uniqueWithin: []
+  allowedPrefixLengths:
+    min: 28
+    max: 32
+  defaultPrefixLength: 32
+  strategy: FirstFit
+  reclaimPolicy: Delete
+---
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPPool
+metadata:
+  name: ari-root
+spec:
+  cidr: 172.18.40.0/24
+  ipFamily: IPv4
+  visibility: shared
+  classNames:
+    - ari-blocks
+  allocation:
+    minPrefixLength: 28
+    maxPrefixLength: 32
+    strategy: FirstFit

@@ -69,6 +69,15 @@ type PrefixRequest struct {
 	// is Delete.
 	ClassName     string
 	ReclaimPolicy ipamv1alpha1.ReclaimPolicy
+
+	// Address names the exact block to bind, as a bare address (the block of
+	// PrefixLen bits starting at it) or a CIDR of PrefixLen bits. Empty lets
+	// the pool's strategy choose.
+	//
+	// A named block is bound exactly or refused: it is never moved to the next
+	// free block, and an address that is not the start of its block is never
+	// rounded down to it.
+	Address string
 }
 
 // PrefixAllocator atomically reserves a sub-CIDR from an IPPool.

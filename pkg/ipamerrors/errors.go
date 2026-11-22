@@ -88,6 +88,54 @@ const (
 	// project. Every object IPAM stores belongs to one, so there is nowhere to
 	// allocate from.
 	ReasonNoProjectScope Reason = "NoProjectScope"
+
+	// ReasonAddressInUse reports that the address a claim named is already
+	// held: by another claim, by an allocation an earlier claim retained, or by
+	// a child pool carved from the pool. AddressHolder names the IPAllocation
+	// holding it when the holder is visible to the caller.
+	//
+	// It is a conflict, but deliberately not AlreadyExists: a controller that
+	// treats AlreadyExists as "my object is there" would otherwise take
+	// somebody else's address for its own.
+	ReasonAddressInUse Reason = "AddressInUse"
+
+	// ReasonAddressReserved reports that the address a claim named sits in a
+	// position its pool withholds, such as a subnet's router address.
+	ReasonAddressReserved Reason = "AddressReserved"
+
+	// ReasonAddressOutsidePool reports that the address a claim named is in no
+	// pool offering the claim's class, so there is nowhere to bind it from. For
+	// a ScopeRange claim it also reports a pool of the class's chain that
+	// already exists for the claim's scope somewhere else: a placed pool is
+	// never moved, and the message names it and its range.
+	ReasonAddressOutsidePool Reason = "AddressOutsidePool"
+
+	// ReasonAddressUnaligned reports that the address a claim named is not the
+	// first address of a block of the claim's size. It is never rounded to the
+	// block it falls in.
+	ReasonAddressUnaligned Reason = "AddressUnaligned"
+
+	// ReasonSharedPoolUnplaced reports that a ScopeRange claim named its
+	// range, and a pool of its class chain that does not exist yet is shared
+	// by every consumer of its class. One consumer cannot choose where a
+	// shared pool goes; it must already exist and contain the range, so the
+	// caller asks the class's owner to create it. A claim without an address
+	// is not the way out: it would also place every per-project range beneath
+	// the shared pool at the first free block, and a placed pool never moves.
+	ReasonSharedPoolUnplaced Reason = "SharedPoolUnplaced"
+
+	// ReasonRangeUnplaced reports that a claim named an address under a class
+	// whose chain has no pool for the claim's scope yet. A claim naming an
+	// address never has its chain placed by first-free, because a pool placed
+	// without regard to the address is never moved and would stand in the way
+	// of the placement the address needs. The caller places the range first,
+	// with a ScopeRange claim naming it (the message says which class and
+	// which range), then claims the address again.
+	//
+	// It is a 400 rather than a 409: nothing holds what the claim asked for,
+	// and repeating the request unchanged is refused until the caller does
+	// something else first.
+	ReasonRangeUnplaced Reason = "RangeUnplaced"
 )
 
 // scopeFieldPrefix is the field path under which a missing scope role is
@@ -161,6 +209,53 @@ func MissingScopeRoles(err error) []string {
 	return roles
 }
 
+// Holder describes what holds an address a claim asked for.
+type Holder struct {
+	// Namespace and Name identify the IPAllocation holding the address. Both
+	// are empty when the holder is not an allocation the caller can see — a
+	// child pool, or an allocation in another project.
+	Namespace string
+	Name      string
+
+	// Retained reports that the allocation outlived the claim that made it
+	// under reclaimPolicy Retain. Nothing will release it on its own: deleting
+	// the named IPAllocation is what frees the address.
+	Retained bool
+}
+
+// Fields of the AddressInUse causes that carry the holder. The first cause of
+// the refusal is the one ReasonFor reads; these follow it.
+const (
+	holderAllocationField = "holder.ipAllocation"
+	holderRetainedField   = "holder.retained"
+)
+
+// AddressHolder returns what holds the address a claim asked for, and whether
+// err is an AddressInUse refusal.
+func AddressHolder(err error) (Holder, bool) {
+	if ReasonFor(err) != ReasonAddressInUse {
+		return Holder{}, false
+	}
+	status, _ := statusOf(err)
+	var h Holder
+	for _, cause := range causes(status) {
+		if Reason(cause.Type) != ReasonAddressInUse {
+			continue
+		}
+		switch cause.Field {
+		case holderAllocationField:
+			if ns, name, ok := strings.Cut(cause.Message, "/"); ok {
+				h.Namespace, h.Name = ns, name
+			} else {
+				h.Name = cause.Message
+			}
+		case holderRetainedField:
+			h.Retained = cause.Message == "true"
+		}
+	}
+	return h, true
+}
+
 // RetainedAllocation returns the name of the IPAllocation holding the identity
 // a claim tried to take, and whether err is that refusal. Deleting the named
 // allocation frees the name.
@@ -224,6 +319,43 @@ func NewRetainedAllocation(gr schema.GroupResource, claimName, allocationName, m
 	return newConflict(ReasonAllocationRetained, gr, claimName, message, allocationName)
 }
 
+// NewAddressInUse returns the conflict for an address something already holds.
+// holder names the IPAllocation holding it, when there is one the caller may
+// see; the zero Holder says only that the address is taken.
+func NewAddressInUse(gr schema.GroupResource, claimName string, holder Holder, message string) *apierrors.StatusError {
+	err := newConflict(ReasonAddressInUse, gr, claimName, message, "")
+	err.ErrStatus.Details.Causes[0].Field = addressField
+	if holder.Name != "" {
+		ref := holder.Name
+		if holder.Namespace != "" {
+			ref = holder.Namespace + "/" + holder.Name
+		}
+		err.ErrStatus.Details.Causes = append(err.ErrStatus.Details.Causes, metav1.StatusCause{
+			Type:    metav1.CauseType(ReasonAddressInUse),
+			Field:   holderAllocationField,
+			Message: ref,
+		})
+	}
+	if holder.Retained {
+		err.ErrStatus.Details.Causes = append(err.ErrStatus.Details.Causes, metav1.StatusCause{
+			Type:    metav1.CauseType(ReasonAddressInUse),
+			Field:   holderRetainedField,
+			Message: "true",
+		})
+	}
+	return err
+}
+
+// NewAddressReserved returns the conflict for an address its pool withholds.
+func NewAddressReserved(gr schema.GroupResource, claimName, message string) *apierrors.StatusError {
+	err := newConflict(ReasonAddressReserved, gr, claimName, message, "")
+	err.ErrStatus.Details.Causes[0].Field = addressField
+	return err
+}
+
+// addressField is the claim field the address refusals point at.
+const addressField = "spec.address"
+
 // GroupName is the API group every IPAM resource belongs to. It is repeated
 // here rather than imported so this package stays free of the API types.
 const GroupName = "ipam.miloapis.com"
@@ -240,17 +372,25 @@ var knownReasons = map[Reason]bool{
 	ReasonAllocationRetained:   true,
 	ReasonClaimExists:          true,
 	ReasonNoProjectScope:       true,
+	ReasonAddressInUse:         true,
+	ReasonAddressReserved:      true,
+	ReasonAddressOutsidePool:   true,
+	ReasonAddressUnaligned:     true,
+	ReasonSharedPoolUnplaced:   true,
+	ReasonRangeUnplaced:        true,
 }
 
 // codeFor is the HTTP code each reason answers with. Exhaustion is 507:
 // the request was well formed and the server simply has no space for it. The
 // conflicts are 409 because a name is taken. Everything else is a request the
 // server will keep refusing until the caller or an operator changes something.
+// A named address that is held or withheld is a conflict too: the request is
+// well formed and would succeed against a different state of the pool.
 func codeFor(reason Reason) int32 {
 	switch reason {
 	case ReasonExhausted:
 		return http.StatusInsufficientStorage
-	case ReasonAllocationRetained, ReasonClaimExists:
+	case ReasonAllocationRetained, ReasonClaimExists, ReasonAddressInUse, ReasonAddressReserved:
 		return http.StatusConflict
 	default:
 		return http.StatusBadRequest
@@ -264,7 +404,7 @@ func statusReasonFor(reason Reason) metav1.StatusReason {
 	switch reason {
 	case ReasonExhausted:
 		return metav1.StatusReason("InsufficientStorage")
-	case ReasonAllocationRetained, ReasonClaimExists:
+	case ReasonAllocationRetained, ReasonClaimExists, ReasonAddressInUse, ReasonAddressReserved:
 		return metav1.StatusReasonConflict
 	default:
 		return metav1.StatusReasonBadRequest

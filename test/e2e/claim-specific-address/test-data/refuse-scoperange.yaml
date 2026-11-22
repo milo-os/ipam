@@ -1,0 +1,17 @@
+# A scope-range claim naming its range places the class's pool there, but
+# csa-range's pool is shared by every consumer, so no one consumer may place it.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-range-addr
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-range
+  target: ScopeRange
+  address: "fd83:184::/96"
+  scope:
+    network:
+      apiGroup: networking.datumapis.com
+      kind: Network
+      name: csa-net-a

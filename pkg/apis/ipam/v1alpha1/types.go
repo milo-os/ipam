@@ -766,8 +766,8 @@ type IPAllocationStatus struct {
 	Phase AllocationPhase `json:"phase,omitempty"`
 	// +optional
 	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
-	// Address is the single address form of AllocatedCIDR, set when the class
-	// hands out host addresses rather than blocks.
+	// Address is the single address form of AllocatedCIDR, set whenever the
+	// allocated block holds exactly one address (a /32 or a /128).
 	// +optional
 	Address string `json:"address,omitempty"`
 	// ScopeDigest is the canonical digest of spec.scope, computed by the
@@ -866,7 +866,33 @@ type IPClaimSpec struct {
 	// +optional
 	AddressScope AddressScope `json:"addressScope,omitempty"`
 
-	// Address names a specific address to bind. Omitted, the allocator chooses.
+	// Address names the exact block to bind: a bare address (the block of
+	// PrefixLength bits starting at it, e.g. "10.0.0.16") or a CIDR (e.g.
+	// "10.0.0.16/28", whose length must equal PrefixLength when both are set,
+	// and supplies it when PrefixLength is omitted). Omitted, the allocator
+	// chooses.
+	//
+	// The claim is bound to exactly that block or refused: AddressInUse when
+	// something holds it, AddressReserved when its pool withholds it,
+	// AddressOutsidePool when no pool offering the class contains it, and
+	// AddressUnaligned when the address does not start a block of the claim's
+	// size. It is never moved to another block or rounded down. Immutable.
+	//
+	// On a ScopeRange claim it names the range, as a CIDR whose length is the
+	// class's pool size (e.g. "fd00:0:a::/48"), and places the class's chain
+	// there: each level that exists must contain it, and each missing level is
+	// carved at the block of its size containing it. A level already placed
+	// elsewhere, including the class's own pool, is AddressOutsidePool naming
+	// its range, since a placed pool is never moved; a missing level shared by
+	// every consumer of its class is SharedPoolUnplaced. Placing the chain
+	// first is how a Block claim adopts an address under a chained class: a
+	// Block claim naming an address never has a missing level of its chain
+	// provisioned for it, and is refused with RangeUnplaced until the range
+	// holding the address has been placed.
+	//
+	// A refusal describes what holds the address only when it belongs to the
+	// claim's own project; another project's block or carve is reported as in
+	// use and nothing more.
 	// +optional
 	Address string `json:"address,omitempty"`
 
@@ -915,8 +941,8 @@ type IPClaimStatus struct {
 	Phase ClaimPhase `json:"phase,omitempty"`
 	// +optional
 	AllocatedCIDR string `json:"allocatedCIDR,omitempty"`
-	// Address is the single address form of AllocatedCIDR, set when the class
-	// hands out host addresses rather than blocks.
+	// Address is the single address form of AllocatedCIDR, set whenever the
+	// allocated block holds exactly one address (a /32 or a /128).
 	// +optional
 	Address string `json:"address,omitempty"`
 	// PoolRef names the pool the allocation was drawn from. It is resolved by

@@ -1,0 +1,10 @@
+# The control for refuse-reserved.yaml: the next address in the same pool.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-rsv-second
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-rsv-v4
+  address: 172.18.32.1

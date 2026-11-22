@@ -3,6 +3,8 @@ package ipclaim
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/fields"
@@ -90,6 +92,11 @@ func (ipClaimStrategy) ValidateUpdate(_ context.Context, obj, old runtime.Object
 	if !equality.Semantic.DeepEqual(n.Spec.PrefixLength, o.Spec.PrefixLength) {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "prefixLength"), "prefixLength is immutable"))
 	}
+	// The address is what the claim is bound to. Changing it would leave the
+	// claim naming one address while holding another.
+	if n.Spec.Address != o.Spec.Address {
+		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "address"), "address is immutable"))
+	}
 	if n.Spec.ClassName != o.Spec.ClassName {
 		allErrs = append(allErrs, field.Forbidden(field.NewPath("spec", "className"), "className is immutable"))
 	}
@@ -134,17 +141,25 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 		allErrs = append(allErrs, field.Invalid(specPath.Child("prefixLength"), *p,
 			"must be between 1 and 128"))
 	}
+	if c.Spec.Address != "" {
+		allErrs = append(allErrs, validateAddress(c.Spec.Address, c.Spec.PrefixLength, specPath.Child("address"))...)
+	}
 	switch c.Spec.Target {
 	case "", ipam.TargetBlock:
 	case ipam.TargetScopeRange:
-		// A range is the pool a class holds for a scope. Its size, its position
-		// and its disposition are all properties of the pool, decided by the
-		// class that provisions it — so a claim that could restate any of them
-		// would be stating something the server is going to ignore. Refused by
-		// name rather than dropped silently.
-		if c.Spec.Address != "" {
-			allErrs = append(allErrs, field.Forbidden(specPath.Child("address"),
-				"a scope-range claim binds the range its class holds, so it cannot name an address"))
+		// A range is the pool a class holds for a scope. Its size and its
+		// disposition are properties of the pool, decided by the class that
+		// provisions it — so a claim that could restate either would be stating
+		// something the server is going to ignore. Refused by name rather than
+		// dropped silently.
+		//
+		// Its position is the exception: a claim may name the range, which
+		// places the chain there if it does not exist yet. It must be written
+		// as the CIDR of the whole range, because a bare address names a block
+		// only once a size is known, and here the size is the class's.
+		if c.Spec.Address != "" && !strings.Contains(c.Spec.Address, "/") {
+			allErrs = append(allErrs, field.Invalid(specPath.Child("address"), c.Spec.Address,
+				"a scope-range claim names its range as a CIDR, such as fd00:0:a::/48; the class decides its length"))
 		}
 		if c.Spec.PrefixLength != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("prefixLength"),
@@ -178,6 +193,45 @@ func validateIPClaim(c *ipam.IPClaim) field.ErrorList {
 			allErrs = append(allErrs, field.Invalid(specPath.Child("scope", role), ref,
 				"each scope reference needs a kind and a name"))
 		}
+	}
+	return allErrs
+}
+
+// validateAddress checks the form of spec.address: a bare IP address, or a
+// CIDR. Whether it fits the class — its family, its alignment to the block
+// size, the pools offering it — is decided on create, once the class is known.
+//
+// Zoned addresses and IPv4-mapped IPv6 addresses are refused rather than
+// normalised. A zone names an interface, not an address IPAM can hand out, and
+// a mapped address is an IPv4 address spelled as IPv6: accepting either would
+// bind something other than what the claim wrote.
+func validateAddress(addr string, prefixLength *int32, path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	var ip netip.Addr
+	if strings.Contains(addr, "/") {
+		prefix, err := netip.ParsePrefix(addr)
+		if err != nil {
+			return append(allErrs, field.Invalid(path, addr, "must be an IP address or a CIDR"))
+		}
+		ip = prefix.Addr()
+		if prefixLength != nil && int(*prefixLength) != prefix.Bits() {
+			allErrs = append(allErrs, field.Invalid(path, addr, fmt.Sprintf(
+				"is a /%d but spec.prefixLength is %d; state the length once, or make them agree",
+				prefix.Bits(), *prefixLength)))
+		}
+	} else {
+		parsed, err := netip.ParseAddr(addr)
+		if err != nil {
+			return append(allErrs, field.Invalid(path, addr, "must be an IP address or a CIDR"))
+		}
+		ip = parsed
+	}
+	if ip.Zone() != "" {
+		allErrs = append(allErrs, field.Invalid(path, addr, "must not carry a zone"))
+	}
+	if ip.Is4In6() {
+		allErrs = append(allErrs, field.Invalid(path, addr,
+			"must not be an IPv4-mapped IPv6 address; write the IPv4 address itself"))
 	}
 	return allErrs
 }

@@ -1,0 +1,12 @@
+# An IPv6 address on an IPv4 class. spec.ipFamily is deliberately left unset:
+# with it set, the existing ipFamily-vs-class check would refuse the claim and
+# say nothing about the address.
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-family
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-host-v4
+  address: "fd83:183::99"

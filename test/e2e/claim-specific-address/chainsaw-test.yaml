@@ -1,0 +1,606 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: claim-specific-address
+spec:
+  description: |
+    A claim that names an address gets that address, or a refusal that says why
+    it cannot have it (milo-os/ipam#183).
+
+    The bug: spec.address was accepted and then ignored, and the claim bound to
+    the next free block. Nothing about that is visible from the claim's phase —
+    it is Bound, the pool is Ready — so every positive step here asserts the
+    exact block, compared with python's ipaddress rather than as strings, and
+    reads it out of the CREATE response, which is what makes the binding
+    synchronous rather than eventually right.
+
+    Every refusal asserts the HTTP code, the status.reason that code implies,
+    and the IPAM reason in details.causes[0].reason, then that no IPClaim and no
+    IPAllocation was left behind. A 409 alone would pass for "an object of this
+    name exists", and a 400 alone for half the allocator's refusals.
+
+    See README.md for the address plan.
+
+  # Every claim resolves its class, and resolving a class needs a project, so
+  # the suite drives the apiserver as a project tenant. `task e2e` generates the
+  # kubeconfig and its RBAC first; chainsaw resolves this path at load time.
+  cluster: tenant
+  clusters:
+    tenant:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+
+  steps:
+    # ── Setup ───────────────────────────────────────────────────────────────
+    - name: setup
+      description: |
+        Classes and pools are applied by script rather than by a chainsaw
+        create, so chainsaw's own teardown does not try to delete a pool before
+        the allocations inside it are released. The cleanup below runs when the
+        test ends, whichever step it ended on.
+      try:
+        - script:
+            timeout: 90s
+            content: |
+              . ../lib/ipam.sh
+              kubectl apply -f test-data/setup.yaml >/dev/null
+              for p in csa-v4 csa-two-a csa-two-b csa-rsv csa-v6 csa-range-root; do
+                wait_pool_ready "$p"
+              done
+              # Every exact-position assertion below assumes these pools start
+              # empty. A pool still holding something was left by an earlier run.
+              for p in csa-v4 csa-two-a csa-two-b csa-v6; do
+                used=$(kubectl get ippool "$p" -o jsonpath='{.status.capacity.allocated}')
+                if [ -n "$used" ] && [ "$used" != "0" ]; then
+                  echo "FAIL: pool $p already holds $used address(es); clean up the earlier run first"
+                  exit 1
+                fi
+              done
+              echo "OK: pools Ready and empty"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: pools Ready and empty'))": true
+      cleanup:
+        - script:
+            timeout: 180s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              set +e
+              kubectl delete ipclaim -n "$NAMESPACE" -l suite=claim-specific-address \
+                --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1
+              for p in $(kubectl get ippool -o json 2>/dev/null \
+                  | jq -r '.items[] | select(.spec.classRef.name == "csa-range") | .metadata.name'); do
+                release_pool_allocations "$NAMESPACE" "$p"
+                kubectl delete ippool "$p" --ignore-not-found >/dev/null 2>&1
+              done
+              for p in csa-v4 csa-two-a csa-two-b csa-rsv csa-v6 csa-range-root; do
+                release_pool_allocations "$NAMESPACE" "$p"
+              done
+              kubectl delete ippool csa-v4 csa-two-a csa-two-b csa-rsv csa-v6 csa-range-root \
+                --ignore-not-found >/dev/null 2>&1
+              kubectl delete ipclass csa-host-v4 csa-block-v4 csa-two csa-rsv-v4 csa-host-v6 csa-range \
+                --ignore-not-found >/dev/null 2>&1
+              echo "claim-specific-address cleanup done"
+            check:
+              ($error == null): true
+
+    # ── A named address binds exactly ──────────────────────────────────────
+    - name: a-bare-ipv4-address-binds-exactly
+      description: |
+        The reproduction of #183. 172.18.30.10 is deliberately not the first
+        free address of an empty pool, so a server that ignores spec.address
+        binds 172.18.30.0/32 and this step reports the two side by side.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              json=$(create_claim_json "$NAMESPACE" < test-data/exact-v4.yaml)
+              assert_bound_exactly "$json" 172.18.30.10/32 172.18.30.10 "csa-exact-v4 (CREATE response)"
+
+              # What was stored, and what the pool recorded, agree with the response.
+              stored=$(kubectl get ipclaim -n "$NAMESPACE" csa-exact-v4 -o json)
+              assert_bound_exactly "$stored" 172.18.30.10/32 172.18.30.10 "csa-exact-v4 (as stored)"
+              pool=$(claim_pool "$NAMESPACE" csa-exact-v4)
+              if [ "$pool" != "csa-v4" ]; then
+                echo "FAIL: csa-exact-v4 reports pool '$pool', expected csa-v4"
+                exit 1
+              fi
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" csa-exact-v4 -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$alloc" ]; then
+                echo "FAIL: csa-exact-v4 is bound but names no IPAllocation"
+                exit 1
+              fi
+              held=$(kubectl get ipallocation -n "$NAMESPACE" "$alloc" -o jsonpath='{.status.allocatedCIDR}')
+              assert_equal_addr "$held" 172.18.30.10/32 "IPAllocation $alloc"
+              echo "OK: the named IPv4 address was bound"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the named IPv4 address was bound'))": true
+
+    - name: a-cidr-form-address-binds-exactly
+      description: |
+        The CIDR form names a block, not a host. status.address stays empty
+        because the block is more than one address.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              json=$(create_claim_json "$NAMESPACE" < test-data/exact-block.yaml)
+              assert_bound_exactly "$json" 172.18.30.64/28 - "csa-exact-block (CREATE response)"
+              echo "OK: the named block was bound"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the named block was bound'))": true
+
+    - name: an-ipv6-host-address-binds-under-a-generated-name
+      description: |
+        The claim network-services-operator writes for a network's internal DNS
+        address: generateName, ipFamily IPv6, prefixLength 128, a bare address
+        and the network it is unique within. The address is compared
+        canonically, so the server may spell it either way.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              json=$(create_claim_json "$NAMESPACE" < test-data/dns-net-a.yaml)
+              name=$(printf '%s' "$json" | jq -r '.metadata.name')
+              case "$name" in
+                csa-dns-?*) : ;;
+                *) echo "FAIL: generateName csa-dns- produced name '$name'"; exit 1 ;;
+              esac
+              assert_bound_exactly "$json" fd83:183::53/128 fd83:183::53 "internal-DNS claim $name"
+              echo "OK: the named IPv6 address was bound to $name"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the named IPv6 address was bound'))": true
+
+    - name: an-automatic-claim-skips-an-adopted-address
+      description: |
+        Adopt the very address FirstFit would hand out next, then make an
+        automatic claim. If adoption were bookkeeping the allocator did not
+        consult, the automatic claim would land on top of it.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              # The lowest /32 of csa-v4 that nothing in this namespace holds.
+              next=$(kubectl get ipallocation -n "$NAMESPACE" -o json | python3 -c '
+              import ipaddress, json, sys
+              held = [ipaddress.ip_network(a["status"]["allocatedCIDR"])
+                      for a in json.load(sys.stdin)["items"]
+                      if a["spec"]["poolRef"]["name"] == "csa-v4" and a.get("status", {}).get("allocatedCIDR")]
+              for n in ipaddress.ip_network("172.18.30.0/24").subnets(new_prefix=32):
+                  if not any(n.overlaps(h) for h in held):
+                      print(n.network_address); break
+              ')
+              if [ -z "$next" ]; then
+                echo "FAIL: could not work out the next free address of csa-v4"
+                exit 1
+              fi
+              echo "FirstFit's next address in csa-v4 is $next; adopting it"
+
+              adopted=$(create_claim_json "$NAMESPACE" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: csa-adopt
+                labels:
+                  suite: claim-specific-address
+              spec:
+                className: csa-host-v4
+                address: $next
+              EOF
+              )
+              assert_bound_exactly "$adopted" "$next/32" "$next" "csa-adopt"
+
+              auto=$(create_claim_json "$NAMESPACE" <<EOF
+              apiVersion: ipam.miloapis.com/v1alpha1
+              kind: IPClaim
+              metadata:
+                name: csa-auto-after-adopt
+                labels:
+                  suite: claim-specific-address
+              spec:
+                className: csa-host-v4
+              EOF
+              )
+              got=$(assert_single_address "$auto" csa-auto-after-adopt)
+              assert_within "$got" 172.18.30.0/24 "csa-auto-after-adopt"
+              assert_excludes_address "$got" "$next" "csa-auto-after-adopt"
+              assert_disjoint $(kubectl get ipallocation -n "$NAMESPACE" -o json \
+                | jq -r '.items[] | select(.spec.poolRef.name == "csa-v4") | .status.allocatedCIDR')
+              echo "OK: the automatic claim took $got, not the adopted $next"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the automatic claim took'))": true
+
+    - name: the-same-address-binds-in-another-network-and-is-refused-in-the-same-one
+      description: |
+        csa-host-v6 is unique within network. fd83:183::53 under csa-net-b is a
+        different address space from csa-net-a and binds; the same address under
+        csa-net-a again is held, and the refusal names what holds it.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              json=$(create_claim_json "$NAMESPACE" < test-data/dns-net-b.yaml)
+              assert_bound_exactly "$json" fd83:183::53/128 fd83:183::53 "csa-net-b's claim"
+
+              holder=$(kubectl get ipclaim -n "$NAMESPACE" -l csa-case=dns-a \
+                -o jsonpath='{.items[0].status.boundAllocationRef.name}')
+              if [ -z "$holder" ]; then
+                echo "FAIL: the csa-net-a claim names no IPAllocation"
+                exit 1
+              fi
+              before=$(allocation_count "$NAMESPACE" csa-v6)
+              expect_refusal "$NAMESPACE" 409 AddressInUse "$holder" \
+                "fd83:183::53 asked for again in csa-net-a" < test-data/refuse-dns-dup.yaml
+              expect_no_claim "$NAMESPACE" csa-dns-dup
+              after=$(allocation_count "$NAMESPACE" csa-v6)
+              if [ "$before" != "$after" ]; then
+                echo "FAIL: the refused claim changed csa-v6's allocations from $before to $after"
+                exit 1
+              fi
+              echo "OK: unique within network, and only within network"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: unique within network, and only within network'))": true
+
+    - name: a-class-offered-by-two-pools-binds-from-the-pool-holding-the-address
+      description: |
+        csa-two is offered by csa-two-a and csa-two-b. The pool is decided by
+        where the address is, not by which pool the allocator would otherwise
+        prefer — so the address in the second pool must not be refused as
+        outside the first.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              b=$(create_claim_json "$NAMESPACE" < test-data/two-pool-b.yaml)
+              assert_bound_exactly "$b" 172.18.33.7/32 172.18.33.7 "csa-two-b-7"
+              pool=$(printf '%s' "$b" | jq -r '.status.poolRef.name // ""')
+              if [ "$pool" != "csa-two-b" ]; then
+                echo "FAIL: 172.18.33.7 was bound from pool '$pool', expected csa-two-b"
+                exit 1
+              fi
+
+              a=$(create_claim_json "$NAMESPACE" < test-data/two-pool-a.yaml)
+              assert_bound_exactly "$a" 172.18.31.7/32 172.18.31.7 "csa-two-a-7"
+              pool=$(printf '%s' "$a" | jq -r '.status.poolRef.name // ""')
+              if [ "$pool" != "csa-two-a" ]; then
+                echo "FAIL: 172.18.31.7 was bound from pool '$pool', expected csa-two-a"
+                exit 1
+              fi
+              echo "OK: each address came from the pool that holds it"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: each address came from the pool that holds it'))": true
+
+    - name: deleting-the-holder-frees-the-address
+      description: |
+        Delete the claim holding 172.18.30.10 (reclaimPolicy Delete), wait for
+        both it and its IPAllocation to go, and ask for the address again.
+      try:
+        - script:
+            timeout: 120s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              alloc=$(kubectl get ipclaim -n "$NAMESPACE" csa-exact-v4 -o jsonpath='{.status.boundAllocationRef.name}')
+              kubectl delete ipclaim -n "$NAMESPACE" csa-exact-v4 --wait=true >/dev/null
+              wait_gone ipclaim "$NAMESPACE" csa-exact-v4
+              if [ -n "$alloc" ]; then
+                wait_gone ipallocation "$NAMESPACE" "$alloc"
+              fi
+
+              json=$(create_claim_json "$NAMESPACE" < test-data/exact-v4-again.yaml)
+              assert_bound_exactly "$json" 172.18.30.10/32 172.18.30.10 "csa-exact-v4-again"
+              echo "OK: the released address was bound again"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the released address was bound again'))": true
+
+    - name: a-claim-without-an-address-is-unchanged
+      description: |
+        The allocator still chooses when nothing is named. A single-address
+        block reports its bare address in status.address.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              json=$(create_claim_json "$NAMESPACE" < test-data/auto-v4.yaml)
+              got=$(assert_single_address "$json" csa-auto)
+              assert_within "$got" 172.18.30.0/24 "csa-auto"
+              assert_disjoint $(kubectl get ipallocation -n "$NAMESPACE" -o json \
+                | jq -r '.items[] | select(.spec.poolRef.name == "csa-v4") | .status.allocatedCIDR')
+              echo "OK: the automatic claim took $got"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the automatic claim took'))": true
+
+    # ── Refusals ────────────────────────────────────────────────────────────
+    - name: refused-an-address-another-claim-holds
+      description: |
+        409 with status.reason Conflict — not AlreadyExists, since no object of
+        this name exists — the IPAM reason AddressInUse, and a message naming
+        the IPAllocation that holds the address.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              holder=$(kubectl get ipclaim -n "$NAMESPACE" csa-exact-v4-again -o jsonpath='{.status.boundAllocationRef.name}')
+              if [ -z "$holder" ]; then
+                echo "FAIL: csa-exact-v4-again names no IPAllocation"
+                exit 1
+              fi
+              before=$(allocation_count "$NAMESPACE")
+              expect_refusal "$NAMESPACE" 409 AddressInUse "$holder" \
+                "172.18.30.10 while csa-exact-v4-again holds it" < test-data/refuse-held-v4.yaml
+              expect_no_claim "$NAMESPACE" csa-dup-v4
+              after=$(allocation_count "$NAMESPACE")
+              if [ "$before" != "$after" ]; then
+                echo "FAIL: the refused claim changed the allocation count from $before to $after"
+                exit 1
+              fi
+              stored=$(kubectl get ipclaim -n "$NAMESPACE" csa-exact-v4-again -o json)
+              assert_bound_exactly "$stored" 172.18.30.10/32 172.18.30.10 "the holder, after the refusal"
+              echo "OK: a held address is refused by name"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a held address is refused by name'))": true
+
+    - name: refused-an-address-the-pool-withholds
+      description: |
+        csa-rsv withholds its first address. Asking for it is a 409
+        AddressReserved; the next address in the same pool binds, which is what
+        makes the refusal about the reservation and not about the pool.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              before=$(allocation_count "$NAMESPACE")
+              expect_refusal "$NAMESPACE" 409 AddressReserved '' \
+                "172.18.32.0, the address csa-rsv withholds" < test-data/refuse-reserved.yaml
+              expect_no_claim "$NAMESPACE" csa-rsv-first
+              after=$(allocation_count "$NAMESPACE")
+              if [ "$before" != "$after" ]; then
+                echo "FAIL: the refused claim changed the allocation count from $before to $after"
+                exit 1
+              fi
+              json=$(create_claim_json "$NAMESPACE" < test-data/rsv-control.yaml)
+              assert_bound_exactly "$json" 172.18.32.1/32 172.18.32.1 "csa-rsv-second (control)"
+              echo "OK: a withheld address is refused, its neighbour binds"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a withheld address is refused, its neighbour binds'))": true
+
+    - name: refused-an-address-outside-every-pool-offering-the-class
+      description: |
+        400 AddressOutsidePool, and the message lists the pools that were
+        checked — both of them — so the caller can see where the class's space
+        actually is.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              before=$(allocation_count "$NAMESPACE")
+              expect_refusal "$NAMESPACE" 400 AddressOutsidePool \
+                'csa-two-a[\s\S]*csa-two-b|csa-two-b[\s\S]*csa-two-a' \
+                "172.18.34.7 from csa-two" < test-data/refuse-outside.yaml
+              expect_no_claim "$NAMESPACE" csa-outside
+              after=$(allocation_count "$NAMESPACE")
+              if [ "$before" != "$after" ]; then
+                echo "FAIL: the refused claim changed the allocation count from $before to $after"
+                exit 1
+              fi
+              echo "OK: an address outside the class's pools is refused, naming them"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: an address outside the class'))": true
+
+    - name: refused-an-unaligned-address
+      description: |
+        172.18.30.133 is not on a /28 boundary. 400 AddressUnaligned — and the
+        claim must not have been rounded down to 172.18.30.128/28, which is free
+        and would have bound.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              before=$(allocation_count "$NAMESPACE")
+              expect_refusal "$NAMESPACE" 400 AddressUnaligned '' \
+                "172.18.30.133 as a /28" < test-data/refuse-unaligned.yaml
+              expect_no_claim "$NAMESPACE" csa-unaligned
+              after=$(allocation_count "$NAMESPACE")
+              if [ "$before" != "$after" ]; then
+                echo "FAIL: the refused claim changed the allocation count from $before to $after"
+                exit 1
+              fi
+              rounded=$(kubectl get ipallocation -n "$NAMESPACE" -o json \
+                | jq -r '[.items[] | select(.status.allocatedCIDR == "172.18.30.128/28")] | length')
+              if [ "$rounded" != "0" ]; then
+                echo "FAIL: 172.18.30.128/28 is allocated: the unaligned address was rounded down"
+                exit 1
+              fi
+              echo "OK: an unaligned address is refused, not rounded"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: an unaligned address is refused, not rounded'))": true
+
+    - name: refused-a-malformed-address
+      description: Neither a word nor an out-of-range octet is an address; 422 on spec.address.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              before=$(allocation_count "$NAMESPACE")
+              expect_invalid "$NAMESPACE" spec.address '' "address not-an-ip" \
+                < test-data/refuse-malformed-word.yaml
+              expect_no_claim "$NAMESPACE" csa-malformed-word
+              expect_invalid "$NAMESPACE" spec.address '' "address 172.18.30.999" \
+                < test-data/refuse-malformed-octet.yaml
+              expect_no_claim "$NAMESPACE" csa-malformed-octet
+              after=$(allocation_count "$NAMESPACE")
+              if [ "$before" != "$after" ]; then
+                echo "FAIL: the refused claims changed the allocation count from $before to $after"
+                exit 1
+              fi
+              echo "OK: malformed addresses are invalid"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: malformed addresses are invalid'))": true
+
+    - name: refused-an-address-of-the-wrong-family
+      description: An IPv6 address on an IPv4 class is 400 FamilyMismatch.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              before=$(allocation_count "$NAMESPACE")
+              expect_refusal "$NAMESPACE" 400 FamilyMismatch '' \
+                "fd83:183::99 on csa-host-v4" < test-data/refuse-family.yaml
+              expect_no_claim "$NAMESPACE" csa-family
+              after=$(allocation_count "$NAMESPACE")
+              if [ "$before" != "$after" ]; then
+                echo "FAIL: the refused claim changed the allocation count from $before to $after"
+                exit 1
+              fi
+              echo "OK: an address of the wrong family is refused"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: an address of the wrong family is refused'))": true
+
+    - name: refused-a-cidr-whose-length-disagrees-with-prefixLength
+      description: |
+        172.18.30.32/28 with prefixLength 29. Both lengths are ones the class
+        allows, so only the disagreement can refuse it: 422 on spec.address.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              before=$(allocation_count "$NAMESPACE")
+              expect_invalid "$NAMESPACE" spec.address '' "a /28 address with prefixLength 29" \
+                < test-data/refuse-length-mismatch.yaml
+              expect_no_claim "$NAMESPACE" csa-len-mismatch
+              after=$(allocation_count "$NAMESPACE")
+              if [ "$before" != "$after" ]; then
+                echo "FAIL: the refused claim changed the allocation count from $before to $after"
+                exit 1
+              fi
+              echo "OK: a self-contradicting address is invalid"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a self-contradicting address is invalid'))": true
+
+    - name: refused-changing-the-address-of-a-bound-claim
+      description: |
+        spec.address is immutable: a bound claim cannot be pointed at another
+        block by editing it. The claim still holds what it held.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_patch_invalid ipclaim "$NAMESPACE" csa-exact-block \
+                '{"spec":{"address":"172.18.30.80/28"}}' spec.address immutable \
+                "moving csa-exact-block to 172.18.30.80/28"
+              stored=$(kubectl get ipclaim -n "$NAMESPACE" csa-exact-block -o json)
+              assert_bound_exactly "$stored" 172.18.30.64/28 - "csa-exact-block, after the refused patch"
+              spec=$(printf '%s' "$stored" | jq -r '.spec.address')
+              if [ "$spec" != "172.18.30.64/28" ]; then
+                echo "FAIL: csa-exact-block's spec.address is now '$spec'"
+                exit 1
+              fi
+              echo "OK: the address of a bound claim is immutable"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: the address of a bound claim is immutable'))": true
+
+    - name: refused-placing-a-shared-range
+      description: |
+        A ScopeRange claim may name its range, which places the class's pool
+        there (see the scoperange-specific-address suite). csa-range does not
+        name the project role, so its pool for a network is shared by every
+        consumer, and one consumer cannot choose where it goes: 400
+        SharedPoolUnplaced, and no range was provisioned on the way.
+      try:
+        - script:
+            timeout: 60s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              expect_refusal "$NAMESPACE" 400 SharedPoolUnplaced 'csa-range' \
+                "a ScopeRange claim placing shared csa-range at fd83:184::/96" \
+                < test-data/refuse-scoperange.yaml
+              expect_no_claim "$NAMESPACE" csa-range-addr
+              expect_pool_count 0 csa-range network=csa-net-a
+              echo "OK: a shared range cannot be placed by one consumer"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: a shared range cannot be placed by one consumer'))": true

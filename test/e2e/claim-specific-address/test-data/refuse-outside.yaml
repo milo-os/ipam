@@ -1,0 +1,10 @@
+# Inside neither csa-two-a (172.18.31.0/24) nor csa-two-b (172.18.33.0/24).
+apiVersion: ipam.miloapis.com/v1alpha1
+kind: IPClaim
+metadata:
+  name: csa-outside
+  labels:
+    suite: claim-specific-address
+spec:
+  className: csa-two
+  address: 172.18.34.7

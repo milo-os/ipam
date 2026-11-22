@@ -1,0 +1,129 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: address-refusal-isolation
+spec:
+  description: |
+    A refusal of a named address describes what holds it only to the project
+    that holds it (milo-os/ipam#183 review).
+
+    Two consumer projects claim from one shared platform pool. Project beta
+    holds 172.18.40.16/28. Project alpha asking for 172.18.40.20 is refused
+    409 AddressInUse, and nothing in the response (message, causes, details)
+    says where beta's block is or what it is called: otherwise a shared pool
+    is a way to map another project's ranges by probing. Alpha's refusal for
+    its own block still names the block and the IPAllocation holding it.
+
+  skipDelete: true
+  cluster: consumer-a
+  clusters:
+    platform:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-datum-cloud
+    consumer-a:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-alpha
+    consumer-b:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-project-beta
+    admin:
+      kubeconfig: ../.tenant-impersonation.kubeconfig
+      context: tenant-platform
+
+  steps:
+    - name: share-one-pool-between-two-projects
+      try:
+        - apply:
+            cluster: admin
+            file: test-data/rbac.yaml
+        - script:
+            timeout: 90s
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              PLATFORM="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+              POOL_KUBECTL="$PLATFORM"
+              $PLATFORM apply -f test-data/platform.yaml >/dev/null
+              wait_pool_ready ari-root
+              used=$($PLATFORM get ippool ari-root -o jsonpath='{.status.capacity.allocated}')
+              if [ -n "$used" ] && [ "$used" != "0" ]; then
+                echo "FAIL: ari-root already holds $used address(es); clean up the earlier run first"
+                exit 1
+              fi
+              for ctx in tenant-project-alpha tenant-project-beta; do
+                kubectl --kubeconfig $KCFG --context $ctx apply -f test-data/reference.yaml >/dev/null
+              done
+              echo "OK: one pool shared by alpha and beta"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: one pool shared by alpha and beta'))": true
+
+    - name: a-refusal-does-not-describe-another-projects-block
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              KCFG=../.tenant-impersonation.kubeconfig
+              A="kubectl --kubeconfig $KCFG --context tenant-project-alpha"
+              B="kubectl --kubeconfig $KCFG --context tenant-project-beta"
+
+              claim() {
+                printf 'apiVersion: ipam.miloapis.com/v1alpha1\nkind: IPClaim\nmetadata:\n  name: %s\n  labels:\n    suite: address-refusal-isolation\nspec:\n  className: ari-blocks\n  address: "%s"\n' "$1" "$2"
+              }
+
+              KUBECTL="$B"
+              beta=$(claim ari-beta-block 172.18.40.16/28 | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$beta" 172.18.40.16/28 - "beta's block"
+              beta_alloc=$(printf '%s' "$beta" | jq -r '.status.boundAllocationRef.name')
+
+              KUBECTL="$A"
+              out=$(claim ari-alpha-probe 172.18.40.20 | $A create -n "$NAMESPACE" -v=9 -f - 2>&1) && rc=0 || rc=$?
+              printf '%s\n' "$out" | _check_status "alpha probing beta's block" "$rc" 409 AddressInUse "" ""
+              # The request body carries 172.18.40.20; only the response could
+              # carry beta's block, its allocation or its project.
+              for leak in 172.18.40.16 "$beta_alloc" project-beta; do
+                if printf '%s\n' "$out" | grep -v '"Request Body"' | grep -q -- "$leak"; then
+                  echo "FAIL: alpha's refusal reveals '$leak':"
+                  printf '%s\n' "$out" | grep -v '"Request Body"' | grep -- "$leak" | head -3 | sed 's/^/    /'
+                  exit 1
+                fi
+              done
+              expect_no_claim "$NAMESPACE" ari-alpha-probe
+
+              # Alpha's own block is described in full.
+              own=$(claim ari-alpha-block 172.18.40.64/28 | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$own" 172.18.40.64/28 - "alpha's block"
+              own_alloc=$(printf '%s' "$own" | jq -r '.status.boundAllocationRef.name')
+              claim ari-alpha-dup 172.18.40.70 | expect_refusal "$NAMESPACE" 409 AddressInUse \
+                "172.18.40.64/28[\s\S]*$own_alloc" "alpha asking for its own block's address"
+              expect_no_claim "$NAMESPACE" ari-alpha-dup
+              echo "OK: another project's block is in use and nothing more"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: another project'))": true
+
+      finally:
+        - script:
+            timeout: 180s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              KCFG=../.tenant-impersonation.kubeconfig
+              for ctx in tenant-project-alpha tenant-project-beta; do
+                kubectl --kubeconfig $KCFG --context $ctx delete ipclaim -n "$NAMESPACE" \
+                  -l suite=address-refusal-isolation --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1 || true
+                kubectl --kubeconfig $KCFG --context $ctx delete ipclass ari-blocks --ignore-not-found >/dev/null 2>&1 || true
+              done
+              PLATFORM="kubectl --kubeconfig $KCFG --context tenant-project-datum-cloud"
+              $PLATFORM delete ippool ari-root --ignore-not-found >/dev/null 2>&1 || true
+              $PLATFORM delete ipclass ari-blocks --ignore-not-found >/dev/null 2>&1 || true
+              kubectl --kubeconfig $KCFG --context tenant-platform delete -f test-data/rbac.yaml \
+                --ignore-not-found >/dev/null 2>&1 || true
+              echo "address-refusal-isolation cleanup done"
+            check:
+              ($error == null): true
