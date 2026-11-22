@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"go.miloapis.com/ipam/internal/tenant"
+	"go.miloapis.com/ipam/internal/testdb"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 	"go.miloapis.com/ipam/pkg/ipamerrors"
@@ -22,10 +23,19 @@ import (
 // edit would leave it, without the update hook that tightens existing leases.
 func setPoolCap(t *testing.T, db *pgxpool.Pool, pool string, lease *metav1.Duration) {
 	t.Helper()
-	ctx := context.Background()
+	key, data := poolWithCap(t, db, pool, lease)
+	if _, err := db.Exec(context.Background(), `UPDATE ipam_objects SET data = $2 WHERE key = $1`, key, data); err != nil {
+		t.Fatalf("write pool %s: %v", pool, err)
+	}
+}
+
+// poolWithCap returns pool's storage key and its stored object with
+// maxRetentionLease set to lease, or cleared when lease is nil.
+func poolWithCap(t *testing.T, db *pgxpool.Pool, pool string, lease *metav1.Duration) (string, []byte) {
+	t.Helper()
 	key := tenant.Identity{Name: testProject}.ResourceKey("ippools", pool)
 	var data []byte
-	if err := db.QueryRow(ctx, `SELECT data FROM ipam_objects WHERE key = $1`, key).Scan(&data); err != nil {
+	if err := db.QueryRow(context.Background(), `SELECT data FROM ipam_objects WHERE key = $1`, key).Scan(&data); err != nil {
 		t.Fatalf("read pool %s: %v", pool, err)
 	}
 	var p ipamv1alpha1.IPPool
@@ -37,8 +47,29 @@ func setPoolCap(t *testing.T, db *pgxpool.Pool, pool string, lease *metav1.Durat
 	if err != nil {
 		t.Fatalf("encode pool %s: %v", pool, err)
 	}
-	if _, err := db.Exec(ctx, `UPDATE ipam_objects SET data = $2 WHERE key = $1`, key, data); err != nil {
-		t.Fatalf("write pool %s: %v", pool, err)
+	return key, data
+}
+
+// removeCapUnderLock clears pool's maxRetentionLease in a transaction it
+// leaves open, so the pool row stays locked and the cap the rest of the
+// database sees is still the old one. The returned func commits it.
+func removeCapUnderLock(t *testing.T, db *pgxpool.Pool, pool string) (commit func()) {
+	t.Helper()
+	ctx := context.Background()
+	key, data := poolWithCap(t, db, pool, nil)
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(ctx, `UPDATE ipam_objects SET data = $2 WHERE key = $1`, key, data); err != nil {
+		t.Fatalf("clear cap of %s: %v", pool, err)
+	}
+	return func() {
+		t.Helper()
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit cap removal: %v", err)
+		}
 	}
 }
 
@@ -311,4 +342,50 @@ func TestAGeneratedNameWithAnUnleasedOverrideIsRefused(t *testing.T) {
 	if got := obj.(*ipam.IPClaim).Name; !strings.HasPrefix(got, "web-") {
 		t.Errorf("claim name = %q, want one generated from web-", got)
 	}
+}
+
+// The cap the lease rule judges is the one read under the pool's lock. Here
+// the cap is removed by a transaction that holds the pool when the claim
+// arrives: any read before the lock still sees the cap, and a rule that used
+// it would accept an override with no lease. The claim waits for the lock,
+// sees the cap gone, and is refused, fresh or reclaiming.
+func TestTheLeaseRuleReadsThePoolCapUnderThePoolLock(t *testing.T) {
+	t.Run("fresh", func(t *testing.T) {
+		r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimDelete)
+		setPoolCap(t, db, "us-east", &metav1.Duration{Duration: time.Hour})
+		ctx := claimCtx(testProject)
+		claim := retainClaim("claim-1", ipam.ReclaimRetain)
+
+		commit := removeCapUnderLock(t, db, "us-east")
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.Create(ctx, claim.DeepCopy(), nil, &metav1.CreateOptions{})
+			done <- err
+		}()
+		testdb.WaitForLockWaiters(t, db, 1)
+		commit()
+
+		expectLeaseRequired(t, <-done, "us-east")
+		assertNothingAllocated(t, db, claim)
+	})
+
+	t.Run("reclaim", func(t *testing.T) {
+		r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimDelete)
+		setPoolCap(t, db, "us-east", &metav1.Duration{Duration: time.Hour})
+		ctx := claimCtx(testProject)
+		claim := retainClaim("claim-1", ipam.ReclaimRetain)
+		retainAndDelete(t, r, ctx, claim)
+
+		commit := removeCapUnderLock(t, db, "us-east")
+		done := make(chan error, 1)
+		go func() {
+			_, err := r.Create(ctx, claim.DeepCopy(), nil, &metav1.CreateOptions{})
+			done <- err
+		}()
+		testdb.WaitForLockWaiters(t, db, 1)
+		commit()
+
+		expectLeaseRequired(t, <-done, "us-east")
+		assertStillRetained(t, db, claim)
+	})
 }
