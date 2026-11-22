@@ -813,7 +813,11 @@ func newClaimReleaseCommand(a *app) *cobra.Command {
 policy: Delete frees it back to the pool, Retain leaves the allocation in place
 with its claim reference cleared, still held and still counted against its
 owner. Creating a claim of the same name again takes a retained address back;
-otherwise it is held until something releases it explicitly.`,
+otherwise it is held until its allocation is released (allocation release).
+
+If the class or pool sets a retention lease, the allocation shows when it runs
+out. Leases are not yet enforced: until they are, a retained address is held
+past that deadline until it is released.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]

@@ -287,7 +287,8 @@ type IPClassSpec struct {
 	//
 	// A claim cannot override this — retention the holder can extend
 	// indefinitely is not a lease. The effective lease is the shorter of this
-	// and the pool's MaxRetentionLease.
+	// and the pool's MaxRetentionLease, fixed when the claim is deleted and
+	// shown as the IPAllocation's status.expiresAt. Not yet enforced.
 	RetentionLease *metav1.Duration
 
 	// Provisioner names the component responsible for realising allocations of
@@ -355,7 +356,8 @@ type IPPoolSpec struct {
 	// MaxRetentionLease caps how long any allocation drawn from this pool may
 	// stay retained, whatever the class asks for. The cap lives here because
 	// the pool is the thing that runs out. Unset means the class's lease
-	// applies unchanged.
+	// applies unchanged. Lowering it brings forward the deadlines of what the
+	// pool already retains; raising it moves none back. Not yet enforced.
 	MaxRetentionLease *metav1.Duration
 
 	Allocation AllocationSpec

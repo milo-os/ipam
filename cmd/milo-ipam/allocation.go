@@ -6,9 +6,11 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -272,6 +274,27 @@ func (a *app) resolveAllocation(cs clientset.Interface, ns, arg string) ([]*ipam
 	return []*ipamv1alpha1.IPAllocation{al}, nil
 }
 
+// leaseText says what will happen to a retained allocation and when. Leases
+// are recorded but not yet enforced, and the text says so: a deadline read as
+// a promise of release, or of being held until then, is wrong both ways.
+func leaseText(al *ipamv1alpha1.IPAllocation, now time.Time) string {
+	if al.Status.ExpiresAt != nil {
+		at := al.Status.ExpiresAt.Time
+		when := "runs out " + at.UTC().Format(time.RFC3339)
+		if at.After(now) {
+			when += " (in " + shortDuration(at.Sub(now)) + ")"
+		} else {
+			when = "ran out " + at.UTC().Format(time.RFC3339) + " (" + shortDuration(now.Sub(at)) + " ago)"
+		}
+		return when + "; not yet enforced, so it stays held until released"
+	}
+	if c := meta.FindStatusCondition(al.Status.Conditions, ipamv1alpha1.AllocationConditionRetained); c != nil &&
+		c.Reason == ipamv1alpha1.RetainedReasonLeasePending {
+		return "not yet evaluated"
+	}
+	return "none — held until released or reclaimed"
+}
+
 func (a *app) renderAllocationDetail(al *ipamv1alpha1.IPAllocation) error {
 	t := newTable(a.io.Out, []string{"FIELD", "VALUE"})
 	t.row("Name", al.Name)
@@ -297,6 +320,10 @@ func (a *app) renderAllocationDetail(al *ipamv1alpha1.IPAllocation) error {
 	if al.Spec.OwnerRef != nil {
 		t.row("Held for", formatObjectRef(al.Spec.OwnerRef))
 	}
+	if al.Status.RetainedAt != nil {
+		t.row("Retained", al.Status.RetainedAt.UTC().Format(time.RFC3339))
+		t.row("Lease", leaseText(al, time.Now()))
+	}
 	t.row("Age", humanDuration(al.CreationTimestamp))
 	if err := t.flush(); err != nil {
 		return err
@@ -318,6 +345,10 @@ func newAllocationReleaseCommand(a *app) *cobra.Command {
 Retain defers to: an allocation whose claim is gone stays held until a claim of
 the same name is created again, which takes it back, or until it is released
 here. Release it to give the address to a claim of another name or terms.
+
+A retained allocation may show a lease deadline (allocation show). Leases are
+not yet enforced, so an allocation past its deadline is still held until it is
+released here.
 
 Releasing an allocation that still has a claim bound to it is refused — release
 the claim instead, so the claim and its address do not disagree.`,
@@ -609,6 +640,9 @@ func (a *app) renderAddressAnswer(arg string, al *ipamv1alpha1.IPAllocation, cs 
 	default:
 		_, _ = fmt.Fprintf(a.io.Out, "  claimed by: nothing — retained after its claim was deleted;\n")
 		_, _ = fmt.Fprintf(a.io.Out, "              recreating that claim takes it back\n")
+		if al.Status.RetainedAt != nil {
+			_, _ = fmt.Fprintf(a.io.Out, "  lease:      %s\n", leaseText(al, time.Now()))
+		}
 	}
 
 	for _, role := range sortedScopeRoles(al.Spec.Scope) {

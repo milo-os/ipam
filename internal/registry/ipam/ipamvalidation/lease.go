@@ -38,17 +38,19 @@ func RetentionLease(lease *metav1.Duration, path *field.Path) field.ErrorList {
 // RetentionLeaseWarning is the warning for an object that sets a retention
 // lease, or nil if it sets none.
 //
-// The field is accepted and stored, but nothing releases a retained address
-// when its lease runs out yet. Saying so at the moment an author sets one is
-// the difference between a lease they know is pending and one they believe is
+// The lease is applied when a claim is deleted, and its deadline shown on the
+// IPAllocation, but the sweeper runs in observe mode and releases nothing when
+// it runs out yet. Saying so at the moment an author sets one is the
+// difference between a lease they know is pending and one they believe is
 // running.
 func RetentionLeaseWarning(lease *metav1.Duration, path *field.Path) []string {
 	if lease == nil {
 		return nil
 	}
 	return []string{fmt.Sprintf(
-		"%s is recorded but retention leases are not yet enforced: a retained address is held until its "+
-			"IPAllocation is deleted, however long ago the lease ran out (see https://github.com/milo-os/ipam/issues/107)",
+		"%s sets the deadline shown as a retained IPAllocation's status.expiresAt, but retention leases are not yet "+
+			"enforced: a retained address is held until its IPAllocation is deleted, however long ago the lease ran out "+
+			"(see https://github.com/milo-os/ipam/issues/107)",
 		path)}
 }
 

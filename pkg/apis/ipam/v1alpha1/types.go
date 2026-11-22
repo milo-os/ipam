@@ -457,10 +457,11 @@ type IPClassSpec struct {
 	// RetentionLease bounds how long an allocation of this class may stay
 	// retained after its claim is deleted, before the service releases it.
 	//
-	// Unset means no expiry: a retained address is held until something
-	// releases it explicitly. That is the default deliberately — shipping a
-	// lease that defaults to on would reclaim addresses in existing
-	// deployments that nobody asked to have reclaimed.
+	// Unset means no expiry: a retained address is held until its IPAllocation
+	// is deleted or a claim of the same name takes it back. That is the
+	// default deliberately — shipping a lease that defaults to on would
+	// reclaim addresses in existing deployments that nobody asked to have
+	// reclaimed.
 	//
 	// A claim cannot override this. A claim already overrides ReclaimPolicy;
 	// letting the holder also set its own expiry hands the scarce-space
@@ -468,7 +469,12 @@ type IPClassSpec struct {
 	// holder can extend indefinitely is not a lease.
 	//
 	// The effective lease is the shorter of this and the pool's
-	// MaxRetentionLease.
+	// MaxRetentionLease. It is fixed when the claim is deleted and shown as
+	// the IPAllocation's status.expiresAt; changing this field later does not
+	// move a deadline already set.
+	//
+	// Leases are not yet enforced: an allocation past its deadline is still
+	// held until it is released explicitly.
 	// +optional
 	RetentionLease *metav1.Duration `json:"retentionLease,omitempty"`
 
@@ -611,6 +617,13 @@ type IPPoolSpec struct {
 	// owns the scarcity rather than on the one that wants to consume it.
 	//
 	// Unset means the class's lease applies unchanged.
+	//
+	// Unlike a class's lease, lowering this applies to what the pool already
+	// retains: every deadline the new cap cuts short is brought forward to
+	// retention plus the cap. Raising or removing it moves no deadline back.
+	//
+	// Leases are not yet enforced: an allocation past its deadline is still
+	// held until it is released explicitly.
 	// +optional
 	MaxRetentionLease *metav1.Duration `json:"maxRetentionLease,omitempty"`
 
