@@ -294,7 +294,8 @@ spec:
         A claim setting reclaimPolicy: Retain against a class whose default is
         Delete must be retained. This is the case where the effective policy is
         neither object's literal default, and the one a hard-coded policy value
-        gets wrong most quietly.
+        gets wrong most quietly. rc-delete sets a retention lease, without
+        which the override is refused (class-retain-replacement covers that).
       try:
         - script:
             timeout: 120s
