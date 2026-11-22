@@ -468,7 +468,13 @@ type IPAllocationStatus struct {
 	// ScopeDigest is the canonical digest of Spec.Scope, computed by the
 	// server — the value uniqueness is enforced on.
 	ScopeDigest string
-	Conditions  []metav1.Condition
+	// RetainedAt is when the bound claim was deleted under reclaimPolicy
+	// Retain. Nil while a claim holds the allocation.
+	RetainedAt *metav1.Time
+	// ExpiresAt is when a retained allocation's lease runs out. Nil when no
+	// lease applies, and while a claim holds the allocation.
+	ExpiresAt  *metav1.Time
+	Conditions []metav1.Condition
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object

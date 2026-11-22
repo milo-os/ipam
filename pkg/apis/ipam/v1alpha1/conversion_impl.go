@@ -107,6 +107,13 @@ func copyDuration(in *metav1.Duration) *metav1.Duration {
 	return &v
 }
 
+func copyTime(in *metav1.Time) *metav1.Time {
+	if in == nil {
+		return nil
+	}
+	return in.DeepCopy()
+}
+
 func copyInt32Ptr(in *int32) *int32 {
 	if in == nil {
 		return nil
@@ -378,6 +385,8 @@ func convert_v1alpha1_IPAllocation_To_ipam(in *IPAllocation, out *ipam.IPAllocat
 		AllocatedCIDR: in.Status.AllocatedCIDR,
 		Address:       in.Status.Address,
 		ScopeDigest:   in.Status.ScopeDigest,
+		RetainedAt:    copyTime(in.Status.RetainedAt),
+		ExpiresAt:     copyTime(in.Status.ExpiresAt),
 		Conditions:    toIpamConditions(in.Status.Conditions),
 	}
 	return nil
@@ -400,6 +409,8 @@ func convert_ipam_IPAllocation_To_v1alpha1(in *ipam.IPAllocation, out *IPAllocat
 		AllocatedCIDR: in.Status.AllocatedCIDR,
 		Address:       in.Status.Address,
 		ScopeDigest:   in.Status.ScopeDigest,
+		RetainedAt:    copyTime(in.Status.RetainedAt),
+		ExpiresAt:     copyTime(in.Status.ExpiresAt),
 		Conditions:    toIpamConditions(in.Status.Conditions),
 	}
 	return nil

@@ -10,6 +10,7 @@ import (
 	"k8s.io/apiserver/pkg/registry/rest"
 
 	"go.miloapis.com/ipam/pkg/apis/ipam"
+	"go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
 
 func cellsByColumn(t *testing.T, table *metav1.Table) map[string]interface{} {
@@ -111,7 +112,7 @@ func TestDefaultColumnsAreTheIdentifyingOnes(t *testing.T) {
 	}{
 		{"ippools", IPPools(), &ipam.IPPool{}, []string{"Name", "CIDR", "Family", "Class", "Utilization", "Age"}},
 		{"ipclaims", IPClaims(), &ipam.IPClaim{}, []string{"Name", "Class", "Family", "Allocated", "Pool", "Phase", "Age"}},
-		{"ipallocations", IPAllocations(), &ipam.IPAllocation{}, []string{"Name", "Allocated", "Pool", "Class", "Purpose", "Phase", "Age"}},
+		{"ipallocations", IPAllocations(), &ipam.IPAllocation{}, []string{"Name", "Allocated", "Pool", "Class", "Purpose", "Phase", "Expires", "Age"}},
 		{"ipclasses", IPClasses(), &ipam.IPClass{}, []string{"Name", "Family", "Parent", "Prefix", "Pool Per", "Phase", "Age"}},
 	} {
 		t.Run(tc.resource, func(t *testing.T) {
@@ -270,5 +271,33 @@ func TestScopeRendersSortedPairs(t *testing.T) {
 	}
 	if got := formatScope(nil); got != "<none>" {
 		t.Errorf("formatScope(nil) = %q, want <none>", got)
+	}
+}
+
+// The Expires column distinguishes the four things a reader needs told apart:
+// held by a claim, retained with no lease, retained with a lease not yet
+// evaluated, and retained with a deadline either side of now.
+func TestLeaseExpiryRendersEachRetentionState(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) *metav1.Time { v := metav1.NewTime(now.Add(d)); return &v }
+	retained := func(reason string) []metav1.Condition {
+		return []metav1.Condition{{Type: v1alpha1.AllocationConditionRetained, Status: metav1.ConditionTrue, Reason: reason}}
+	}
+	for _, tc := range []struct {
+		name   string
+		status ipam.IPAllocationStatus
+		want   string
+	}{
+		{"bound", ipam.IPAllocationStatus{}, "<none>"},
+		{"no lease", ipam.IPAllocationStatus{RetainedAt: at(-time.Hour), Conditions: retained(v1alpha1.RetainedReasonNoLease)}, "never"},
+		{"pending", ipam.IPAllocationStatus{RetainedAt: at(-time.Hour), Conditions: retained(v1alpha1.RetainedReasonLeasePending)}, "<pending>"},
+		{"future", ipam.IPAllocationStatus{RetainedAt: at(-time.Hour), ExpiresAt: at(3 * time.Hour)}, "3h"},
+		{"past", ipam.IPAllocationStatus{RetainedAt: at(-time.Hour), ExpiresAt: at(-5 * time.Minute)}, "expired 5m ago"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := leaseExpiry(&ipam.IPAllocation{Status: tc.status}, now); got != tc.want {
+				t.Errorf("leaseExpiry = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

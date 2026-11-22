@@ -163,7 +163,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocation(ref common.ReferenceCallback) co
 	return common.OpenAPIDefinition{
 		Schema: spec.Schema{
 			SchemaProps: spec.SchemaProps{
-				Description: "IPAllocation records an address or block handed out of an IPPool. It is created by the system, never by a consumer.\n\nAn allocation may outlive the claim that created it: a claim released under ReclaimPolicy Retain leaves its allocation in place with ClaimRef cleared, still held and still counted against its holder. A claim created again under the same name in the same namespace takes it back; otherwise it is held until something releases it explicitly.",
+				Description: "IPAllocation records an address or block handed out of an IPPool. It is created by the system, never by a consumer.\n\nAn allocation may outlive the claim that created it: a claim released under ReclaimPolicy Retain leaves its allocation in place with ClaimRef cleared, still held and still counted against its holder. A claim created again under the same name in the same namespace takes it back. Its retention lease, if its class or pool sets one, is fixed when the claim is deleted and shown as status.expiresAt. Leases are not yet enforced: until they are, a retained allocation is held past that deadline until it is released explicitly.",
 				Type:        []string{"object"},
 				Properties: map[string]spec.Schema{
 					"kind": {
@@ -360,6 +360,18 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref common.ReferenceCallba
 							Format:      "",
 						},
 					},
+					"retainedAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "RetainedAt is when the claim this allocation was bound to was deleted under reclaimPolicy Retain. Unset while a claim holds the allocation, and cleared when a recreated claim reclaims it.",
+							Ref:         ref(v1.Time{}.OpenAPIModelName()),
+						},
+					},
+					"expiresAt": {
+						SchemaProps: spec.SchemaProps{
+							Description: "ExpiresAt is when the retention lease of a retained allocation runs out: RetainedAt plus the shorter of its class's retentionLease and its pool's maxRetentionLease, fixed at retention. Lowering the pool's maxRetentionLease later brings it forward; nothing pushes it back. Unset when no lease applies, and while a claim holds the allocation.\n\nLeases are not yet enforced: an allocation past this deadline is still held until its IPAllocation is deleted or a recreated claim reclaims it.",
+							Ref:         ref(v1.Time{}.OpenAPIModelName()),
+						},
+					},
 					"conditions": {
 						VendorExtensible: spec.VendorExtensible{
 							Extensions: spec.Extensions{
@@ -370,7 +382,8 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref common.ReferenceCallba
 							},
 						},
 						SchemaProps: spec.SchemaProps{
-							Type: []string{"array"},
+							Description: "Conditions include Retained, which is True while the allocation is held with no claim (reason LeaseActive, NoLease or LeasePending) and False once a recreated claim takes it back (reason Reclaimed).",
+							Type:        []string{"array"},
 							Items: &spec.SchemaOrArray{
 								Schema: &spec.Schema{
 									SchemaProps: spec.SchemaProps{
@@ -384,7 +397,7 @@ func schema_pkg_apis_ipam_v1alpha1_IPAllocationStatus(ref common.ReferenceCallba
 			},
 		},
 		Dependencies: []string{
-			v1.Condition{}.OpenAPIModelName()},
+			v1.Condition{}.OpenAPIModelName(), v1.Time{}.OpenAPIModelName()},
 	}
 }
 
