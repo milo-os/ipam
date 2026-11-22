@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,7 +16,6 @@ import (
 	metainternalversion "k8s.io/apimachinery/pkg/apis/meta/internalversion"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apiserver/pkg/registry/generic"
 	genericregistry "k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/registry/rest"
@@ -78,9 +78,12 @@ type txBeginner interface {
 }
 
 // Delete frees a retained allocation: the ipam_cidr_allocations row and the
-// object row go together, in one transaction. A bound allocation is refused —
-// the same rule the strategy's ValidateDelete states for the paths that reach
-// the store directly.
+// object row go together, in one transaction. A bound allocation is refused
+// with 409 Conflict naming its claim.
+//
+// The object's spec.claimRef is checked first, so the common refusal costs no
+// transaction, but it is not what decides: the release itself deletes only a
+// row bound to no claim, and refuses the same way if the row says otherwise.
 func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidation rest.ValidateObjectFunc, options *metav1.DeleteOptions) (runtime.Object, bool, error) {
 	existing, err := r.Get(ctx, name, &metav1.GetOptions{})
 	if err != nil {
@@ -95,9 +98,8 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 			return nil, false, err
 		}
 	}
-	if errs := NewStrategy(nil).ValidateDelete(ctx, alloc); len(errs) > 0 {
-		return nil, false, apierrors.NewInvalid(
-			schema.GroupKind{Group: v1alpha1.GroupName, Kind: "IPAllocation"}, name, errs)
+	if alloc.Spec.ClaimRef != nil && alloc.Spec.ClaimRef.Name != "" {
+		return nil, false, boundConflict(name, alloc.Spec.ClaimRef.Name)
 	}
 	if options != nil && isDryRun(options.DryRun) {
 		return alloc, true, nil
@@ -108,8 +110,12 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 	if err != nil {
 		return nil, false, fmt.Errorf("begin allocation delete transaction: %w", err)
 	}
-	if err := r.allocator.ReleaseAllocation(ctx, tx, key); err != nil {
+	if err := r.allocator.ReleaseRetainedAllocation(ctx, tx, key); err != nil {
 		_ = tx.Rollback(ctx)
+		var bound *allocator.AllocationBoundError
+		if errors.As(err, &bound) {
+			return nil, false, boundConflict(name, path.Base(bound.ClaimKey))
+		}
 		return nil, false, fmt.Errorf("release retained allocation: %w", err)
 	}
 	if _, err := r.allocator.DeleteObject(ctx, tx, key); err != nil {
@@ -121,6 +127,14 @@ func (r *ReleasingREST) Delete(ctx context.Context, name string, deleteValidatio
 	}
 	klog.V(2).InfoS("retained allocation released", "allocation", name)
 	return alloc, true, nil
+}
+
+// boundConflict is the refusal to release an allocation a claim still holds.
+// It names the claim, because deleting that claim is what the caller has to do
+// instead.
+func boundConflict(name, claimName string) error {
+	return apierrors.NewConflict(v1alpha1.Resource("ipallocations"), name, fmt.Errorf(
+		"IPAllocation is bound to IPClaim %q; delete the claim instead", claimName))
 }
 
 // DeleteCollection routes individual deletes through Delete so the allocation

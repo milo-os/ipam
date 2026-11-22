@@ -217,6 +217,44 @@ func (a *PostgresPrefixAllocator) ReleaseAllocation(ctx context.Context, tx pgx.
 	return deleteAllocations(ctx, tx, "allocation_key = $1", allocationKey)
 }
 
+// ReleaseRetainedAllocation implements PrefixAllocator.ReleaseRetainedAllocation.
+//
+// The binding is read from the row, in the DELETE's own predicate, never from
+// the IPAllocation object: the object is a copy a caller can write, and a copy
+// that said "unbound" over a bound row would hand the address out twice.
+func (a *PostgresPrefixAllocator) ReleaseRetainedAllocation(ctx context.Context, tx pgx.Tx, allocationKey string) error {
+	pools, err := lockPoolsOf(ctx, tx, "allocation_key = $1", allocationKey)
+	if err != nil {
+		return err
+	}
+	freed, err := deleteLockedAllocations(ctx, tx, pools,
+		"allocation_key = $1 AND claim_key IS NULL AND purpose = 'Claim'", allocationKey)
+	if err != nil {
+		return err
+	}
+	if freed > 0 {
+		return nil
+	}
+
+	// Nothing freed: either there is no row, which leaves only the object to
+	// remove, or the row is held.
+	var claimKey *string
+	err = tx.QueryRow(ctx,
+		`SELECT claim_key FROM ipam_cidr_allocations WHERE allocation_key = $1`, allocationKey,
+	).Scan(&claimKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read allocation %q: %w", allocationKey, err)
+	}
+	holder := ""
+	if claimKey != nil {
+		holder = *claimKey
+	}
+	return &AllocationBoundError{AllocationKey: allocationKey, ClaimKey: holder}
+}
+
 // ReleasePoolReservations implements PrefixAllocator.ReleasePoolReservations.
 func (a *PostgresPrefixAllocator) ReleasePoolReservations(ctx context.Context, tx pgx.Tx, poolKey string) error {
 	return deleteAllocations(ctx, tx, "pool_key = $1 AND purpose = 'Reservation'", poolKey)

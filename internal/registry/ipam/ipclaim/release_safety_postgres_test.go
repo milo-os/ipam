@@ -1,6 +1,7 @@
 package ipclaim
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -10,8 +11,56 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
+
+// An object that already reads as unbound over a bound row — written before
+// spec was immutable, or by hand — does not get its address released. The row
+// is what decides, and the refusal is the same 409 an honest object gets.
+func TestReleaseOfABoundRowIsRefusedWhateverTheObjectSays(t *testing.T) {
+	r, allocREST, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	ctx := claimCtx(testProject)
+
+	created, err := r.Create(ctx, retainClaim("claim-1", ""), nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	claim := created.(*ipam.IPClaim)
+	allocationKey := allocationKeyFor(claim)
+
+	if _, err := db.Exec(context.Background(),
+		`UPDATE ipam_objects
+		    SET data = convert_to((ipam_data_to_jsonb(data) #- '{spec,claimRef}')::text, 'UTF8')
+		  WHERE key = $1`, allocationKey); err != nil {
+		t.Fatalf("clear claimRef on the stored object: %v", err)
+	}
+	obj, err := allocREST.Get(ctx, claim.Status.BoundAllocationRef.Name, &metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get IPAllocation: %v", err)
+	}
+	if obj.(*ipam.IPAllocation).Spec.ClaimRef != nil {
+		t.Fatal("setup: the stored object still names its claim")
+	}
+
+	_, _, err = allocREST.Delete(ctx, claim.Status.BoundAllocationRef.Name, nil, &metav1.DeleteOptions{})
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("releasing a bound row returned %v, want 409 Conflict", err)
+	}
+	if !strings.Contains(err.Error(), "claim-1") {
+		t.Errorf("refusal %q does not name the claim holding the row", err)
+	}
+	row, ok := readAllocationRow(t, db, allocationKey)
+	if !ok {
+		t.Fatal("the refused release deleted the allocation row")
+	}
+	if row.claimKey == nil {
+		t.Error("the refused release unbound the row")
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_objects WHERE key = $1`, allocationKey); n != 1 {
+		t.Error("the refused release deleted the IPAllocation object")
+	}
+}
 
 // Releasing a retained allocation and recreating the claim that retained it
 // meet on one allocation key in one pool. The release used to delete the row

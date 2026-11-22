@@ -2,6 +2,7 @@ package allocator
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -181,5 +182,84 @@ func TestAllocationRowRecordsItsClassAndPolicy(t *testing.T) {
 	}
 	if purpose != "Claim" {
 		t.Errorf("purpose = %q, want Claim", purpose)
+	}
+}
+
+// The release an API client reaches reads the binding off the row. A bound row
+// is refused and left in place, whatever the IPAllocation object says.
+func TestReleaseRetainedAllocationRefusesABoundRow(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "retain-bound", "10.54.0.0/16")
+	allocateWithPolicy(t, db, poolKey, "claim-a", "alloc-a", ipamv1alpha1.ReclaimRetain)
+	consumedBefore := storedConsumption(t, db, poolKey)
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	err = NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-a")
+	_ = tx.Rollback(ctx)
+
+	var bound *AllocationBoundError
+	if !errors.As(err, &bound) {
+		t.Fatalf("ReleaseRetainedAllocation on a bound row returned %v, want *AllocationBoundError", err)
+	}
+	if bound.ClaimKey != "claim-a" {
+		t.Errorf("refusal names claim %q, want claim-a", bound.ClaimKey)
+	}
+
+	var rows int
+	if err := db.QueryRow(ctx,
+		`SELECT count(*) FROM ipam_cidr_allocations WHERE allocation_key = 'alloc-a' AND claim_key = 'claim-a'`,
+	).Scan(&rows); err != nil {
+		t.Fatalf("count allocations: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("bound row count = %d after the refused release, want 1", rows)
+	}
+	if got := storedConsumption(t, db, poolKey); got != consumedBefore {
+		t.Errorf("consumption = %s after a refused release, want the unchanged %s", got, consumedBefore)
+	}
+}
+
+// Once the claim has gone under Retain, the same call frees the address.
+func TestReleaseRetainedAllocationFreesAnUnboundRow(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "retain-unbound", "10.55.0.0/16")
+
+	first := allocateWithPolicy(t, db, poolKey, "claim-a", "alloc-a", ipamv1alpha1.ReclaimRetain)
+	releaseReturningRetained(t, db, "claim-a")
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-a"); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("ReleaseRetainedAllocation: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := allocateWithPolicy(t, db, poolKey, "claim-b", "alloc-b", ipamv1alpha1.ReclaimDelete); got != first {
+		t.Errorf("next claim got %q, want the freed %q", got, first)
+	}
+}
+
+// An IPAllocation object with no row behind it has nothing to free, and its
+// release is not an error: the object still has to be removable.
+func TestReleaseRetainedAllocationWithNoRowIsANoOp(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := NewPostgresPrefixAllocator().ReleaseRetainedAllocation(ctx, tx, "alloc-missing"); err != nil {
+		t.Errorf("ReleaseRetainedAllocation with no row returned %v, want nil", err)
 	}
 }
