@@ -447,6 +447,11 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	}
 	poolKey, err := allocator.ResolvePoolFor(ctx, resolveDB, class, claim.Spec.Scope, wantBlock)
 	if err != nil {
+		if errors.Is(err, allocator.ErrRangeUnplaced) {
+			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
+			failSpan(tracing.ReasonPoolNotFound)
+			return nil, ipamerrors.New(ipamerrors.ReasonRangeUnplaced, err.Error())
+		}
 		if errors.Is(err, allocator.ErrAddressOutsidePool) {
 			metrics.RecordAllocationFailure("ipclaim", "invalid", ipFamily, project, org)
 			failSpan(tracing.ReasonPoolNotFound)

@@ -191,18 +191,19 @@ func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimS
 // ResolvePoolFor is ResolvePool for a claim that may name its block.
 //
 // For a class with no parent, want narrows discovery to the offering pool that
-// contains it (see DiscoverPoolFor). For a class with a parent chain it changes
-// nothing: the leaf pool is found or provisioned exactly as it is for any other
-// claim, and the allocation then refuses the block with ErrAddressOutsidePool
-// unless that leaf pool already contains it.
+// contains it (see DiscoverPoolFor). For a class with a parent chain it
+// provisions nothing: every level must already exist, or the claim is refused
+// with ErrRangeUnplaced, and the allocation then refuses the block with
+// ErrAddressOutsidePool unless the leaf pool contains it.
 //
 // A Block claim does not steer the cascade: guessing at placement from one
 // endpoint's address would carve durable infrastructure to suit one claim.
-// Adopting an address under a chained class works by placing the chain first,
-// with a ScopeRange claim that names the range (PlaceScopeRange); the Block
-// claim then finds the leaf pool holding its address. A pool placed before
-// adoption, by first-free, is never moved, so an address outside it stays
-// refused.
+// Nor may it fall back to first-free, since the pool it placed would be in the
+// way of the placement it needed. Adopting an address under a chained class
+// works by placing the chain first, with a ScopeRange claim that names the
+// range (PlaceScopeRange); the Block claim then finds the leaf pool holding
+// its address. A pool placed before adoption, by first-free, is never moved,
+// so an address outside it stays refused.
 func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
 	// Resolution runs outside the allocation transaction, so its cost lands in
 	// end-to-end claim latency without appearing in any query timing.
@@ -234,6 +235,18 @@ func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, cla
 		return poolKey, err
 	}
 
+	// A claim naming its block never provisions. A level placed by first-free
+	// to serve it would land without regard to the address, is never moved,
+	// and would then make the chain refuse the ScopeRange claim that could
+	// have placed it around the address. So the chain must already exist.
+	if want != nil {
+		poolKey, err := existingChainFor(ctx, db, leaf, claimScope, levels, *want)
+		if err == nil {
+			result = "success"
+		}
+		return poolKey, err
+	}
+
 	// The root-most level carves from an operator-authored pool offering its
 	// class; every level below carves from the level above.
 	source, err := discoverInTx(ctx, db, levels[0].Class, claimScope, nil)
@@ -255,9 +268,9 @@ func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, cla
 // ResolveExistingPool resolves a claim's pool without provisioning anything,
 // reporting the levels that would have to be created.
 //
-// It exists for dry-run. A pool is durable infrastructure that is never
-// renumbered, so provisioning one to answer a hypothetical would leave the
-// hypothetical behind.
+// A claim naming its block resolves through it (existingChainFor): a pool is
+// durable infrastructure that is never renumbered, so one placed by first-free
+// on behalf of a claim that is then refused would stay where it landed.
 func ResolveExistingPool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, []CascadeLevel, error) {
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -292,6 +305,38 @@ func ResolveExistingPool(ctx context.Context, db TxBeginner, leaf *ResolvedClass
 		poolKey = existing
 	}
 	return poolKey, nil, nil
+}
+
+// ErrRangeUnplaced is returned for a claim naming its block under a class
+// whose chain has no pool for the claim's scope yet. Such a claim never has
+// one placed for it by first-free; the chain is placed first, at the range
+// holding the address, by a ScopeRange claim naming that range.
+var ErrRangeUnplaced = errors.New("ipam: the range holding this address has not been placed")
+
+// existingChainFor returns the leaf pool a claim naming want draws from,
+// provisioning nothing: every level of the chain must exist, or the claim is
+// refused with ErrRangeUnplaced naming the ScopeRange claim that would place
+// the missing range around want.
+func existingChainFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, levels []CascadeLevel, want net.IPNet) (string, error) {
+	poolKey, pending, err := ResolveExistingPool(ctx, db, leaf, claimScope)
+	if err != nil {
+		return "", err
+	}
+	if len(pending) == 0 {
+		return poolKey, nil
+	}
+	// The pool the claim draws from is the last level's: that is the range
+	// a ScopeRange claim must name for the address to land inside it.
+	holder := levels[len(levels)-1]
+	hint := fmt.Sprintf("a ScopeRange claim of class %q", holder.Class.Name)
+	if prefixLen, err := EffectivePrefixLength(holder.Class.IPClass, nil); err == nil {
+		if block, err := allocation.ContainingBlock(want, prefixLen); err == nil {
+			hint += fmt.Sprintf(" with spec.address %s", block.String())
+		}
+	}
+	return "", fmt.Errorf("%w: class %q has no pool for this scope yet, and a claim naming an address never has one placed for it; "+
+		"place the range first with %s and the same scope, then claim %s again",
+		ErrRangeUnplaced, pending[0].Class.Name, hint, want.String())
 }
 
 func discoverInTx(ctx context.Context, db TxBeginner, class *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
@@ -441,21 +486,21 @@ func claimPoolIdentity(ctx context.Context, tx pgx.Tx, className, scopeDigest, p
 // the identity row is guaranteed to find the pool.
 //
 // at, when set, is the block to carve instead of the first free one, and
-// requestedBy is the storage key of the claim that named it (see poolCarve).
-func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKey string, at *net.IPNet, requestedBy string) error {
+// requesterProject is the project of the claim that named it (see poolCarve).
+func provisionPool(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKey string, at *net.IPNet, requesterProject string) error {
 	prefixLen, err := EffectivePrefixLength(level.Class.IPClass, nil)
 	if err != nil {
 		return fmt.Errorf("resolve block size for class %q: %w", level.Class.Name, err)
 	}
 
 	cidr, err := carveFromPool(ctx, tx, sourcePoolKey, prefixLen, poolCarve{
-		AllocationKey: level.PoolKey,
-		ClassName:     level.Class.Name,
-		ScopeDigest:   level.ScopeDigest,
-		IPFamily:      string(level.Class.Spec.IPFamily),
-		OwnerProject:  level.OwnerProject(),
-		At:            at,
-		RequestedBy:   requestedBy,
+		AllocationKey:    level.PoolKey,
+		ClassName:        level.Class.Name,
+		ScopeDigest:      level.ScopeDigest,
+		IPFamily:         string(level.Class.Spec.IPFamily),
+		OwnerProject:     level.OwnerProject(),
+		At:               at,
+		RequesterProject: requesterProject,
 	})
 	if err != nil {
 		return err
@@ -596,9 +641,9 @@ type poolCarve struct {
 	// or AddressReserved rather than as exhaustion.
 	At *net.IPNet
 
-	// RequestedBy is the storage key of the claim that named At. It decides
-	// only whether a refusal may name the allocation in the way.
-	RequestedBy string
+	// RequesterProject is the project of the claim that named At. It decides
+	// how much a refusal may say about what is in the way.
+	RequesterProject string
 }
 
 // carveFromPool takes a block out of the source pool for a child pool to own.
@@ -627,7 +672,7 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 	// free in every space, not in one of them.
 	var block *net.IPNet
 	if carve.At != nil {
-		if err := checkRequestedBlock(ctx, tx, sourcePoolKey, spaceAll, parents, *carve.At, carve.RequestedBy); err != nil {
+		if err := checkRequestedBlock(ctx, tx, sourcePoolKey, spaceAll, parents, *carve.At, carve.RequesterProject); err != nil {
 			return nil, err
 		}
 		at := *carve.At
@@ -655,6 +700,9 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 		sourcePoolKey, block.String(), carve.AllocationKey, carve.IPFamily,
 		carve.ClassName, carve.ScopeDigest, carve.OwnerProject,
 	); err != nil {
+		if carve.At != nil && isOverlapViolation(err) {
+			return nil, &AddressInUseError{Address: block.String()}
+		}
 		return nil, fmt.Errorf("record pool carve against %q: %w", sourcePoolKey, err)
 	}
 

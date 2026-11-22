@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -600,9 +601,26 @@ func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, c
 		req.ClassName, req.ScopeDigest, string(policy), req.OwnerProject,
 	)
 	if err != nil {
+		// A named block was checked free under the pool's lock, so this
+		// means a writer the lock does not exclude got there first. It is
+		// the same refusal the check would have given, not a server fault.
+		if req.Address != "" && isOverlapViolation(err) {
+			return &AddressInUseError{Address: cidr}
+		}
 		return fmt.Errorf("insert allocation: %w", err)
 	}
 	return nil
+}
+
+// overlapConstraint is the exclusion constraint that keeps two allocations of
+// one address space in one pool from overlapping.
+const overlapConstraint = "ipam_cidr_alloc_no_overlap"
+
+// isOverlapViolation reports whether err is that constraint refusing a row
+// (SQLSTATE 23P01, exclusion_violation).
+func isOverlapViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23P01" && pgErr.ConstraintName == overlapConstraint
 }
 
 // totalAddresses counts the addresses the pool's parents cover.

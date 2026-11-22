@@ -121,6 +121,19 @@ const (
 	// shared pool goes; it must already exist and contain the range, so the
 	// caller claims without an address to have it placed by the allocator.
 	ReasonSharedPoolUnplaced Reason = "SharedPoolUnplaced"
+
+	// ReasonRangeUnplaced reports that a claim named an address under a class
+	// whose chain has no pool for the claim's scope yet. A claim naming an
+	// address never has its chain placed by first-free, because a pool placed
+	// without regard to the address is never moved and would stand in the way
+	// of the placement the address needs. The caller places the range first,
+	// with a ScopeRange claim naming it (the message says which class and
+	// which range), then claims the address again.
+	//
+	// It is a 400 rather than a 409: nothing holds what the claim asked for,
+	// and repeating the request unchanged is refused until the caller does
+	// something else first.
+	ReasonRangeUnplaced Reason = "RangeUnplaced"
 )
 
 // scopeFieldPrefix is the field path under which a missing scope role is
@@ -362,6 +375,7 @@ var knownReasons = map[Reason]bool{
 	ReasonAddressOutsidePool:   true,
 	ReasonAddressUnaligned:     true,
 	ReasonSharedPoolUnplaced:   true,
+	ReasonRangeUnplaced:        true,
 }
 
 // codeFor is the HTTP code each reason answers with. Exhaustion is 507:

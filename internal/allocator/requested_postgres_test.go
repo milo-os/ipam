@@ -7,10 +7,12 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"go.miloapis.com/ipam/internal/allocation"
+	"go.miloapis.com/ipam/internal/scope"
 	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/internal/testdb"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
@@ -184,12 +186,21 @@ func TestARequestedAddressIsRefusedNotMoved(t *testing.T) {
 			name:    "held by a claim in another project names no holder",
 			req:     PrefixRequest{PrefixLen: 32, Address: "10.92.0.7", AllocationKey: allocationKeyIn("other", "dns", "alloc-new"), OwnerProject: "other"},
 			wantErr: ErrAddressInUse,
-			check: func(t *testing.T, err error) {
-				var inUse *AddressInUseError
-				if !errors.As(err, &inUse) || inUse.AllocationName != "" || inUse.AllocationNamespace != "" {
-					t.Errorf("holder = %+v, want another project's holder left unnamed", inUse)
-				}
-			},
+			check:   expectForeignRefusal("dns", "alloc-holder"),
+		},
+		{
+			// The block asked for is wider than the holder's, so the holder's
+			// CIDR is a different string from anything the caller wrote.
+			name:    "a block containing another project's address does not say where it is",
+			req:     PrefixRequest{PrefixLen: 29, Address: "10.92.0.0/29", AllocationKey: allocationKeyIn("other", "dns", "alloc-new"), OwnerProject: "other"},
+			wantErr: ErrAddressInUse,
+			check:   expectForeignRefusal("10.92.0.7", "dns", "alloc-holder"),
+		},
+		{
+			name:    "an address inside another project's carve does not say where the carve is",
+			req:     PrefixRequest{PrefixLen: 32, Address: "10.92.0.200", OwnerProject: "other"},
+			wantErr: ErrAddressInUse,
+			check:   expectForeignRefusal("10.92.0.128", "child pool"),
 		},
 		{
 			name:    "carved to a child pool",
@@ -451,5 +462,77 @@ func TestAChainedClassRefusesAnAddressOutsideItsLeafPool(t *testing.T) {
 		PoolKey: leafPool, PrefixLen: 96, IPFamily: "IPv6", ClaimKey: "out", Address: "fd20:f000:ffff::",
 	}); !errors.Is(err, ErrAddressOutsidePool) {
 		t.Fatalf("address outside the leaf pool: %v, want ErrAddressOutsidePool", err)
+	}
+}
+
+// expectForeignRefusal checks that an AddressInUse refusal for another
+// project's row describes nothing about it: no CIDR, no kind, no name, in the
+// error text or its fields. leaks are strings that must not appear.
+func expectForeignRefusal(leaks ...string) func(t *testing.T, err error) {
+	return func(t *testing.T, err error) {
+		t.Helper()
+		var inUse *AddressInUseError
+		if !errors.As(err, &inUse) {
+			t.Fatalf("error %v is not an AddressInUseError", err)
+		}
+		if inUse.Held != "" || inUse.Carved || inUse.Retained || inUse.AllocationName != "" || inUse.AllocationNamespace != "" {
+			t.Errorf("refusal describes another project's holder: %+v", inUse)
+		}
+		for _, leak := range leaks {
+			if strings.Contains(err.Error(), leak) {
+				t.Errorf("refusal %q reveals %q", err, leak)
+			}
+		}
+	}
+}
+
+// A requested block that a writer outside the pool lock inserts first fails on
+// the exclusion constraint (SQLSTATE 23P01). That is the address in use, and is
+// reported as such, not as a server fault.
+//
+// Forcing it needs a writer that holds no lock on the pool row, and inserting
+// an allocation takes one through its foreign key. session_replication_role
+// suppresses the foreign-key trigger for the blocking writer only; the
+// exclusion constraint is not a trigger and still applies.
+func TestAnOverlapTheCheckMissesIsAddressInUse(t *testing.T) {
+	db := testdb.Pool(t)
+	poolKey := seedPool(t, db, "requested-23p01", "10.94.0.0/24")
+	ctx := context.Background()
+
+	blocker, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = blocker.Rollback(ctx) }()
+	if _, err := blocker.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Skipf("cannot suppress the foreign-key trigger here: %v", err)
+	}
+	if _, err := blocker.Exec(ctx,
+		`INSERT INTO ipam_cidr_allocations
+		    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family, purpose,
+		     class_name, scope_digest, reclaim_policy, owner_project)
+		 VALUES ($1, '10.94.0.9/32', 'sneak', 'sneak', 'IPv4', 'Claim', 'standard', $2, 'Delete', $3)`,
+		poolKey, scope.EmptyAddressSpaceDigest(), testProject); err != nil {
+		t.Fatalf("insert the blocking row: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := claimAddress(t, db, PrefixRequest{PoolKey: poolKey, PrefixLen: 32, ClaimKey: "late", Address: "10.94.0.9"})
+		done <- err
+	}()
+	// The claim checks under the pool lock, sees nothing committed, and waits
+	// on the blocker's row in the constraint's index.
+	time.Sleep(500 * time.Millisecond)
+	if err := blocker.Commit(ctx); err != nil {
+		t.Fatalf("commit the blocking row: %v", err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrAddressInUse) {
+			t.Fatalf("claim racing the constraint: %v, want ErrAddressInUse", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("claim never returned")
 	}
 }

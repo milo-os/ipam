@@ -555,3 +555,47 @@ spec:
             check:
               ($error == null): true
               "(contains($stdout, 'OK: one of two racing ranges was placed'))": true
+
+    - name: an-addressed-endpoint-never-places-its-chain
+      description: |
+        Nothing is placed for ssa-net-g. An endpoint naming its address there
+        is refused 400 RangeUnplaced, naming the subnet range to place first,
+        and places nothing: a VPC or subnet placed by first-free on its behalf
+        would never move and would refuse the placement below. The ScopeRange
+        claim the refusal names then succeeds, and the endpoint binds.
+        Also as a dry-run, which must be refused the same way.
+      try:
+        - script:
+            timeout: 90s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              . ./claims.sh
+              before=$(ssa_snapshot)
+              claim_yaml ssa-ep-g ssa-endpoint Block fd83:185:7:10:0:5::/96 ssa-net-g loc-1 block \
+                | expect_refusal "$NAMESPACE" 400 RangeUnplaced 'ssa-subnet[\s\S]*fd83:185:7:10::/64' \
+                    "an addressed endpoint under an unplaced chain"
+              expect_no_claim "$NAMESPACE" ssa-ep-g
+              expect_pool_count 0 ssa-vpc network=ssa-net-g
+              expect_pool_count 0 ssa-subnet network=ssa-net-g location=loc-1
+              expect_unchanged "the suite's pools" "$before" "$(ssa_snapshot)"
+
+              out=$(claim_yaml ssa-ep-g ssa-endpoint Block fd83:185:7:10:0:5::/96 ssa-net-g loc-1 block \
+                | kubectl create -n "$NAMESPACE" --dry-run=server -v=9 -f - 2>&1) && rc=0 || rc=$?
+              printf '%s\n' "$out" | _check_status "the same claim as a dry-run" "$rc" 400 RangeUnplaced "" ""
+              expect_unchanged "the suite's pools after the dry-run" "$before" "$(ssa_snapshot)"
+
+              json=$(claim_yaml ssa-subnet-g1 ssa-subnet ScopeRange fd83:185:7:10::/64 ssa-net-g loc-1 subnet \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$json" fd83:185:7:10::/64 - "ssa-subnet-g1, after the refusal"
+              assert_equal_addr "$(level_cidr ssa-vpc network=ssa-net-g)" fd83:185:7::/48 "the ssa-net-g VPC pool"
+
+              ep=$(claim_yaml ssa-ep-g ssa-endpoint Block fd83:185:7:10:0:5::/96 ssa-net-g loc-1 block \
+                | create_claim_json "$NAMESPACE")
+              assert_bound_exactly "$ep" fd83:185:7:10:0:5::/96 - "ssa-ep-g, once the chain is placed"
+              echo "OK: an addressed endpoint waits for its chain to be placed"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'OK: an addressed endpoint waits for its chain to be placed'))": true

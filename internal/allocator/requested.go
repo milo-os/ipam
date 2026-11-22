@@ -37,10 +37,17 @@ var (
 )
 
 // AddressInUseError says what holds a requested address.
+//
+// What it says depends on whose the holder is. A row the requesting project
+// owns is described in full. A row another project owns is described not at
+// all: Held, Carved, Retained and the allocation's name are left empty, so a
+// pool shared between projects cannot be probed to map where another
+// project's blocks and carves are. "In use" is all such a refusal can say.
 type AddressInUseError struct {
 	// Address is the block the claim asked for.
 	Address string
 	// Held is the block that overlaps it, which may be larger or smaller.
+	// Empty when the holder is not the requesting project's.
 	Held string
 
 	// Carved reports that the block was carved to a child pool rather than
@@ -60,10 +67,12 @@ type AddressInUseError struct {
 
 func (e *AddressInUseError) Error() string {
 	switch {
+	case e.Held == "":
+		return fmt.Sprintf("address %s is in use", e.Address)
 	case e.Carved:
 		return fmt.Sprintf("address %s is in use: %s is carved to a child pool", e.Address, e.Held)
 	case e.AllocationName == "":
-		return fmt.Sprintf("address %s is in use: %s is held by another project's allocation", e.Address, e.Held)
+		return fmt.Sprintf("address %s is in use: %s is held", e.Address, e.Held)
 	case e.Retained:
 		return fmt.Sprintf("address %s is in use: %s is held by IPAllocation %s/%s, retained after its claim was deleted; delete that IPAllocation to free the address",
 			e.Address, e.Held, e.AllocationNamespace, e.AllocationName)
@@ -99,11 +108,15 @@ func requestedBlock(ctx context.Context, tx pgx.Tx, req PrefixRequest, parents [
 	if err != nil {
 		return fail(err)
 	}
-	own := req.AllocationKey
-	if own == "" {
-		own = req.ClaimKey
+	project := req.OwnerProject
+	if project == "" {
+		own := req.AllocationKey
+		if own == "" {
+			own = req.ClaimKey
+		}
+		project = tenant.ProjectFromKey(own)
 	}
-	if err := checkRequestedBlock(ctx, tx, req.PoolKey, req.ScopeDigest, parents, want, own); err != nil {
+	if err := checkRequestedBlock(ctx, tx, req.PoolKey, req.ScopeDigest, parents, want, project); err != nil {
 		return fail(err)
 	}
 
@@ -113,14 +126,15 @@ func requestedBlock(ctx context.Context, tx pgx.Tx, req PrefixRequest, parents [
 
 // checkRequestedBlock reports whether want can be taken from the pool at
 // poolKey, whose range is parents, in the address space scopeDigest: nil when
-// it can, otherwise the refusal that says why not. ownKey is the storage key of
-// whoever is asking, and decides only whether a holding allocation is named.
+// it can, otherwise the refusal that says why not. project is the requesting
+// project: it decides how much a refusal may say
+// about the holder (see AddressInUseError).
 //
 // It is the one classification both a named block and a named carve use, so a
 // claim and a ScopeRange placing a pool are refused in the same words for the
 // same collision. A carve passes spaceAll: the block leaves the pool, so it
 // must be free in every space.
-func checkRequestedBlock(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, parents []net.IPNet, want net.IPNet, ownKey string) error {
+func checkRequestedBlock(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, parents []net.IPNet, want net.IPNet, project string) error {
 	if !allocation.IsBlockAvailable(parents, nil, want) {
 		return fmt.Errorf("%w: %s is not inside pool %q (%s)", ErrAddressOutsidePool,
 			want.String(), poolNameFromKey(poolKey), parentsString(parents))
@@ -130,7 +144,7 @@ func checkRequestedBlock(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest st
 		return err
 	}
 	if holder != nil {
-		return holder.refusal(want, poolKey, ownKey)
+		return holder.refusal(want, poolKey, project)
 	}
 	return nil
 }
@@ -139,6 +153,7 @@ func checkRequestedBlock(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest st
 type overlappingRow struct {
 	purpose       string
 	allocationKey string
+	ownerProject  string
 	retained      bool
 	cidr          string
 }
@@ -157,7 +172,7 @@ func firstOverlap(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, w
 	defer metrics.ObserveQuery("requested_block_overlap", time.Now())
 	var row overlappingRow
 	err := tx.QueryRow(ctx,
-		`SELECT purpose, allocation_key, claim_key IS NULL,
+		`SELECT purpose, allocation_key, owner_project, claim_key IS NULL,
 		        host(allocated_cidr) || '/' || masklen(allocated_cidr)
 		   FROM ipam_cidr_allocations
 		  WHERE `+searchFilter+`
@@ -166,7 +181,7 @@ func firstOverlap(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, w
 		           allocated_cidr
 		  LIMIT 1`,
 		poolKey, scopeDigest, want.String(),
-	).Scan(&row.purpose, &row.allocationKey, &row.retained, &row.cidr)
+	).Scan(&row.purpose, &row.allocationKey, &row.ownerProject, &row.retained, &row.cidr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -176,21 +191,32 @@ func firstOverlap(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, w
 	return &row, nil
 }
 
-// refusal classifies the collision by what holds the block. ownKey is the
-// requester's storage key: a holding allocation is named only when it is in
-// the requester's own project.
-func (r *overlappingRow) refusal(want net.IPNet, poolKey, ownKey string) error {
-	switch r.purpose {
-	case "Reservation":
+// refusal classifies the collision by what holds the block. project is the
+// requesting project.
+//
+// A reservation is described in full whoever asks: it is the pool's own
+// configuration, materialised from the reservations its operator or its class
+// declared, identical for every consumer, and it is what the caller needs in
+// order to pick a position the pool does not withhold. It says nothing about
+// any other project.
+//
+// A claim or a carve is described in full only when the requesting project
+// owns it (owner_project: the claimant for a claim, the consumer for a
+// per-consumer carve, the class's project for a shared one). Anyone else's is
+// reported as in use and nothing more.
+func (r *overlappingRow) refusal(want net.IPNet, poolKey, project string) error {
+	if r.purpose == "Reservation" {
 		return fmt.Errorf("%w: %s overlaps %s, which pool %q withholds", ErrAddressReserved,
 			want.String(), r.cidr, poolNameFromKey(poolKey))
-	case "PoolCarve":
+	}
+	if project == "" || r.ownerProject != project {
+		return &AddressInUseError{Address: want.String()}
+	}
+	if r.purpose == "PoolCarve" {
 		return &AddressInUseError{Address: want.String(), Held: r.cidr, Carved: true}
 	}
 	e := &AddressInUseError{Address: want.String(), Held: r.cidr, Retained: r.retained}
-	if tenant.ProjectFromKey(r.allocationKey) == tenant.ProjectFromKey(ownKey) {
-		e.AllocationNamespace, e.AllocationName = allocationRefFromKey(r.allocationKey)
-	}
+	e.AllocationNamespace, e.AllocationName = allocationRefFromKey(r.allocationKey)
 	return e
 }
 

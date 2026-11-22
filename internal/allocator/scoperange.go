@@ -13,6 +13,7 @@ import (
 
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/metrics"
+	"go.miloapis.com/ipam/internal/tenant"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
 )
@@ -180,8 +181,87 @@ func FindScopeRange(ctx context.Context, tx pgx.Tx, claimKey string) (string, er
 //
 // The whole walk runs in the caller's transaction, so a refusal at any depth
 // leaves nothing released.
+//
+// Every pool the release will write is locked first, root-first: the source
+// the range is carved from, the range, then its descendants level by level.
+// That is the order the cascade and PlaceScopeRange take pool locks in, an
+// ancestor before any descendant, so a release racing a placement or a claim
+// into the same tree waits for it rather than deadlocking against it. The walk
+// below then frees leaf-first, holding locks it already has.
 func ReleaseScopeRange(ctx context.Context, tx pgx.Tx, alloc PrefixAllocator, poolKey string) error {
+	if err := lockRangeTree(ctx, tx, poolKey); err != nil {
+		return err
+	}
 	return releaseRangeTree(ctx, tx, alloc, poolKey, 0)
+}
+
+// lockRangeTree takes the row lock on poolKey's source pool, poolKey, and
+// every unheld pool provisioned beneath it, root-first. A pool's children are
+// read only once it is locked: nothing can carve a new child from a pool
+// without its lock, so the set read is the set the release will see.
+func lockRangeTree(ctx context.Context, tx pgx.Tx, poolKey string) error {
+	var source string
+	err := tx.QueryRow(ctx,
+		`SELECT pool_key FROM ipam_cidr_allocations
+		  WHERE allocation_key = $1 AND purpose = 'PoolCarve'`, poolKey).Scan(&source)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("find the source of %q: %w", poolKey, err)
+	}
+	if source != "" {
+		if err := lockPoolRow(ctx, tx, source); err != nil {
+			return err
+		}
+	}
+
+	level := []string{poolKey}
+	for depth := 0; len(level) > 0; depth++ {
+		if depth > MaxClassChainDepth {
+			return fmt.Errorf("lock range %s: pool tree deeper than %d levels", poolKey, MaxClassChainDepth)
+		}
+		var next []string
+		for _, key := range level {
+			if err := lockPoolRow(ctx, tx, key); err != nil {
+				return err
+			}
+			children, err := unheldChildPools(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			next = append(next, children...)
+		}
+		level = next
+	}
+	return nil
+}
+
+func lockPoolRow(ctx context.Context, tx pgx.Tx, poolKey string) error {
+	defer metrics.ObserveQuery("select_pool_for_update", time.Now())
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM ipam_objects WHERE key = $1 FOR UPDATE`, poolKey); err != nil {
+		return fmt.Errorf("lock pool %q: %w", poolKey, err)
+	}
+	return nil
+}
+
+// unheldChildPools returns the pools carved from poolKey that no claim holds:
+// the derived pools a release takes with it.
+func unheldChildPools(ctx context.Context, tx pgx.Tx, poolKey string) ([]string, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT allocation_key FROM ipam_cidr_allocations
+		  WHERE pool_key = $1 AND purpose = 'PoolCarve' AND claim_key = allocation_key
+		  ORDER BY allocation_key`, poolKey)
+	if err != nil {
+		return nil, fmt.Errorf("list pools carved from %q: %w", poolKey, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("scan pool carved from %q: %w", poolKey, err)
+		}
+		out = append(out, key)
+	}
+	return out, rows.Err()
 }
 
 func releaseRangeTree(ctx context.Context, tx pgx.Tx, alloc PrefixAllocator, poolKey string, depth int) error {
@@ -270,7 +350,7 @@ func releaseRangeTree(ctx context.Context, tx pgx.Tx, alloc PrefixAllocator, poo
 // identity row and then the source pool. A claim losing the identity race to
 // a concurrent one reads the winner's pool and is held to it like any present
 // level, so it is refused rather than placed elsewhere, and it never carves.
-func PlaceScopeRange(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, want net.IPNet, claimKey string) (string, error) {
+func PlaceScopeRange(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, want net.IPNet) (string, error) {
 	if len(leaf.Spec.PoolPer) == 0 {
 		return "", fmt.Errorf("%w: class %q names no poolPer", ErrClassHoldsNoRange, leaf.Name)
 	}
@@ -288,20 +368,57 @@ func PlaceScopeRange(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimS
 		return "", err
 	}
 
-	source, err := DiscoverPoolFor(ctx, tx, levels[0].Class, claimScope, &blocks[0])
-	if err != nil {
-		return "", err
-	}
-	for i := range levels {
-		poolKey, created, err := placeLevel(ctx, tx, levels[i], source, blocks[i], want, i == len(levels)-1, claimKey)
+	// A level read as present can be released before its lock is taken: the
+	// release holds the lock, commits, and the pool is gone. The walk is then
+	// repeated from the top in a fresh savepoint, which sees the release and
+	// places the level anew, rather than refusing a claim the next attempt
+	// would satisfy.
+	for attempt := 1; ; attempt++ {
+		poolKey, created, err := placeChain(ctx, tx, levels, blocks, want, claimScope)
+		if errors.Is(err, ErrPoolNotFound) && attempt < placeAttempts {
+			klog.V(2).InfoS("A pool was released while a range was placed inside it; placing again",
+				"class", leaf.Name, "attempt", attempt)
+			continue
+		}
 		if err != nil {
-			return "", fmt.Errorf("place pool for class %q: %w", levels[i].Class.Name, err)
+			return "", err
+		}
+		provisioned = created
+		result = "success"
+		return poolKey, nil
+	}
+}
+
+// placeAttempts bounds how many times a placement is repeated after a level
+// it found was released underneath it.
+const placeAttempts = 3
+
+// placeChain is one walk of PlaceScopeRange, in a savepoint of tx so that a
+// walk abandoned part-way leaves nothing and holds no lock.
+func placeChain(ctx context.Context, tx pgx.Tx, levels []CascadeLevel, blocks []net.IPNet, want net.IPNet, claimScope map[string]ipam.ScopeRef) (string, bool, error) {
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("begin placement savepoint: %w", err)
+	}
+	source, err := DiscoverPoolFor(ctx, sp, levels[0].Class, claimScope, &blocks[0])
+	if err != nil {
+		_ = sp.Rollback(ctx)
+		return "", false, err
+	}
+	provisioned := false
+	for i := range levels {
+		poolKey, created, err := placeLevel(ctx, sp, levels[i], source, blocks[i], want, i == len(levels)-1)
+		if err != nil {
+			_ = sp.Rollback(ctx)
+			return "", false, fmt.Errorf("place pool for class %q: %w", levels[i].Class.Name, err)
 		}
 		provisioned = provisioned || created
 		source = poolKey
 	}
-	result = "success"
-	return source, nil
+	if err := sp.Commit(ctx); err != nil {
+		return "", false, fmt.Errorf("release placement savepoint: %w", err)
+	}
+	return source, provisioned, nil
 }
 
 // levelBlocks returns, for each level, the block of that level's pool size
@@ -326,7 +443,7 @@ func levelBlocks(levels []CascadeLevel, want net.IPNet) ([]net.IPNet, error) {
 // placeLevel finds or creates one level's pool at block, reporting whether
 // this call created it. leaf marks the class's own pool, which must be exactly
 // want.
-func placeLevel(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKey string, block, want net.IPNet, leaf bool, claimKey string) (poolKey string, provisioned bool, err error) {
+func placeLevel(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKey string, block, want net.IPNet, leaf bool) (poolKey string, provisioned bool, err error) {
 	outcome := levelError
 	defer func() { metrics.RecordCascadeLevel(level.Class.Name, outcome) }()
 
@@ -363,7 +480,7 @@ func placeLevel(ctx context.Context, tx pgx.Tx, level CascadeLevel, sourcePoolKe
 		return poolKey, false, nil
 	}
 
-	if err := provisionPool(ctx, tx, level, sourcePoolKey, &block, claimKey); err != nil {
+	if err := provisionPool(ctx, tx, level, sourcePoolKey, &block, tenant.FromContext(ctx).Name); err != nil {
 		return "", false, err
 	}
 	outcome = levelProvisioned

@@ -19,6 +19,7 @@ Run it alone with `task e2e:suite SUITE=scoperange-specific-address`.
 | `ssa-net-b` | one subnet range placing both levels | fd83:185:b::/48 | loc-1 fd83:185:b:20::/64 |
 | `ssa-net-auto` | VPC range and endpoint without addresses | first free (fd83:185::/48) | first free |
 | `ssa-net-r` | two racing VPC ranges, fd83:185:21::/48 and fd83:185:22::/48 | the winner's | – |
+| `ssa-net-g` | an addressed endpoint refused `RangeUnplaced` first, then the subnet range it names | fd83:185:7::/48 | loc-1 fd83:185:7:10::/64 |
 
 ## What is asserted
 

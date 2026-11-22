@@ -78,7 +78,7 @@ func (r *AllocatingREST) createScopeRange(
 		if tx, err = r.db.Begin(ctx); err != nil {
 			return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)
 		}
-		poolKey, err = allocator.PlaceScopeRange(ctx, tx, class, claim.Spec.Scope, *want, claimKey)
+		poolKey, err = allocator.PlaceScopeRange(ctx, tx, class, claim.Spec.Scope, *want)
 	case dryRun:
 		if tx, err = r.db.Begin(ctx); err != nil {
 			return nil, "tx_error", fmt.Errorf("begin scope-range transaction: %w", err)

@@ -540,7 +540,14 @@ type IPClaimSpec struct {
 	// elsewhere, including the class's own pool, is AddressOutsidePool naming
 	// its range, since a placed pool is never moved; a missing level shared by
 	// every consumer of its class is SharedPoolUnplaced. Placing the chain
-	// first is how a Block claim adopts an address under a chained class.
+	// first is how a Block claim adopts an address under a chained class: a
+	// Block claim naming an address never has a missing level of its chain
+	// provisioned for it, and is refused with RangeUnplaced until the range
+	// holding the address has been placed.
+	//
+	// A refusal describes what holds the address only when it belongs to the
+	// claim's own project; another project's block or carve is reported as in
+	// use and nothing more.
 	Address string
 
 	// PrefixLength is the requested block size in bits. Nil applies the class's

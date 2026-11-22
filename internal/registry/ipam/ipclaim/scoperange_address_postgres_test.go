@@ -2,6 +2,7 @@ package ipclaim
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -146,5 +147,42 @@ func TestADryRunProvisionsNoPools(t *testing.T) {
 	}
 	if n := countRows(t, db, `SELECT COUNT(*) FROM ipam_pool_identity`); n != 0 {
 		t.Errorf("dry-runs left %d pool identities", n)
+	}
+}
+
+// An addressed endpoint under a chain nobody has placed is refused with
+// RangeUnplaced and writes nothing, so the ScopeRange claim that places the
+// chain around the address still succeeds, and the endpoint then binds.
+func TestAnAddressedEndpointUnderAnUnplacedChainIsRefusedAndPlacesNothing(t *testing.T) {
+	rest, db := newTenantREST(t)
+	ep := endpointClaim("ep-g", "net-g", "loc-1")
+	ep.Spec.Address = "fd20:1000:9:10:0:5::/96"
+
+	for _, opts := range []*metav1.CreateOptions{{}, {DryRun: []string{metav1.DryRunAll}}} {
+		_, err := rest.Create(claimCtx(testProject), ep.DeepCopy(), nil, opts)
+		status, ok := err.(apierrors.APIStatus)
+		if !ok || status.Status().Code != http.StatusBadRequest {
+			t.Fatalf("addressed endpoint under an unplaced chain (dryRun=%v): %v, want HTTP 400", opts.DryRun, err)
+		}
+		if got := ipamerrors.ReasonFor(err); got != ipamerrors.ReasonRangeUnplaced {
+			t.Errorf("reason = %q, want %q", got, ipamerrors.ReasonRangeUnplaced)
+		}
+		if msg := status.Status().Message; !strings.Contains(msg, "fd20:1000:9:10::/64") || !strings.Contains(msg, "tenant-subnet") {
+			t.Errorf("message %q does not say which range to place", msg)
+		}
+	}
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM ipam_objects WHERE kind IN ('IPPool', 'IPClaim', 'IPAllocation') AND key NOT LIKE '%tenant-root'`,
+		`SELECT COUNT(*) FROM ipam_cidr_allocations`,
+		`SELECT COUNT(*) FROM ipam_pool_identity`,
+	} {
+		if n := countRows(t, db, q); n != 0 {
+			t.Errorf("the refusal left %d rows: %s", n, q)
+		}
+	}
+
+	create(t, rest, subnetRangeClaim("subnet-g", "net-g", "loc-1", "fd20:1000:9:10::/64"))
+	if got := create(t, rest, ep).Status.AllocatedCIDR; got != "fd20:1000:9:10:0:5::/96" {
+		t.Errorf("endpoint after placement = %s, want fd20:1000:9:10:0:5::/96", got)
 	}
 }

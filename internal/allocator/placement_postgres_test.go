@@ -89,7 +89,7 @@ func place(t *testing.T, db *pgxpool.Pool, class, network, location, cidr string
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	key, err := PlaceScopeRange(ctx, tx, leaf, placementScope(network, location), *want, "claim/"+class+"/"+network+"/"+location)
+	key, err := PlaceScopeRange(ctx, tx, leaf, placementScope(network, location), *want)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		return "", err
@@ -431,7 +431,7 @@ func TestADryRunPlacesNothing(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	_, want, _ := net.ParseCIDR("fd20:0:f:10::/64")
-	key, err := PlaceScopeRange(ctx, tx, placementClass(t, db, "subnet"), placementScope("net-d", "loc-1"), *want, "claim/dry")
+	key, err := PlaceScopeRange(ctx, tx, placementClass(t, db, "subnet"), placementScope("net-d", "loc-1"), *want)
 	if err != nil {
 		t.Fatalf("dry-run placement: %v", err)
 	}
@@ -458,4 +458,231 @@ func TestADryRunPlacesNothing(t *testing.T) {
 
 func offerPoolKey(project, name string) string {
 	return tenant.Identity{Name: project}.ResourceKey("ippools", name)
+}
+
+// A Block claim naming an address under a chain with a missing level is
+// refused and provisions nothing: a level placed by first-free on its behalf
+// would never move, and would then refuse the ScopeRange claim that adopts the
+// address. Once that claim has placed the chain, the Block claim binds.
+func TestAnAddressedBlockClaimNeverProvisionsItsChain(t *testing.T) {
+	db := testdb.Pool(t)
+	placementChain(t, db)
+	ctx := ctxIn(placementProject)
+	endpoint := placementClass(t, db, "endpoint")
+	_, want, _ := net.ParseCIDR("fd20:0:a:10:0:5::/96")
+	s := placementScope("net-a", "loc-1")
+
+	before := stateOf(t, db)
+	_, err := ResolvePoolFor(ctx, db, endpoint, s, want)
+	if !errors.Is(err, ErrRangeUnplaced) {
+		t.Fatalf("addressed claim under an unplaced chain: %v, want ErrRangeUnplaced", err)
+	}
+	for _, part := range []string{`"subnet"`, "fd20:0:a:10::/64"} {
+		if !strings.Contains(err.Error(), part) {
+			t.Errorf("refusal %q does not name %s, the ScopeRange claim that would place it", err, part)
+		}
+	}
+	expectUnchanged(t, db, before, "an addressed claim under an unplaced chain")
+
+	// With only the top level placed, it is still refused, and still writes
+	// nothing.
+	if _, err := place(t, db, "vpc", "net-a", "", "fd20:0:a::/48"); err != nil {
+		t.Fatalf("place vpc: %v", err)
+	}
+	before = stateOf(t, db)
+	if _, err := ResolvePoolFor(ctx, db, endpoint, s, want); !errors.Is(err, ErrRangeUnplaced) {
+		t.Fatalf("addressed claim under a half-placed chain: %v, want ErrRangeUnplaced", err)
+	}
+	expectUnchanged(t, db, before, "an addressed claim under a half-placed chain")
+
+	// The documented adoption flow still works after the refusals.
+	subnetKey, err := place(t, db, "subnet", "net-a", "loc-1", "fd20:0:a:10::/64")
+	if err != nil {
+		t.Fatalf("placing the range after the refusals: %v", err)
+	}
+	poolKey, err := ResolvePoolFor(ctx, db, endpoint, s, want)
+	if err != nil || poolKey != subnetKey {
+		t.Fatalf("addressed claim after placement resolved %q, %v; want %q", poolKey, err, subnetKey)
+	}
+	if got, err := claimAddress(t, db, PrefixRequest{
+		PoolKey: poolKey, PrefixLen: 96, IPFamily: "IPv6", ClassName: "endpoint", ClaimKey: "ep", Address: "fd20:0:a:10:0:5::",
+	}); err != nil || got != "fd20:0:a:10:0:5::/96" {
+		t.Fatalf("addressed endpoint = %s, %v", got, err)
+	}
+
+	// A claim without an address still provisions its chain by first-free.
+	if _, err := ResolvePoolFor(ctx, db, endpoint, placementScope("net-b", "loc-1"), nil); err != nil {
+		t.Fatalf("unaddressed claim: %v", err)
+	}
+}
+
+// Two claims for DIFFERENT scopes naming one block in one source: the identity
+// rows do not collide, so only the source pool's row lock serialises them, and
+// the second must see the first's carve and be refused.
+func TestRacingPlacementsForOneBlockTakeThePoolLock(t *testing.T) {
+	db := testdb.Pool(t, testdb.MaxConns(16))
+	placementChain(t, db)
+	if _, err := place(t, db, "vpc", "shared-vpc", "", "fd20:0:1ff::/48"); err != nil {
+		t.Fatalf("place the vpc the subnets race in: %v", err)
+	}
+
+	const rounds = 8
+	for r := 0; r < rounds; r++ {
+		type attempt struct{ class, network, location, cidr string }
+		attempts := []attempt{
+			// One /48 in the root, for two networks.
+			{"vpc", fmt.Sprintf("pl-x-%d", r), "", fmt.Sprintf("fd20:0:%x::/48", 0x200+r)},
+			{"vpc", fmt.Sprintf("pl-y-%d", r), "", fmt.Sprintf("fd20:0:%x::/48", 0x200+r)},
+			// One /64 in an existing vpc, for two locations.
+			{"subnet", "shared-vpc", fmt.Sprintf("x-%d", r), fmt.Sprintf("fd20:0:1ff:%x::/64", 0x10+r)},
+			{"subnet", "shared-vpc", fmt.Sprintf("y-%d", r), fmt.Sprintf("fd20:0:1ff:%x::/64", 0x10+r)},
+		}
+		errs := make([]error, len(attempts))
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range attempts {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				a := attempts[i]
+				_, errs[i] = place(t, db, a.class, a.network, a.location, a.cidr)
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		for pair := 0; pair < len(attempts); pair += 2 {
+			a, b := errs[pair], errs[pair+1]
+			if (a == nil) == (b == nil) {
+				t.Fatalf("round %d, %s %s: want exactly one placed, got %v and %v", r, attempts[pair].class, attempts[pair].cidr, a, b)
+			}
+			loser := a
+			if a == nil {
+				loser = b
+			}
+			if !errors.Is(loser, ErrAddressInUse) {
+				t.Fatalf("round %d: loser got %v, want ErrAddressInUse", r, loser)
+			}
+		}
+	}
+	// One carve per placed pool: the shared vpc plus two winners a round.
+	if s := stateOf(t, db); s.carves != 1+2*rounds || s.pools != 1+2*rounds {
+		t.Errorf("after %d rounds: %+v, want %d pools and carves", rounds, s, 1+2*rounds)
+	}
+}
+
+// Releasing a range while a placement carves inside it neither deadlocks nor
+// leaves anything half-built.
+func TestARangeReleaseRacingAPlacementDoesNotDeadlock(t *testing.T) {
+	db := testdb.Pool(t, testdb.MaxConns(16))
+	placementChain(t, db)
+	ctx := ctxIn(placementProject)
+	alloc := NewPostgresPrefixAllocator()
+
+	const rounds = 12
+	for r := 0; r < rounds; r++ {
+		network := fmt.Sprintf("rel-%d", r)
+		vpc := fmt.Sprintf("fd20:0:%x::/48", 0x300+r)
+		vpcKey, err := place(t, db, "vpc", network, "", vpc)
+		if err != nil {
+			t.Fatalf("round %d: place vpc: %v", r, err)
+		}
+		// A subnet already inside, so the release has a tree to walk.
+		if _, err := place(t, db, "subnet", network, "loc-0", fmt.Sprintf("fd20:0:%x:1::/64", 0x300+r)); err != nil {
+			t.Fatalf("round %d: place first subnet: %v", r, err)
+		}
+
+		var releaseErr, placeErr error
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			tx, err := db.Begin(ctx)
+			if err != nil {
+				releaseErr = err
+				return
+			}
+			if releaseErr = ReleaseScopeRange(ctx, tx, alloc, vpcKey); releaseErr != nil {
+				_ = tx.Rollback(ctx)
+				return
+			}
+			releaseErr = tx.Commit(ctx)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_, placeErr = place(t, db, "subnet", network, "loc-1", fmt.Sprintf("fd20:0:%x:2::/64", 0x300+r))
+		}()
+		close(start)
+		wg.Wait()
+
+		for what, err := range map[string]error{"release": releaseErr, "placement": placeErr} {
+			if err != nil {
+				t.Fatalf("round %d: %s failed: %v", r, what, err)
+			}
+		}
+		// Either the placement landed first and was released with the tree,
+		// or it landed after and placed a fresh chain. Every pool has its
+		// identity and its carve either way.
+		s := stateOf(t, db)
+		if s.pools != s.carves || s.pools != s.identities {
+			t.Fatalf("round %d: inconsistent after the race: %+v", r, s)
+		}
+	}
+}
+
+// A refusal describes another project's block in no detail: not its CIDR, not
+// whether it is a carve. A pool shared between projects must not be a way to
+// map where another project's ranges are.
+func TestARefusalDoesNotDescribeAnotherProjectsRange(t *testing.T) {
+	db := testdb.Pool(t)
+	placementChain(t, db)
+	tx := begin(t, db)
+	reference(t, tx, "projy", "pubvpc", placementProject, "pubvpc", nil)
+	reference(t, tx, "projy", "pubsub", placementProject, "pubsub", nil)
+	if err := tx.Commit(context.Background()); err != nil {
+		t.Fatalf("commit references: %v", err)
+	}
+
+	if _, err := ResolveScopeRange(ctxIn(placementProject), db, placementClass(t, db, "pubvpc"), placementScope("net-a", "")); err != nil {
+		t.Fatalf("first-free shared pool: %v", err)
+	}
+	if _, err := place(t, db, "pubsub", "net-a", "loc-1", "fd30:0:0:7::/64"); err != nil {
+		t.Fatalf("projx places its subnet: %v", err)
+	}
+
+	// projx asking again is told what holds it; projy is told only that it is
+	// in use.
+	_, own := place(t, db, "pubsub", "net-a", "loc-2", "fd30:0:0:7::/64")
+	var inUse *AddressInUseError
+	if !errors.As(own, &inUse) || !inUse.Carved || inUse.Held != "fd30:0:0:7::/64" {
+		t.Errorf("own refusal = %v, want the carve described", own)
+	}
+
+	ctxY := ctxIn("projy")
+	read := begin(t, db)
+	leaf, err := LoadClass(ctxY, read, "pubsub")
+	if err != nil {
+		t.Fatalf("LoadClass in projy: %v", err)
+	}
+	_ = read.Rollback(context.Background())
+	_, want, _ := net.ParseCIDR("fd30:0:0:7::/64")
+	ytx, err := db.Begin(ctxY)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	_, foreign := PlaceScopeRange(ctxY, ytx, leaf, placementScope("net-a", "loc-1"), *want)
+	_ = ytx.Rollback(ctxY)
+	inUse = nil
+	if !errors.As(foreign, &inUse) {
+		t.Fatalf("projy placing projx's range: %v, want AddressInUse", foreign)
+	}
+	if inUse.Held != "" || inUse.Carved || inUse.AllocationName != "" {
+		t.Errorf("foreign refusal describes the holder: %+v", inUse)
+	}
+	if strings.Contains(foreign.Error(), "child pool") || strings.Contains(foreign.Error(), "projx") {
+		t.Errorf("foreign refusal %q says what holds the range", foreign)
+	}
 }

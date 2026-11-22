@@ -444,6 +444,8 @@ func TestAddressRefusalFixIts(t *testing.T) {
 			exitInvalid, "datumctl ipam class show dns-v6"},
 		{"unaligned", ipamerrors.New(ipamerrors.ReasonAddressUnaligned, "not aligned"),
 			exitInvalid, "first address of the block"},
+		{"range unplaced", ipamerrors.New(ipamerrors.ReasonRangeUnplaced, "place the range first"),
+			exitInvalid, "target: ScopeRange"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
