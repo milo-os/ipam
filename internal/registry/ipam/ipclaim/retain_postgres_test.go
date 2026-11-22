@@ -311,25 +311,41 @@ func TestDeletingABoundAllocationIsRefused(t *testing.T) {
 	}
 }
 
-// A claim recreated under the name of one whose address was retained collides
-// with that retained allocation. Rebinding it is a separate feature; refusing
-// it clearly is the requirement here.
-func TestRecreatingAClaimOverARetainedAllocationConflicts(t *testing.T) {
-	r, _, _ := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+// A claim recreated under the name of one whose address was retained takes that
+// address back: the allocation's identity is derived from the claim's name, and
+// that identity is the entitlement. It is the same block, not a second one.
+func TestRecreatingAClaimOverARetainedAllocationReclaimsIt(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
 	ctx := claimCtx(testProject)
 
-	if _, err := r.Create(ctx, retainClaim("claim-1", ""), nil, &metav1.CreateOptions{}); err != nil {
+	created, err := r.Create(ctx, retainClaim("claim-1", ""), nil, &metav1.CreateOptions{})
+	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	first := created.(*ipam.IPClaim).Status.AllocatedCIDR
 	if _, _, err := r.Delete(ctx, "claim-1", nil, &metav1.DeleteOptions{}); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	_, err := r.Create(ctx, retainClaim("claim-1", ""), nil, &metav1.CreateOptions{})
-	if err == nil {
-		t.Fatal("recreating the claim succeeded; it must not silently take a second address under a retained identity")
+	obj, err := r.Create(ctx, retainClaim("claim-1", ""), nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("recreating the claim over its retained allocation: %v", err)
 	}
-	if !apierrors.IsConflict(err) {
-		t.Errorf("Create returned %v (%T), want a 409 Conflict", err, err)
+	claim := obj.(*ipam.IPClaim)
+	if claim.Status.Phase != ipam.ClaimBound {
+		t.Errorf("phase = %q, want Bound", claim.Status.Phase)
+	}
+	if claim.Status.AllocatedCIDR != first {
+		t.Errorf("recreated claim got %q, want its retained %q", claim.Status.AllocatedCIDR, first)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations WHERE purpose = 'Claim'`); n != 1 {
+		t.Errorf("%d claim allocations, want 1: the recreate took a second address", n)
+	}
+	got, err := r.Get(ctx, "claim-1", &metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Get the recreated claim: %v", err)
+	}
+	if cidr := got.(*ipam.IPClaim).Status.AllocatedCIDR; cidr != first {
+		t.Errorf("stored claim reports %q, want %q", cidr, first)
 	}
 }

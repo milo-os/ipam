@@ -45,6 +45,9 @@ const (
 	AttrClaimPrefix   = "ipam.claim.prefix_length"
 	AttrClaimIPFamily = "ipam.claim.ip_family"
 	AttrDryRun        = "ipam.dry_run"
+	// AttrReclaimed is set on a claim that took back the address an earlier
+	// claim of its name retained, rather than allocating one.
+	AttrReclaimed = "ipam.claim.reclaimed"
 
 	// tenant.resolve
 	AttrHasParentExtras = "has_parent_extras"

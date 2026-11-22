@@ -159,6 +159,10 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 // together so the response body carries a CIDR that has already been
 // reserved.
 //
+// A claim created under the name of one that was released under reclaimPolicy
+// Retain takes the retained address back (see tryReclaim), rather than being
+// refused or handed a second one.
+//
 // A claim created with metadata.generateName is named here, as the generic
 // Store would name it: AllocatingREST replaces Store.Create, and BeforeCreate
 // refuses an object whose name was never generated. A generated name that
@@ -170,14 +174,14 @@ func (r *AllocatingREST) Create(ctx context.Context, obj runtime.Object, createV
 		return nil, fmt.Errorf("expected *ipam.IPClaim, got %T", obj)
 	}
 	if claim.GenerateName == "" || claim.Name != "" {
-		return r.create(ctx, claim, createValidation, options)
+		return r.create(ctx, claim, createValidation, options, false)
 	}
 	var err error
 	for range maxNameGenerationAttempts {
 		attempt := claim.DeepCopy()
 		attempt.Name = r.strategy.GenerateName(attempt.GenerateName)
 		var out runtime.Object
-		out, err = r.create(ctx, attempt, createValidation, options)
+		out, err = r.create(ctx, attempt, createValidation, options, true)
 		if err == nil || !isGeneratedNameCollision(err) {
 			return out, err
 		}
@@ -199,8 +203,9 @@ func isGeneratedNameCollision(err error) bool {
 	return false
 }
 
-// create is Create for a claim whose name is already decided.
-func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
+// create is Create for a claim whose name is already decided. generatedName
+// reports that the server drew it, which matters only to a reclaim.
+func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions, generatedName bool) (runtime.Object, error) {
 
 	// A server-side dry-run must compute the would-be allocation but persist
 	// nothing and consume no capacity (see Create body for how the transaction
@@ -387,9 +392,52 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		}
 	}
 
+	// The length the claim stated, before the class default fills it in: a
+	// reclaim adopts the retained length only when the claim left it out.
+	statedPrefixLength := claim.Spec.PrefixLength
 	prefixLen, err := allocator.EffectivePrefixLength(class.IPClass, claim.Spec.PrefixLength)
 	if err != nil {
 		return nil, fail(ipamerrors.New(ipamerrors.ReasonPrefixLengthRejected, err.Error()), reasonInvalid)
+	}
+	reclaimPolicy := allocator.EffectiveReclaimPolicy(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy))
+
+	// The address space this allocation must be unique in. A claim that does
+	// not carry a role its class names in uniqueWithin is refused by name
+	// rather than compared against a wider space: widening would look correct
+	// while refusing addresses the narrow comparison was meant to allow, and
+	// the operator would see a pool exhaust at a fraction of its capacity with
+	// nothing to explain it.
+	uniqueScope, scopeDigest, err := scope.ProjectAddressSpaceDigest(id.Name, claim.Spec.Scope, class.Spec.UniqueWithin, "uniqueWithin")
+	if err != nil {
+		var missing *scope.MissingRoleError
+		if errors.As(err, &missing) {
+			return nil, fail(ipamerrors.NewScopeRolesMissing(missing.Roles, fmt.Sprintf("%s (class %q)", missing.Error(), class.Name)), reasonInvalid)
+		}
+		return nil, fail(apierrors.NewBadRequest(err.Error()), reasonInvalid)
+	}
+
+	// A claim recreated under the name of one whose address was retained takes
+	// that address back, before any pool is resolved: the retained row names
+	// its pool, and a reclaim provisions nothing and searches nothing.
+	reclaimed := r.tryReclaim(ctx, span, claim, id, reclaimTerms{
+		claimName:    claim.Name,
+		className:    class.Name,
+		ipFamily:     string(class.Spec.IPFamily),
+		scopeDigest:  scopeDigest,
+		prefixLength: statedPrefixLength,
+		address:      claim.Spec.Address,
+		class:        class.IPClass,
+	}, uniqueScope, reclaimPolicy, generatedName, dryRun)
+	if reclaimed.handled {
+		if reclaimed.err != nil {
+			failSpan(tracing.ReasonTxError)
+			return nil, fail(reclaimed.err, reclaimed.outcome)
+		}
+		result = "success"
+		if !dryRun {
+			result = "reclaimed"
+		}
+		return reclaimed.obj, nil
 	}
 
 	// The block a named address asks for, resolved once the size is known. An
@@ -407,22 +455,6 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 			return nil, fail(apierrors.NewBadRequest(fmt.Sprintf("spec.address %s: %v", claim.Spec.Address, err)), reasonInvalid)
 		}
 		wantBlock = &block
-	}
-	reclaimPolicy := allocator.EffectiveReclaimPolicy(class.IPClass, v1alpha1.ReclaimPolicy(claim.Spec.ReclaimPolicy))
-
-	// The address space this allocation must be unique in. A claim that does
-	// not carry a role its class names in uniqueWithin is refused by name
-	// rather than compared against a wider space: widening would look correct
-	// while refusing addresses the narrow comparison was meant to allow, and
-	// the operator would see a pool exhaust at a fraction of its capacity with
-	// nothing to explain it.
-	uniqueScope, scopeDigest, err := scope.ProjectAddressSpaceDigest(id.Name, claim.Spec.Scope, class.Spec.UniqueWithin, "uniqueWithin")
-	if err != nil {
-		var missing *scope.MissingRoleError
-		if errors.As(err, &missing) {
-			return nil, fail(ipamerrors.NewScopeRolesMissing(missing.Roles, fmt.Sprintf("%s (class %q)", missing.Error(), class.Name)), reasonInvalid)
-		}
-		return nil, fail(apierrors.NewBadRequest(err.Error()), reasonInvalid)
 	}
 
 	// Resolving the pool provisions any missing level of the class's chain, and
@@ -522,35 +554,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		return claim, nil
 	}
 
-	// The allocation records what it was handed out under, not just where it
-	// came from: under Retain it is read after the claim that chose those
-	// values is gone.
-	alloc := &ipam.IPAllocation{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      allocationName,
-			Namespace: claim.Namespace,
-		},
-		Spec: ipam.IPAllocationSpec{
-			IPFamily:      ipam.IPFamily(class.Spec.IPFamily),
-			PoolRef:       ipam.LocalRef{Name: poolName},
-			ClassName:     class.Name,
-			Purpose:       ipam.PurposeClaim,
-			ClaimRef:      &ipam.LocalRef{Name: claim.Name},
-			Scope:         uniqueScope,
-			ReclaimPolicy: ipam.ReclaimPolicy(reclaimPolicy),
-			OwnerRef:      claim.Spec.OwnerRef,
-		},
-		Status: ipam.IPAllocationStatus{
-			Phase:         ipam.AllocationReady,
-			AllocatedCIDR: cidr,
-			Address:       claim.Status.Address,
-			ScopeDigest:   scopeDigest,
-		},
-	}
-	// The allocation never passes through a create handler of its own, so the
-	// system fields a POSTed object gets are stamped here instead. Otherwise it
-	// reports a zero creation timestamp and no UID.
-	rest.FillObjectMetaSystemFields(&alloc.ObjectMeta)
+	alloc := newAllocationObject(claim, allocationName, poolName, class.Name, uniqueScope, reclaimPolicy, cidr, scopeDigest)
 	allocData, err := runtime.Encode(r.codec, alloc)
 	if err != nil {
 		_ = tx.Rollback(ctx)
