@@ -246,3 +246,176 @@ func TestTheReleaseJudgesTheDeadlineUnderThePoolLock(t *testing.T) {
 		t.Errorf("release-unleased asked %d times, want once, under the lock", len(got))
 	}
 }
+
+// claimStorageWith is a second IPClaim endpoint over db, answering
+// release-unleased checks with checker.
+func claimStorageWith(t *testing.T, db *pgxpool.Pool, checker access.UnleasedReleaseChecker) *AllocatingREST {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	ipaminstall.Install(scheme)
+	codec := serializer.NewCodecFactory(scheme).LegacyCodec(ipamv1alpha1.SchemeGroupVersion)
+	getter, err := pgstore.NewRESTOptionsGetter(db.Config().ConnString())
+	if err != nil {
+		t.Fatalf("rest options getter: %v", err)
+	}
+	getter.SetCodec(codec)
+	rest, _, err := NewAllocatingStorage(scheme, getter, allocator.NewPostgresPrefixAllocator(), db, codec, nil, nil, checker)
+	if err != nil {
+		t.Fatalf("claim storage: %v", err)
+	}
+	t.Cleanup(rest.Destroy)
+	return rest
+}
+
+// expectUnleasedReclaimForbidden fails unless err is the 403 refusing to
+// reclaim an unleased address under Delete, and the address is still
+// retained with nothing else written.
+func expectUnleasedReclaimForbidden(t *testing.T, db *pgxpool.Pool, err error, claim *ipam.IPClaim, rowsBefore int) {
+	t.Helper()
+	if !apierrors.IsForbidden(err) {
+		t.Fatalf("reclaim returned %v, want 403 Forbidden", err)
+	}
+	for _, want := range []string{"no lease deadline", "reclaimPolicy Delete", "reclaimPolicy: Retain", "IPAM admin",
+		"ipallocations." + access.VerbReleaseUnleased} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message %q does not mention %q", err.Error(), want)
+		}
+	}
+	assertStillRetained(t, db, claim)
+	if got := deadlineOf(t, db, claim); got != "infinity" {
+		t.Errorf("expires_at = %q after the refused reclaim, want it left at infinity", got)
+	}
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations`); n != rowsBefore {
+		t.Errorf("%d allocation rows after the refused reclaim, want the %d before it", n, rowsBefore)
+	}
+}
+
+// Reclaiming an unleased address under Delete and then deleting the claim
+// would free it, so the reclaim needs what releasing it does. Under Retain it
+// stays held and needs nothing; an admin may reclaim it under Delete.
+func TestAReclaimUnderDeleteOfAnUnleasedAddressNeedsTheReleaseUnleasedPermission(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	ctx := claimCtx(testProject)
+	claim := retainClaim("vpc", "")
+	held := retainAndDelete(t, r, ctx, claim)
+	if got := deadlineOf(t, db, claim); got != "infinity" {
+		t.Fatalf("setup: expires_at = %q, want infinity", got)
+	}
+	rowsBefore := countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations`)
+	deleting := retainClaim("vpc", ipam.ReclaimDelete)
+
+	consumer := releaseChecker(false)
+	_, err := claimStorageWith(t, db, consumer).Create(ctx, deleting.DeepCopy(), nil, &metav1.CreateOptions{})
+	expectUnleasedReclaimForbidden(t, db, err, claim, rowsBefore)
+	name := allocationNameFor(claim.Namespace, claim.Name)
+	if got := consumer.calls(); len(got) != 1 || got[0] != "default/"+name {
+		t.Errorf("checker asked about %v, want once about default/%s", got, name)
+	}
+
+	_, err = claimStorageWith(t, db, releaseChecker(false)).Create(ctx, deleting.DeepCopy(), nil,
+		&metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}})
+	expectUnleasedReclaimForbidden(t, db, err, claim, rowsBefore)
+
+	_, err = claimStorageWith(t, db, nil).Create(ctx, deleting.DeepCopy(), nil, &metav1.CreateOptions{})
+	expectUnleasedReclaimForbidden(t, db, err, claim, rowsBefore)
+
+	// Under the class's Retain, stated or not, the address stays held.
+	for _, policy := range []ipam.ReclaimPolicy{"", ipam.ReclaimRetain} {
+		consumer := releaseChecker(false)
+		rest := claimStorageWith(t, db, consumer)
+		obj, err := rest.Create(ctx, retainClaim("vpc", policy), nil, &metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("consumer reclaim under reclaimPolicy %q: %v", policy, err)
+		}
+		if got := obj.(*ipam.IPClaim).Status.AllocatedCIDR; got != held {
+			t.Errorf("reclaim under %q got %q, want the retained %q", policy, got, held)
+		}
+		if got := consumer.calls(); len(got) != 0 {
+			t.Errorf("release-unleased was asked about %v for a reclaim under %q", got, policy)
+		}
+		if _, _, err := rest.Delete(ctx, "vpc", nil, &metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("delete the reclaiming claim: %v", err)
+		}
+		assertStillRetained(t, db, claim)
+	}
+
+	admin := releaseChecker(true)
+	obj, err := claimStorageWith(t, db, admin).Create(ctx, deleting.DeepCopy(), nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("admin reclaim under Delete: %v", err)
+	}
+	if got := obj.(*ipam.IPClaim).Status.AllocatedCIDR; got != held {
+		t.Errorf("admin reclaim got %q, want the retained %q", got, held)
+	}
+	if got := admin.calls(); len(got) != 1 {
+		t.Errorf("release-unleased asked %d times for the admin's reclaim, want once", len(got))
+	}
+}
+
+// With a lease deadline the address would be freed by its deadline anyway, so
+// a reclaim under Delete is the consumer's and asks nothing.
+func TestAReclaimUnderDeleteOfALeasedAddressNeedsNoPermission(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	setPoolCap(t, db, "us-east", &metav1.Duration{Duration: time.Hour})
+	ctx := claimCtx(testProject)
+	claim := retainClaim("leased", "")
+	held := retainAndDelete(t, r, ctx, claim)
+
+	consumer := releaseChecker(false)
+	obj, err := claimStorageWith(t, db, consumer).Create(ctx, retainClaim("leased", ipam.ReclaimDelete), nil, &metav1.CreateOptions{})
+	if err != nil {
+		t.Fatalf("consumer reclaim of a leased address under Delete: %v", err)
+	}
+	if got := obj.(*ipam.IPClaim).Status.AllocatedCIDR; got != held {
+		t.Errorf("reclaim got %q, want the retained %q", got, held)
+	}
+	if got := consumer.calls(); len(got) != 0 {
+		t.Errorf("release-unleased was asked about %v for a leased address", got)
+	}
+}
+
+// As for the release, the row as locked decides: a deadline that is gone by
+// the time the reclaim holds the pool refuses it, though the read before the
+// lock saw one.
+func TestTheReclaimJudgesTheDeadlineUnderThePoolLock(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	setPoolCap(t, db, "us-east", &metav1.Duration{Duration: time.Hour})
+	ctx := claimCtx(testProject)
+	claim := retainClaim("raced", "")
+	retainAndDelete(t, r, ctx, claim)
+	rowsBefore := countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations`)
+
+	holder, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(ctx, `SELECT 1 FROM ipam_objects WHERE key = $1 FOR UPDATE`,
+		tenant.Identity{Name: testProject}.ResourceKey("ippools", "us-east")); err != nil {
+		t.Fatalf("lock pool: %v", err)
+	}
+	if _, err := holder.Exec(ctx, `UPDATE ipam_cidr_allocations SET expires_at = 'infinity' WHERE allocation_key = $1`,
+		allocationKeyFor(claim)); err != nil {
+		t.Fatalf("drop deadline: %v", err)
+	}
+
+	consumer := releaseChecker(false)
+	rest := claimStorageWith(t, db, consumer)
+	done := make(chan error, 1)
+	go func() {
+		_, err := rest.Create(ctx, retainClaim("raced", ipam.ReclaimDelete), nil, &metav1.CreateOptions{})
+		done <- err
+	}()
+	testdb.WaitForLockWaiters(t, db, 1)
+	if got := consumer.calls(); len(got) != 0 {
+		t.Fatalf("release-unleased was asked about %v before the reclaim held the lock", got)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	expectUnleasedReclaimForbidden(t, db, <-done, claim, rowsBefore)
+	if got := consumer.calls(); len(got) != 1 {
+		t.Errorf("release-unleased asked %d times, want once, under the lock", len(got))
+	}
+}

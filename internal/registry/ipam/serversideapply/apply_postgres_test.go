@@ -73,7 +73,7 @@ func newRegistries(t *testing.T) *registries {
 	}
 	t.Cleanup(poolStore.Destroy)
 
-	claimStore, _, err := ipclaim.NewAllocatingStorage(scheme, getter, alloc, db, codec, nil, nil)
+	claimStore, _, err := ipclaim.NewAllocatingStorage(scheme, getter, alloc, db, codec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("claim storage: %v", err)
 	}

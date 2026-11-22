@@ -22,7 +22,9 @@ spec:
   # that retains by default with no lease, in a pool with no cap, such as a
   # VPC or subnet block) is refused with 403: freeing it could hand out an
   # address still in use, so it needs release-unleased, which only ipam-admin
-  # grants.
+  # grants. So does recreating its claim under reclaimPolicy Delete, which
+  # would free it when that claim is deleted; under Retain a consumer may take
+  # it back.
   inheritedRoles:
     - name: ipam.miloapis.com-viewer
   includedPermissions:

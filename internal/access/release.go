@@ -13,7 +13,9 @@ import (
 const VerbReleaseUnleased = "release-unleased"
 
 // UnleasedReleaseChecker checks whether the caller may release a retained
-// IPAllocation that has no lease deadline.
+// IPAllocation that has no lease deadline, either by deleting it or by
+// reclaiming it with an IPClaim under reclaimPolicy Delete, which frees it when
+// that claim is deleted.
 //
 // Deleting an IPAllocation is how a retained address is handed back, and a
 // consumer may do that for one whose lease runs out anyway: the release only

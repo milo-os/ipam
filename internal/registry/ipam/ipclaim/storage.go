@@ -120,6 +120,12 @@ type AllocatingREST struct {
 	poolChecker access.PoolAccessChecker
 	nsChecker   access.NamespaceChecker
 	codec       runtime.Codec
+
+	// releaseChecker authorizes a reclaim under reclaimPolicy Delete of a
+	// retained allocation with no lease deadline, which would free an address
+	// only an admin may release (see tryReclaim). nil refuses every such
+	// reclaim.
+	releaseChecker access.UnleasedReleaseChecker
 }
 
 // txBeginner is the minimal slice of *pgxpool.Pool the allocation handlers
@@ -139,7 +145,9 @@ type txBeginner interface {
 // fully-populated objects. poolChecker may be nil; when non-nil it
 // authorises cross-project claims via SubjectAccessReview before allocation.
 // nsChecker may be nil, which disables the namespace-liveness check.
-func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker, nsChecker access.NamespaceChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
+// releaseChecker authorizes reclaiming an unleased retained allocation under
+// reclaimPolicy Delete; nil refuses every such reclaim.
+func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGetter, alloc allocator.PrefixAllocator, db *pgxpool.Pool, codec runtime.Codec, poolChecker access.PoolAccessChecker, nsChecker access.NamespaceChecker, releaseChecker access.UnleasedReleaseChecker) (*AllocatingREST, *IPClaimStatusStorage, error) {
 	claimStore, statusStore, err := newInnerStorage(scheme, optsGetter)
 	if err != nil {
 		return nil, nil, err
@@ -152,6 +160,7 @@ func NewAllocatingStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptions
 		poolChecker:    poolChecker,
 		nsChecker:      nsChecker,
 		codec:          codec,
+		releaseChecker: releaseChecker,
 	}, statusStore, nil
 }
 

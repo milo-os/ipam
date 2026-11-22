@@ -74,7 +74,9 @@ type ExtraConfig struct {
 	ClassChecker access.ClassAccessChecker
 	// ReleaseChecker authorises releasing a retained IPAllocation that has no
 	// lease deadline, via a "release-unleased" SubjectAccessReview against
-	// the allocation. nil refuses every such release, like ClassChecker.
+	// the allocation: deleting the IPAllocation, or reclaiming it with an
+	// IPClaim under reclaimPolicy Delete, which frees it when that claim is
+	// deleted. nil refuses every such release, like ClassChecker.
 	ReleaseChecker access.UnleasedReleaseChecker
 	// NamespaceChecker refuses an IPClaim whose namespace is missing or
 	// terminating. nil disables it — unlike ClassChecker, which fails closed.
@@ -221,6 +223,7 @@ func (c completedConfig) New() (*IPAMServer, error) {
 		allocCodec,
 		c.ExtraConfig.PoolChecker,
 		c.ExtraConfig.NamespaceChecker,
+		c.ExtraConfig.ReleaseChecker,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create IPClaim storage: %w", err)

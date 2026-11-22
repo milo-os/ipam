@@ -21,7 +21,8 @@ spec:
     # retained with no lease deadline. delete alone releases one whose lease
     # will run out anyway; one held with no deadline is held on purpose, often
     # by something still using it, so freeing it also needs this permission,
-    # which only ipam-admin grants.
+    # which only ipam-admin grants. The IPClaim create path checks it too, for
+    # a claim that would reclaim such an allocation under reclaimPolicy Delete.
     - release-unleased
   subresources:
     - name: status
