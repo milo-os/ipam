@@ -32,19 +32,72 @@ spec:
 
   steps:
     - name: setup
+      description: |
+        Classes and pools are applied by script rather than by a chainsaw
+        create, so chainsaw's own teardown does not try to delete a pool while
+        the retained allocations inside it still hold addresses. The cleanup
+        below runs when the test ends, whichever step it ended on, so a failed
+        step cannot leave retained allocations, pools or classes behind in the
+        shared project.
       try:
-        - create:
-            file: test-data/setup.yaml
         - script:
             timeout: 60s
             content: |
               . ../lib/ipam.sh
+              kubectl apply -f test-data/setup.yaml >/dev/null
               wait_pool_ready rr-pool
               wait_pool_ready rr-tiny
-              echo "OK: pools Ready"
+              # The full-pool step needs rr-tiny empty, and the same-address
+              # step reads what rr-pool hands out. A pool still holding
+              # something was left by an earlier run.
+              for p in rr-pool rr-tiny; do
+                used=$(kubectl get ippool "$p" -o jsonpath='{.status.capacity.allocated}')
+                if [ -n "$used" ] && [ "$used" != "0" ]; then
+                  echo "FAIL: $p already holds $used address(es); clean up the earlier run first"
+                  exit 1
+                fi
+              done
+              echo "OK: pools Ready and empty"
             check:
               ($error == null): true
-              "(contains($stdout, 'OK: pools Ready'))": true
+              "(contains($stdout, 'OK: pools Ready and empty'))": true
+      cleanup:
+        - script:
+            # Explicit, like every script here: CI runs chainsaw without
+            # test/e2e/chainsaw-config.yaml, so the default exec timeout is
+            # 5s, and releasing two pools' retained allocations takes longer.
+            timeout: 180s
+            env:
+              - name: NAMESPACE
+                value: ($namespace)
+            content: |
+              . ../lib/ipam.sh
+              set +e
+              # Claims first and synchronously: an allocation still bound to a
+              # live claim is refused, by design.
+              kubectl delete ipclaim -n "$NAMESPACE" -l suite=class-retain-replacement \
+                --ignore-not-found --wait=true --timeout=60s >/dev/null 2>&1
+              # Retained allocations survive their claims by design, so they
+              # are released explicitly, and only then can their pools go.
+              release_pool_allocations "$NAMESPACE" rr-tiny
+              release_pool_allocations "$NAMESPACE" rr-pool
+              kubectl delete ippool rr-tiny rr-pool --ignore-not-found >/dev/null 2>&1
+              kubectl delete ipclass rr-retain rr-other rr-tiny-cls --ignore-not-found >/dev/null 2>&1
+
+              # A leftover here is a leak into the project every suite shares,
+              # so it fails the suite rather than passing quietly.
+              left=$(kubectl get ipallocation -n "$NAMESPACE" -o json 2>/dev/null | jq -r \
+                '.items[] | select(.spec.poolRef.name == "rr-pool" or .spec.poolRef.name == "rr-tiny") | .metadata.name')
+              pools=$(kubectl get ippool rr-pool rr-tiny --ignore-not-found -o name 2>/dev/null)
+              classes=$(kubectl get ipclass rr-retain rr-other rr-tiny-cls --ignore-not-found -o name 2>/dev/null)
+              if [ -n "$left$pools$classes" ]; then
+                echo "FAIL: class-retain-replacement cleanup left behind:" $left $pools $classes
+                exit 1
+              fi
+              echo "class-retain-replacement cleanup done"
+            check:
+              ($error == null): true
+              "(contains($stdout, 'class-retain-replacement cleanup done'))": true
 
     - name: same-name-gets-the-same-address
       description: |
@@ -202,23 +255,3 @@ spec:
             check:
               ($error == null): true
               "(contains($stdout, 'OK: the full pool handed'))": true
-
-      finally:
-        - script:
-            env:
-              - name: NAMESPACE
-                value: ($namespace)
-            content: |
-              . ../lib/ipam.sh
-              # Claims first and synchronously: an allocation still bound to a
-              # live claim is refused, by design.
-              kubectl delete ipclaim -n "$NAMESPACE" -l suite=class-retain-replacement --wait=true --ignore-not-found >/dev/null 2>&1 || true
-              # Retained allocations survive their claims by design, so they
-              # are released explicitly.
-              release_pool_allocations "$NAMESPACE" rr-tiny
-              release_pool_allocations "$NAMESPACE" rr-pool
-              kubectl delete ippool rr-tiny rr-pool --ignore-not-found >/dev/null 2>&1 || true
-              kubectl delete ipclass rr-retain rr-other rr-tiny-cls --ignore-not-found >/dev/null 2>&1 || true
-              echo "class-retain-replacement cleanup done"
-            check:
-              ($error == null): true
