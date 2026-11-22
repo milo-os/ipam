@@ -113,8 +113,15 @@ with 422 and reason `RetentionLeaseRequired` unless the class sets
 `retentionLease` or the pool the claim lands in sets `maxRetentionLease`. The
 message names both. Ask the class or pool owner for a lease, or leave
 `reclaimPolicy` to the class. A recreate that would reclaim a retained address
-is held to the same rule against the pool holding it. A class whose own default
-is `Retain` is not affected.
+is held to the same rule against the pool holding it. Under a chained class,
+whose pools are provisioned without a cap, only the class's `retentionLease`
+admits the override. A class whose own default is `Retain` is not affected.
+
+The rule is checked when the claim is created. The lease is read again when the
+claim is deleted, so removing the class's lease or the pool's cap, deleting the
+class, or changing a `Retain` class the claim agreed with to `Delete` while the
+claim is bound can still leave its address retained with no lease. Do not read
+an accepted `Retain` as a promise that a deadline will be set.
 
 Leases are not yet enforced. Until they are, nothing is released at
 `expiresAt`, and an expired retained address stays held until its IPAllocation

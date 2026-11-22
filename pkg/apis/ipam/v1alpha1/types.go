@@ -1041,7 +1041,15 @@ type IPClaimSpec struct {
 	// Otherwise the create is refused with 422 and reason
 	// RetentionLeaseRequired, naming the class and the pool, because the
 	// address would be held indefinitely. A class whose own default is Retain
-	// needs no lease.
+	// needs no lease. A chained class's pools are provisioned without a cap,
+	// so under one the class's retentionLease is what admits the override.
+	//
+	// The rule is checked when the claim is created. The lease is read again
+	// from the class and pool as they are when the claim is deleted, so an
+	// edit made in between can still leave the address retained with no lease:
+	// the class's retentionLease or the pool's cap removed, the class deleted
+	// (a missing class sets no lease), or a class that defaulted to Retain when
+	// the claim stated Retain changed to Delete.
 	// +optional
 	ReclaimPolicy ReclaimPolicy `json:"reclaimPolicy,omitempty"`
 

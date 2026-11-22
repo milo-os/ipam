@@ -75,7 +75,7 @@ The claim's CREATE response body contains the allocated CIDR.
 | `spec.prefixLength` | int (0–128) | yes | Requested sub-prefix size; must be valid for the family and within the pool's min/max. |
 | `spec.poolRef` | NamespacedRef | one of | Pin to a specific pool (optionally in another project via `projectRef`). |
 | `spec.poolSelector` | PoolSelector | one of | Pick a pool by labels (optionally scoped by `projectRef`). |
-| `spec.reclaimPolicy` | ReclaimPolicy | no | `Delete` (default) or `Retain` the allocation when the claim is deleted. A claim recreated under the same name, namespace and project takes a retained address back if it resolves to the same class (defining project and name), family and address scope, the same uniqueWithin address space, a pool it would be placed in now, and the same size and address; otherwise 409 `RetainedAllocationMismatch` naming the field. Scope refs match by apiGroup/kind/name, so a network recreated under the same name reclaims. A reclaim is a create and counts against claim quota (milo-os/milo#1028). `Retain` on a claim whose class defaults to `Delete` needs a finite lease, from the class's `retentionLease` or the `maxRetentionLease` of the pool the claim lands in (for a reclaim, the pool holding the address); otherwise 422 `RetentionLeaseRequired`. A class whose own default is `Retain` needs no lease. Immutable. |
+| `spec.reclaimPolicy` | ReclaimPolicy | no | `Delete` (default) or `Retain` the allocation when the claim is deleted. A claim recreated under the same name, namespace and project takes a retained address back if it resolves to the same class (defining project and name), family and address scope, the same uniqueWithin address space, a pool it would be placed in now, and the same size and address; otherwise 409 `RetainedAllocationMismatch` naming the field. Scope refs match by apiGroup/kind/name, so a network recreated under the same name reclaims. A reclaim is a create and counts against claim quota (milo-os/milo#1028). `Retain` on a claim whose class defaults to `Delete` needs a finite lease, from the class's `retentionLease` or the `maxRetentionLease` of the pool the claim lands in (for a reclaim, the pool holding the address); otherwise 422 `RetentionLeaseRequired`. A class whose own default is `Retain` needs no lease. Checked at create only; see [Retention leases](#retention-leases) for the edits that can still leave an address retained with no lease. Immutable. |
 | `spec.ownerRef` | ObjectRef | no | Opaque `{apiGroup, kind, namespace, name}` consumer reference. |
 | `status.phase` | ClaimPhase | — | `Bound` after synchronous allocation. |
 | `status.allocatedCIDR` | CIDR string | — | Set on `Bound`. |
@@ -126,9 +126,22 @@ set, because its address would be held with no end. The check is made under
 the pool's lock, against the pool the claim is actually placed in, and a
 reclaim is held to it against the pool holding the retained address; a refused
 reclaim leaves the address retained, and recreating the claim without the
-override takes it back. A dry run is refused the same way. A class whose own
-default is `Retain` is the operator's decision and is not checked: its
-allocations may be retained without a lease.
+override takes it back. A claim under a chained class whose pool for its scope
+does not exist yet is refused before anything is provisioned: provisioned
+pools carry no cap, so under a chained class it is the class's
+`retentionLease` that admits the override. A dry run is refused the same way.
+A class whose own default is `Retain` is the operator's decision and is not
+checked: its allocations may be retained without a lease.
+
+The rule is checked when the claim is created, and only then. The lease itself
+is resolved from the class and pool as they stand when the claim is deleted, so
+these edits made while the claim is bound can still leave its address retained
+with no lease:
+
+- the class's `retentionLease`, or the pool's `maxRetentionLease`, is removed;
+- the class is deleted, and a class that no longer exists sets no lease;
+- the claim stated `Retain` under a class whose default was `Retain`, and the
+  class's default is then changed to `Delete`.
 
 **Leases are not yet enforced.** The apiserver's retention sweeper runs in
 observe mode: it evaluates leases, publishes `ipam_retained_allocations`, and

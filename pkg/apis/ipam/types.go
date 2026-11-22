@@ -579,7 +579,9 @@ type IPClaimSpec struct {
 
 	// ReclaimPolicy overrides the class default for this claim. Retain over a
 	// class whose default is Delete is refused (RetentionLeaseRequired) unless
-	// the class or the pool the claim lands in sets a lease.
+	// the class or the pool the claim lands in sets a lease. Checked at create
+	// only: removing the lease, deleting the class, or changing a Retain class
+	// to Delete before the claim is deleted can still retain with no lease.
 	ReclaimPolicy ReclaimPolicy
 
 	// OwnerRef is the opaque consumer object this claim is made for.
