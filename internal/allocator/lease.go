@@ -279,24 +279,18 @@ func writeRetentionStatus(ctx context.Context, tx pgx.Tx, r RetainedAllocation) 
 	return nil
 }
 
-// publishRetention writes r onto its IPAllocation under a savepoint, so an
-// object that cannot be written fails only its own publication. The row is the
-// record the sweeper acts on, and it stands either way; an object that cannot
-// be decoded cannot be read through the API either. Reports whether it wrote.
-func publishRetention(ctx context.Context, tx pgx.Tx, r RetainedAllocation) bool {
+// inSavepoint runs fn under a savepoint of tx and rolls it back if fn fails,
+// so a failure undoes only fn's writes and leaves tx usable.
+func inSavepoint(ctx context.Context, tx pgx.Tx, fn func(pgx.Tx) error) error {
 	sp, err := tx.Begin(ctx)
-	if err == nil {
-		if err = writeRetentionStatus(ctx, sp, r); err == nil {
-			if err = sp.Commit(ctx); err == nil {
-				return true
-			}
-		} else {
-			_ = sp.Rollback(ctx)
-		}
+	if err != nil {
+		return fmt.Errorf("open savepoint: %w", err)
 	}
-	klog.ErrorS(err, "Could not publish a retained allocation's lease on its IPAllocation", "allocation", r.AllocationKey)
-	metrics.RetentionSweepRowErrors.Inc()
-	return false
+	if err := fn(sp); err != nil {
+		_ = sp.Rollback(ctx)
+		return err
+	}
+	return sp.Commit(ctx)
 }
 
 // evaluateRetained fixes the lease of a row retention has just unbound. A class

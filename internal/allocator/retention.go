@@ -343,7 +343,8 @@ func chunks(rows []candidate, n int) [][]candidate {
 // start: after the last row read, or at the beginning once the end is reached.
 func (s *Sweeper) pageThrough(from *keyset, read func(after keyset, limit int) ([]candidate, error), at func(candidate) time.Time, act func([]candidate) error) error {
 	for budget := s.rowBudget; budget > 0; {
-		page, err := read(*from, min(s.pageSize, budget))
+		limit := min(s.pageSize, budget)
+		page, err := read(*from, limit)
 		if err != nil {
 			return err
 		}
@@ -357,7 +358,9 @@ func (s *Sweeper) pageThrough(from *keyset, read func(after keyset, limit int) (
 		if err := act(page); err != nil {
 			return err
 		}
-		if len(page) < s.pageSize {
+		// Short of what was asked for is the end of the set; a page cut short
+		// by the budget is not.
+		if len(page) < limit {
 			*from = keyset{}
 			return nil
 		}
@@ -404,11 +407,14 @@ func (s *Sweeper) applyCaps(ctx context.Context, held func() error, res *SweepRe
 			return err
 		}
 		s.inPool(ctx, poolKey, "cap", res, func(tx pgx.Tx, pool *ipamv1alpha1.IPPool) (func(), error) {
-			n, err := tightenLocked(ctx, tx, poolKey, pool)
+			moved, failed, err := tightenLocked(ctx, tx, poolKey, pool)
 			if err != nil {
 				return nil, err
 			}
-			return func() { res.Tightened += n }, nil
+			return func() {
+				res.Tightened += moved
+				res.RowErrors += failed
+			}, nil
 		})
 	}
 	return nil
@@ -492,8 +498,12 @@ func (s *Sweeper) evaluate(ctx context.Context, held func() error, res *SweepRes
 }
 
 // evaluateChunk fixes the leases of rows in one pool, which tx holds locked.
-// Each lease is written under a savepoint, so one that fails is undone alone
-// and the row is left for a later pass.
+//
+// A row's lease and its publication on the IPAllocation are written under one
+// savepoint, so they commit together or not at all. A row whose publication
+// fails keeps no lease, stays unevaluated, and so held, and is tried again on
+// the next pass: its status and its row never disagree, and the retry is
+// what converges them.
 func evaluateChunk(ctx context.Context, tx pgx.Tx, poolKey string, pool *ipamv1alpha1.IPPool, rows []candidate, memo leaseMemo) (evaluated, unevaluable, rowErrors int) {
 	for _, c := range rows {
 		lease, ok, err := leaseWith(ctx, tx, pool, poolKey, c.className, c.classProject, memo.read)
@@ -502,30 +512,27 @@ func evaluateChunk(ctx context.Context, tx pgx.Tx, poolKey string, pool *ipamv1a
 			unevaluable++
 			continue
 		}
-		sp, err := tx.Begin(ctx)
+		changed := false
+		err = inSavepoint(ctx, tx, func(sp pgx.Tx) error {
+			r, wrote, err := writeLease(ctx, sp, c.allocationKey, lease)
+			if err != nil || !wrote {
+				return err
+			}
+			if err := writeRetentionStatus(ctx, sp, r); err != nil {
+				return err
+			}
+			changed = true
+			return nil
+		})
 		if err != nil {
-			klog.ErrorS(err, "Could not open a savepoint to evaluate a lease", "allocation", c.allocationKey)
+			klog.ErrorS(err, "Could not fix a retained allocation's lease and publish it; it stays unevaluated and is retried",
+				"allocation", c.allocationKey)
 			rowErrors++
 			continue
 		}
-		r, changed, err := writeLease(ctx, sp, c.allocationKey, lease)
-		if err == nil {
-			err = sp.Commit(ctx)
-		} else {
-			_ = sp.Rollback(ctx)
+		if changed {
+			evaluated++
 		}
-		if err != nil {
-			klog.ErrorS(err, "Could not write a retained allocation's lease", "allocation", c.allocationKey)
-			rowErrors++
-			continue
-		}
-		if !changed {
-			continue
-		}
-		evaluated++
-		// A publication that fails is counted by publishRetention; the lease
-		// stands.
-		publishRetention(ctx, tx, r)
 	}
 	return evaluated, unevaluable, rowErrors
 }

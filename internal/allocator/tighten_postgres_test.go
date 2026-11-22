@@ -37,7 +37,7 @@ func tighten(t *testing.T, db *pgxpool.Pool, poolKey string) int {
 	var moved int
 	inTx(t, context.Background(), db.Begin, func(tx pgx.Tx) error {
 		var err error
-		moved, err = TightenRetention(context.Background(), tx, poolKey)
+		moved, _, err = TightenRetention(context.Background(), tx, poolKey)
 		return err
 	})
 	return moved
@@ -123,7 +123,7 @@ func TestMigrationDownWaitsForATighteningInsteadOfDeadlocking(t *testing.T) {
 			tightenErr <- err
 			return
 		}
-		if _, err = TightenRetention(ctx, tx, poolKey); err == nil {
+		if _, _, err = TightenRetention(ctx, tx, poolKey); err == nil {
 			err = tx.Commit(ctx)
 		} else {
 			_ = tx.Rollback(ctx)
@@ -151,5 +151,58 @@ func TestMigrationDownWaitsForATighteningInsteadOfDeadlocking(t *testing.T) {
 	}
 	if err := <-downErr; err != nil {
 		t.Errorf("Down racing a tightening: %v", err)
+	}
+}
+
+// refuseUpdatesOf makes every write to the object at key fail until the
+// returned func is called, so its IPAllocation cannot be republished.
+func refuseUpdatesOf(t *testing.T, db *pgxpool.Pool, key string) func() {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION refuse_update() RETURNS trigger AS $$
+		BEGIN RAISE EXCEPTION 'refused'; END; $$ LANGUAGE plpgsql;
+		CREATE TRIGGER refuse_update BEFORE UPDATE ON ipam_objects
+		    FOR EACH ROW WHEN (OLD.key = '`+key+`') EXECUTE FUNCTION refuse_update();`); err != nil {
+		t.Fatalf("refuse updates of %s: %v", key, err)
+	}
+	return func() {
+		if _, err := db.Exec(ctx, `DROP TRIGGER refuse_update ON ipam_objects`); err != nil {
+			t.Fatalf("allow updates of %s again: %v", key, err)
+		}
+	}
+}
+
+// A cap whose new deadline cannot be published leaves that row's deadline as
+// it was, so the row never says one thing and does another, and a later pass
+// applies both once the IPAllocation can be written.
+func TestACapThatCannotBePublishedIsAppliedOnceItCanBe(t *testing.T) {
+	db := testdb.Pool(t)
+	poolKey := seedPool(t, db, "cap-publish", "10.66.0.0/16")
+	retain(t, db, poolKey, "claim-a", "alloc-a")
+	retain(t, db, poolKey, "claim-b", "alloc-b")
+	setDeadline(t, db, "alloc-a", ptr(10*time.Hour))
+	setDeadline(t, db, "alloc-b", ptr(10*time.Hour))
+	setPoolCap(t, db, poolKey, dur(time.Hour))
+	allow := refuseUpdatesOf(t, db, "alloc-a")
+
+	res, err := NewSweeper(db, SweepObserve).Sweep(context.Background())
+	if err != nil || res.Tightened != 1 || res.RowErrors != 1 {
+		t.Fatalf("pass while alloc-a cannot be published = %+v, %v; want alloc-b tightened and one row error", res, err)
+	}
+	if got := leaseOf(retainedRetention(t, db, "alloc-a")); got != 10*time.Hour {
+		t.Errorf("alloc-a's deadline moved to a %s lease though its status could not say so", got)
+	}
+
+	allow()
+	if res := sweep(t, db, SweepObserve); res.Tightened != 1 {
+		t.Errorf("pass once alloc-a can be published = %+v, want it tightened", res)
+	}
+	stored := retainedRetention(t, db, "alloc-a")
+	if leaseOf(stored) != time.Hour {
+		t.Errorf("alloc-a's lease = %s after the retry, want the 1h cap", leaseOf(stored))
+	}
+	if shown := readAllocationObject(t, db, "alloc-a").Status.ExpiresAt; shown == nil || !shown.Time.Equal(stored.ExpiresAt) {
+		t.Errorf("alloc-a shows %v, stored %s; want the status to have caught up", shown, stored.ExpiresAt)
 	}
 }

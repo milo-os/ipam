@@ -35,29 +35,32 @@ func (r *AllocatingIPPoolREST) applyRetentionCap(ctx context.Context, name strin
 		return
 	}
 	poolKey := poolStorageKey(tenant.FromContext(ctx).Name, name)
-	moved, err := r.tightenRetentionNow(ctx, poolKey)
-	if err != nil {
+	moved, failed, err := r.tightenRetentionNow(ctx, poolKey)
+	if err != nil || failed > 0 {
 		metrics.RetentionCapApplyFailures.Inc()
-		klog.ErrorS(err, "Could not apply a pool's maxRetentionLease to the allocations it retains; the retention sweeper will", "pool", name)
-		return
+		klog.ErrorS(err, "Could not apply a pool's maxRetentionLease to all the allocations it retains; the retention sweeper will retry",
+			"pool", name, "left", failed)
+		if err != nil {
+			return
+		}
 	}
 	if moved > 0 {
 		klog.V(2).InfoS("Brought retention deadlines forward to the pool's maxRetentionLease", "pool", poolKey, "allocations", moved)
 	}
 }
 
-func (r *AllocatingIPPoolREST) tightenRetentionNow(ctx context.Context, poolKey string) (int, error) {
+func (r *AllocatingIPPoolREST) tightenRetentionNow(ctx context.Context, poolKey string) (moved, failed int, err error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("begin retention tightening transaction: %w", err)
+		return 0, 0, fmt.Errorf("begin retention tightening transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	moved, err := tightenRetention(ctx, tx, poolKey)
+	moved, failed, err = tightenRetention(ctx, tx, poolKey)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit retention tightening: %w", err)
+		return 0, 0, fmt.Errorf("commit retention tightening: %w", err)
 	}
-	return moved, nil
+	return moved, failed, nil
 }

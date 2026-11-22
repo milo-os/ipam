@@ -110,7 +110,7 @@ func TestACapTheUpdateCouldNotApplyIsAppliedByTheSweeper(t *testing.T) {
 	poolKey := poolStorageKey("tenant-a", "capped")
 	seedRetained(t, db, poolKey, "long", "10.64.1.0/24", `date_trunc('second', now()) + interval '9 hours'`)
 
-	tightenRetention = func(context.Context, pgx.Tx, string) (int, error) { return 0, errors.New("injected") }
+	tightenRetention = func(context.Context, pgx.Tx, string) (int, int, error) { return 0, 0, errors.New("injected") }
 	t.Cleanup(func() { tightenRetention = allocator.TightenRetention })
 	before, _ := testutil.GetCounterMetricValue(metrics.RetentionCapApplyFailures)
 
@@ -139,9 +139,10 @@ func TestACapTheUpdateCouldNotApplyIsAppliedByTheSweeper(t *testing.T) {
 	}
 }
 
-// An IPAllocation that cannot be written costs its own status, not the cap:
-// the update succeeds and every retained deadline is brought forward.
-func TestACapAppliesPastAnAllocationItCannotRepublish(t *testing.T) {
+// An IPAllocation that cannot be written keeps its row's deadline: the update
+// still succeeds, the rest of the pool is tightened, and the failure is counted
+// for the sweeper to retry.
+func TestACapLeavesARowWhoseAllocationCannotBeRepublished(t *testing.T) {
 	db := testdb.Pool(t)
 	s := newPostgresPoolStorage(t, db)
 	ctx := poolCtx("tenant-a")
@@ -155,6 +156,7 @@ func TestACapAppliesPastAnAllocationItCannotRepublish(t *testing.T) {
 		`INSERT INTO ipam_objects (key, kind, name, data) VALUES ('bad', 'IPAllocation', 'bad', '{"status": "x"}')`); err != nil {
 		t.Fatalf("seed an undecodable IPAllocation: %v", err)
 	}
+	before, _ := testutil.GetCounterMetricValue(metrics.RetentionCapApplyFailures)
 
 	obj, err := s.Get(ctx, "capped", &metav1.GetOptions{})
 	if err != nil {
@@ -166,9 +168,13 @@ func TestACapAppliesPastAnAllocationItCannotRepublish(t *testing.T) {
 		nil, rest.ValidateAllObjectUpdateFunc, false, &metav1.UpdateOptions{}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-	for _, key := range []string{"bad", "good"} {
-		if got := leaseOfRow(t, db, key); got != "02:00:00" {
-			t.Errorf("%s: lease %s, want the 2h cap", key, got)
-		}
+	if got := leaseOfRow(t, db, "good"); got != "02:00:00" {
+		t.Errorf("good: lease %s, want the 2h cap", got)
+	}
+	if got := leaseOfRow(t, db, "bad"); got != "10:00:00" {
+		t.Errorf("bad: lease %s, want it kept at 10:00:00 while its status cannot be written", got)
+	}
+	if got, _ := testutil.GetCounterMetricValue(metrics.RetentionCapApplyFailures); got-before != 1 {
+		t.Errorf("ipam_retention_cap_apply_failures_total moved by %v, want 1", got-before)
 	}
 }

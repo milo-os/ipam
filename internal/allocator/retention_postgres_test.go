@@ -931,3 +931,64 @@ func TestTheSweepLoopSurvivesAPanickingPass(t *testing.T) {
 		t.Errorf("errors moved by %v; want the loop to have recovered and retried at least twice", got-before)
 	}
 }
+
+// A lease whose publication fails is not kept: the row stays unevaluated, so
+// its status cannot lag it, and a later pass evaluates and publishes it once
+// the IPAllocation can be written.
+func TestALeaseThatCannotBePublishedIsEvaluatedOnceItCanBe(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "eval-publish", "10.67.0.0/16")
+	seedLeaseClass(t, db, dur(time.Hour))
+	retain(t, db, poolKey, "claim-a", "alloc-a")
+	if _, err := db.Exec(ctx, `UPDATE ipam_cidr_allocations SET expires_at = NULL WHERE allocation_key = 'alloc-a'`); err != nil {
+		t.Fatalf("unevaluate: %v", err)
+	}
+	allow := refuseUpdatesOf(t, db, "alloc-a")
+
+	res, err := NewSweeper(db, SweepObserve).Sweep(ctx)
+	if err != nil || res.Evaluated != 0 || res.RowErrors != 1 {
+		t.Fatalf("pass while alloc-a cannot be published = %+v, %v; want one row error and nothing evaluated", res, err)
+	}
+	if retainedRetention(t, db, "alloc-a").Lease != LeaseUnevaluated {
+		t.Fatal("the lease was kept though its IPAllocation could not show it")
+	}
+
+	allow()
+	if res := sweep(t, db, SweepObserve); res.Evaluated != 1 {
+		t.Fatalf("pass once alloc-a can be published = %+v, want it evaluated", res)
+	}
+	stored := retainedRetention(t, db, "alloc-a")
+	a := readAllocationObject(t, db, "alloc-a")
+	if a.Status.ExpiresAt == nil || !a.Status.ExpiresAt.Time.Equal(stored.ExpiresAt) {
+		t.Errorf("alloc-a shows %v, stored %s; want the status to have caught up", a.Status.ExpiresAt, stored.ExpiresAt)
+	}
+}
+
+// A page cut short by the pass's row budget is not mistaken for the end of the
+// set: the next pass resumes after it instead of starting over.
+func TestABudgetShortOfAPageResumesWhereItStopped(t *testing.T) {
+	db := testdb.Pool(t)
+	ctx := context.Background()
+	poolKey := seedPool(t, db, "budget", "10.68.0.0/16")
+	if _, err := db.Exec(ctx,
+		`INSERT INTO ipam_cidr_allocations
+		    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family, purpose, retained_at, expires_at)
+		 SELECT $1, ('10.68.' || g || '.0/24')::cidr, NULL, 'b-' || lpad(g::text, 2, '0'), 'IPv4', 'Claim',
+		        now() - interval '2 days', NULL
+		   FROM generate_series(0, 9) g`, poolKey); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	s := NewSweeper(db, SweepObserve)
+	s.pageSize, s.rowBudget = 4, 6
+	first, err := s.Sweep(ctx)
+	if err != nil || first.Evaluated != 6 {
+		t.Fatalf("first pass = %+v, %v; want the budget's 6 rows evaluated", first, err)
+	}
+	if !s.evaluateFrom.set {
+		t.Fatal("a pass that stopped on its budget forgot where it stopped")
+	}
+	if second, err := s.Sweep(ctx); err != nil || second.Evaluated != 4 {
+		t.Errorf("second pass = %+v, %v; want the remaining 4", second, err)
+	}
+}
