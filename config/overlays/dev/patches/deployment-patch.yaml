@@ -22,3 +22,10 @@ spec:
             # beyond the probe paths is exempt from authn/authz.
             - name: AUTHORIZATION_ALWAYS_ALLOW_PATHS
               value: "/healthz,/readyz,/livez,/metrics"
+            # A short sweep so the class-lease e2e suite sees a lease of a few
+            # seconds released within its timeout. Enforce is the base default;
+            # it is stated here so the suite does not depend on it.
+            - name: RETENTION_SWEEP_INTERVAL
+              value: "2s"
+            - name: RETENTION_SWEEP_MODE
+              value: "enforce"
