@@ -75,14 +75,24 @@ func (ipClassStrategy) NamespaceScoped() bool { return false }
 // forever, which read as an outage on a class that was working.
 func (ipClassStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
 	c := obj.(*ipam.IPClass)
-	c.Status = ipam.IPClassStatus{
+	c.Status = AcceptedStatus(metav1.Now())
+}
+
+// AcceptedStatus is the status of every stored class: Ready, with an Accepted
+// condition that transitioned at the given time.
+//
+// Migration 006 writes the same status in SQL onto classes created before
+// PrepareForCreate stamped it. Its test compares the two, so a change here has
+// to be made there too.
+func AcceptedStatus(at metav1.Time) ipam.IPClassStatus {
+	return ipam.IPClassStatus{
 		Phase: ipam.ClassReady,
 		Conditions: []metav1.Condition{{
 			Type:               "Accepted",
 			Status:             metav1.ConditionTrue,
 			Reason:             "ClassAccepted",
 			Message:            "IPClass passed validation and is available to claims",
-			LastTransitionTime: metav1.Now(),
+			LastTransitionTime: at,
 		}},
 	}
 }
