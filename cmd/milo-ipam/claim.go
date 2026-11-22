@@ -89,6 +89,12 @@ allocation instead of consuming a second address. That covers a retry, not the
 name: reusing a name for a different class or scope is refused, because the
 address it would hand back was allocated for a different question.
 
+--reclaim-policy Retain keeps the address held after the claim is released. A
+class that deletes released addresses by default allows it only under a
+retention lease — the class's retentionLease or the pool's maxRetentionLease —
+and refuses it otherwise, since the address would be held for good. A class
+that retains by default needs no lease.
+
 ` + scopeGrammarHelp(),
 		Example: `  # An address of a class, for a network in a location
   datumctl ipam claim create --class tenant-endpoint-ipv4 \
@@ -120,7 +126,7 @@ address it would hand back was allocated for a different question.
 	f.IntVar(&o.prefixLength, "prefix-length", 0, "Block size in bits, within the class's allowed range. Omit to use the class default")
 	f.StringVar(&o.name, "name", "", "Stable claim name; reusing it makes retries idempotent")
 	f.StringVar(&o.owner, "owner", "", "Consumer object this address is held for, as Kind.apiGroup/name")
-	f.StringVar(&o.reclaimPolicy, "reclaim-policy", "", "Override the class default: Delete|Retain")
+	f.StringVar(&o.reclaimPolicy, "reclaim-policy", "", "Override the class default: Delete|Retain. Retain over a Delete class needs a lease on the class or pool")
 	f.BoolVar(&o.dryRun, "dry-run", false, "Preview the allocation without consuming space")
 	return cmd
 }
@@ -427,6 +433,9 @@ func (a *app) claimCreateError(err error, o *claimOptions, cs clientset.Interfac
 	if ce := retainedRefusalError(err); ce != nil {
 		return ce
 	}
+	if ce := retentionLeaseRequiredError(err, o); ce != nil {
+		return ce
+	}
 	switch httpStatusCode(err) {
 	case 507:
 		return exhaustionError(o.class, formatScope(mustScope(o.scope)), classPoolLines(cs, o.class), err)
@@ -467,6 +476,25 @@ func retainedRefusalError(err error) *cliError {
 			withCause(err)
 	}
 	return nil
+}
+
+// retentionLeaseRequiredError renders the refusal of a Retain override with no
+// lease to bound it, or returns nil for any other error. The lease is not the
+// claimant's to set, so the fix names who can, and the way out that needs no
+// one.
+func retentionLeaseRequiredError(err error, o *claimOptions) *cliError {
+	if ipamerrors.ReasonFor(err) != ipamerrors.ReasonRetentionLeaseRequired {
+		return nil
+	}
+	fix := "this class deletes released addresses by default, and a claim may retain one\n" +
+		"       only under a retention lease. Drop --reclaim-policy Retain to take the class\n" +
+		"       default, or ask the class's owner to set retentionLease (or the pool's\n" +
+		"       owner to set maxRetentionLease)."
+	if o != nil && o.class != "" {
+		fix += "\n       datumctl ipam class show " + o.class
+	}
+	return newCLIError(exitInvalid, fmt.Sprintf("reclaim policy Retain refused: %s", apiMessage(err))).
+		withFix(fix).withCause(err)
 }
 
 // addressRefusalError renders the refusals of a claim that named its address,

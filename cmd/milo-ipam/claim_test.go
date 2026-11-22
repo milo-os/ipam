@@ -449,6 +449,31 @@ func TestRetainedRefusalFixIts(t *testing.T) {
 	}
 }
 
+// An unleased Retain override is an invalid request whose fix names the way
+// out that needs no one and the owners who could set a lease.
+func TestRetentionLeaseRequiredFixIt(t *testing.T) {
+	ipclaims := ipamv1alpha1.Resource("ipclaims")
+	ce := retentionLeaseRequiredError(ipamerrors.NewRetentionLeaseRequired(ipclaims, "web", `class "public" does not allow retaining addresses indefinitely`),
+		&claimOptions{class: "public"})
+	if ce == nil {
+		t.Fatal("a RetentionLeaseRequired refusal was not rendered")
+	}
+	if ce.code != exitInvalid {
+		t.Errorf("exit code = %d, want invalid(%d)", ce.code, exitInvalid)
+	}
+	if !strings.Contains(ce.msg, "does not allow retaining addresses indefinitely") {
+		t.Errorf("message %q dropped the server's reason", ce.msg)
+	}
+	for _, want := range []string{"--reclaim-policy", "retentionLease", "maxRetentionLease", "datumctl ipam class show public"} {
+		if !strings.Contains(ce.fix, want) {
+			t.Errorf("fix %q does not contain %q", ce.fix, want)
+		}
+	}
+	if ce := retentionLeaseRequiredError(ipamerrors.NewClaimExists(ipclaims, "web", "exists"), nil); ce != nil {
+		t.Errorf("a duplicate-claim refusal was rendered as a lease refusal: %v", ce)
+	}
+}
+
 // A named-address refusal tells the caller what to do, and the next step depends
 // on why: a retained holder is released, a live one belongs to a claim, a
 // reserved position is the pool's, and an outside or unaligned address is the

@@ -184,8 +184,11 @@ datumctl ipam prefix claim --pool prod-backbone --length 14 --dry-run
 - `--cidr 10.1.0.0/24` — convenience that sets `--length` and `--family` from a
   CIDR (the server allocates by length; it does not pin an exact block).
 - `--reclaim-policy Delete|Retain` — whether the underlying allocation is freed
-  when the claim is deleted (`Delete` is the default). A retained allocation
-  shows when its class's or pool's retention lease runs out
+  when the claim is deleted (`Delete` is the default). `Retain` on a class that
+  deletes by default is refused unless the class sets `retentionLease` or the
+  pool sets `maxRetentionLease`, so an address is never held for good on a
+  claim's say-so; a class that retains by default needs neither. A retained
+  allocation shows when its class's or pool's retention lease runs out
   (`datumctl ipam allocation show`); leases are not yet enforced, so it stays
   held past that until released with `datumctl ipam allocation release`.
 
