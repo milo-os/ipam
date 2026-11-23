@@ -49,6 +49,10 @@ and check whether the class still exists.
 - `ipam_retained_oldest_age_seconds`
 - Provider dashboard → "Retention" row
 
+These gauges hold their last value when the read behind them fails. If
+`IPAMRetainedSetUnread` is firing, the counts are stale; see
+[ipam-retained-set-unread.md](ipam-retained-set-unread.md) first.
+
 ## Diagnose
 
 1. **Which classes and pools?**
@@ -94,6 +98,11 @@ and check whether the class still exists.
    ```sh
    datumctl ipam allocation list --no-lease -o wide
    ```
+   It also lists rows whose lease is still pending (LEASE `pending`), which
+   the alert and the queries above leave out. The sweeper sets their lease on
+   its next pass. A row that stays pending is counted under
+   `ipam_retained_allocations{lease="unevaluated"}`; see
+   [ipam-retention-sweeper-stalled.md](ipam-retention-sweeper-stalled.md).
 4. **Is it one consumer creating and deleting Retain claims under new names?**
    That holds a new address per name and never reclaims one. Look for a high
    `ipam_retentions_total` rate with a low `ipam_reclaims_total{result="reclaimed"}`.
