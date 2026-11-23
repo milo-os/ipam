@@ -344,7 +344,7 @@ func (r *AllocatingREST) tryReclaim(
 	if err != nil {
 		return reclaimResult{handled: true, outcome: reasonInternal, err: fmt.Errorf("encode claim: %w", err)}
 	}
-	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
+	rv, err := r.writeClaimRow(ctx, tx, claimKey, claim, claimData)
 	if err != nil {
 		if isIdentityCollision(err) {
 			return reclaimResult{handled: true, outcome: reasonConflict, err: duplicateClaimConflict(claim.Name)}

@@ -141,7 +141,7 @@ func (r *AllocatingREST) createScopeRange(
 		_ = tx.Rollback(ctx)
 		return nil, reasonInternal, fmt.Errorf("encode scope-range claim: %w", err)
 	}
-	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
+	rv, err := r.writeClaimRow(ctx, tx, claimKey, claim, claimData)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		if isIdentityCollision(err) {
