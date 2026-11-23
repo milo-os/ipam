@@ -1,5 +1,6 @@
 # Compiled binary
 /ipam
+/milo-ipam
 
 # GoReleaser build output
 /dist/
