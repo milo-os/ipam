@@ -281,7 +281,11 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	if err != nil {
 		return nil, fail(fmt.Errorf("get object metadata: %w", err), reasonInternal)
 	}
-	rest.FillObjectMetaSystemFields(objectMeta)
+	// A claim being bound in place (see bindStranded) keeps the identity it
+	// was stored with.
+	if _, healing := healingUID(ctx); !healing {
+		rest.FillObjectMetaSystemFields(objectMeta)
+	}
 
 	if err := rest.BeforeCreate(r.strategy, ctx, claim); err != nil {
 		return nil, fail(err, reasonInternal)
@@ -627,7 +631,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		_ = tx.Rollback(ctx)
 		return nil, fail(fmt.Errorf("encode claim: %w", err), reasonInternal)
 	}
-	rv, err := r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
+	rv, err := r.writeClaimRow(ctx, tx, claimKey, claim, claimData)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		// The claim row is the last write, so a collision here means the name
