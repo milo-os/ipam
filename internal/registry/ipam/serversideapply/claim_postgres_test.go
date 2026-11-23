@@ -389,3 +389,63 @@ func TestConcurrentReappliesOfAStrandedClaimBindOnce(t *testing.T) {
 	}
 	assertBound(t, r.storedClaim(t, "web"), "10.0.0.0/24")
 }
+
+// A stranded claim whose name holds a retained address takes that address
+// back when it is bound, as a create under that name does.
+func TestHealingAStrandedClaimReclaimsItsRetainedAddress(t *testing.T) {
+	r := newRegistries(t)
+	r.claimSetup(t, map[string]any{"reclaimPolicy": "Retain"})
+
+	if _, _, err := r.applyClaim(t, claimManifest("other", "standard", nil), false); err != nil {
+		t.Fatalf("apply other claim: %v", err)
+	}
+	first, _, err := r.applyClaim(t, claimManifest("web", "standard", nil), false)
+	if err != nil {
+		t.Fatalf("apply claim: %v", err)
+	}
+	for _, name := range []string{"web", "other"} {
+		if _, _, err := r.claim.Delete(claimCtx(), name, nil, &metav1.DeleteOptions{}); err != nil {
+			t.Fatalf("delete %s: %v", name, err)
+		}
+	}
+
+	r.strandClaim(t, claimManifest("web", "standard", nil))
+	got, _, err := r.applyClaim(t, claimManifest("web", "standard", nil), false)
+	if err != nil {
+		t.Fatalf("reapply stranded claim: %v", err)
+	}
+	assertBound(t, got, first.Status.AllocatedCIDR)
+}
+
+// A stranded claim naming its address is bound to that address.
+func TestHealingAStrandedFixedAddressClaim(t *testing.T) {
+	r := newRegistries(t)
+	r.claimSetup(t, nil)
+
+	manifest := claimManifest("fixed", "standard", map[string]any{"address": "10.0.5.0/24"})
+	r.strandClaim(t, manifest)
+	got, _, err := r.applyClaim(t, manifest, false)
+	if err != nil {
+		t.Fatalf("reapply stranded claim: %v", err)
+	}
+	assertBound(t, got, "10.0.5.0/24")
+}
+
+// The create check the apiserver passes (authorization and admission, quota
+// among them) runs exactly once when an apply creates a claim.
+func TestApplyingANewClaimRunsTheCreateCheckOnce(t *testing.T) {
+	r := newRegistries(t)
+	r.claimSetup(t, nil)
+
+	calls := 0
+	check := func(context.Context, runtime.Object) error {
+		calls++
+		return nil
+	}
+	if _, _, err := r.claim.Update(claimCtx(), "web", claimApply{scheme: r.scheme, manifest: claimManifest("web", "standard", nil)}, check, nil, true, &metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("apply claim: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("create check ran %d times, want 1", calls)
+	}
+}

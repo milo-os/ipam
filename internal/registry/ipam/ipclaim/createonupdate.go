@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -111,8 +112,10 @@ func isStranded(claim *ipam.IPClaim) bool {
 // and pool access checks, a reclaim of an address retained under its name,
 // a named address, a scope range. The claim keeps its identity; its row is
 // rewritten in the allocation's transaction rather than inserted (see
-// writeClaimRow). Create admission is not run again: it ran when the claim was
-// first stored.
+// writeClaimRow). The rewrite happens only if the row is still the version
+// this update left, so a change made to the claim in between is never
+// overwritten: the bind rolls back and the next update tries again. Create
+// admission is not run again: it ran when the claim was first stored.
 //
 // If the claim still cannot be bound, its Bound condition records the refusal
 // a create would have returned, instead of the claim staying Pending with no
@@ -122,7 +125,10 @@ func isStranded(claim *ipam.IPClaim) bool {
 // transactions of its own, so it is best effort: a failure is logged and the
 // claim returned as the update left it. It never runs for a dry-run.
 func (r *AllocatingREST) bindStranded(ctx context.Context, claim *ipam.IPClaim) *ipam.IPClaim {
-	obj, err := r.create(withHealing(ctx, claim.UID), claim.DeepCopy(), nil, &metav1.CreateOptions{}, false)
+	if beforeBind != nil {
+		beforeBind(ctx, claim)
+	}
+	obj, err := r.create(withHealing(ctx, claim), claim.DeepCopy(), nil, &metav1.CreateOptions{}, false)
 	if err == nil {
 		if bound, ok := obj.(*ipam.IPClaim); ok {
 			klog.V(2).InfoS("Bound a claim that was stored without an address",
@@ -145,7 +151,12 @@ func (r *AllocatingREST) bindStranded(ctx context.Context, claim *ipam.IPClaim) 
 		}
 		return claim
 	}
-	if errors.Is(err, errStaleHeal) || !isRefusal(err) {
+	if errors.Is(err, errStaleHeal) {
+		klog.V(2).InfoS("A claim changed while it was being bound; the next update binds it",
+			"namespace", claim.Namespace, "claim", claim.Name)
+		return current
+	}
+	if !isRefusal(err) {
 		klog.ErrorS(err, "Could not bind a claim that was stored without an address",
 			"namespace", claim.Namespace, "claim", claim.Name)
 		return current
@@ -187,7 +198,7 @@ func (r *AllocatingREST) recordBindFailure(ctx context.Context, claim *ipam.IPCl
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	stored, err := r.lockClaimRow(ctx, tx, claimKey)
+	stored, _, err := r.lockClaimRow(ctx, tx, claimKey)
 	if err != nil {
 		klog.ErrorS(err, "Could not read a claim to record why it was not bound", "claim", claimKey)
 		return claim
@@ -226,17 +237,26 @@ func (r *AllocatingREST) recordBindFailure(ctx context.Context, claim *ipam.IPCl
 	return stored
 }
 
+// beforeBind, when set, runs at the start of bindStranded. A test sets it to
+// change the claim between the update that read it and the bind.
+var beforeBind func(ctx context.Context, claim *ipam.IPClaim)
+
 // healingKey marks a create that binds a claim already stored, carrying the
-// UID that claim was stored with.
+// identity and resourceVersion of the stored claim the bind started from.
 type healingKey struct{}
 
-func withHealing(ctx context.Context, uid types.UID) context.Context {
-	return context.WithValue(ctx, healingKey{}, uid)
+type healingTarget struct {
+	uid types.UID
+	rv  string
 }
 
-func healingUID(ctx context.Context) (types.UID, bool) {
-	uid, ok := ctx.Value(healingKey{}).(types.UID)
-	return uid, ok
+func withHealing(ctx context.Context, claim *ipam.IPClaim) context.Context {
+	return context.WithValue(ctx, healingKey{}, healingTarget{uid: claim.UID, rv: claim.ResourceVersion})
+}
+
+func healingFrom(ctx context.Context) (healingTarget, bool) {
+	target, ok := ctx.Value(healingKey{}).(healingTarget)
+	return target, ok
 }
 
 // errStaleHeal means the claim a bind in place was for changed under it: it
@@ -248,39 +268,51 @@ var errStaleHeal = errors.New("the claim changed while it was being bound")
 // only while it is still the stranded claim the bind started from; otherwise
 // it returns errStaleHeal and the transaction is rolled back with the rest of
 // the allocation.
+//
+// "Still the claim the bind started from" is judged by the row's
+// resource_version column, which every write moves. The bound claim is built
+// from the copy the update returned, so a write that landed after it (a
+// label, a finalizer, another apply) would otherwise be overwritten and lost.
 func (r *AllocatingREST) writeClaimRow(ctx context.Context, tx pgx.Tx, claimKey string, claim *ipam.IPClaim, data []byte) (int64, error) {
-	uid, healing := healingUID(ctx)
+	target, healing := healingFrom(ctx)
 	if !healing {
 		return r.allocator.InsertObject(ctx, tx, claimKey, "IPClaim", claim.Namespace, claim.Name, data)
 	}
-	stored, err := r.lockClaimRow(ctx, tx, claimKey)
+	stored, rv, err := r.lockClaimRow(ctx, tx, claimKey)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, errStaleHeal
 		}
 		return 0, err
 	}
-	if stored.UID != uid || !isStranded(stored) {
+	if stored.UID != target.uid || strconv.FormatInt(rv, 10) != target.rv || !isStranded(stored) {
 		return 0, errStaleHeal
 	}
 	return r.allocator.UpdateObject(ctx, tx, claimKey, data)
 }
 
-// lockClaimRow reads and locks a claim row inside tx.
-func (r *AllocatingREST) lockClaimRow(ctx context.Context, tx pgx.Tx, key string) (*ipam.IPClaim, error) {
-	var data []byte
-	if err := tx.QueryRow(ctx, `SELECT data FROM ipam_objects WHERE key = $1 FOR UPDATE`, key).Scan(&data); err != nil {
-		return nil, fmt.Errorf("lock claim row %q: %w", key, err)
+// lockClaimRow reads and locks a claim row inside tx, and returns it with the
+// row's resource_version.
+func (r *AllocatingREST) lockClaimRow(ctx context.Context, tx pgx.Tx, key string) (*ipam.IPClaim, int64, error) {
+	var (
+		data []byte
+		rv   int64
+	)
+	if err := tx.QueryRow(ctx, `SELECT data, resource_version FROM ipam_objects WHERE key = $1 FOR UPDATE`, key).Scan(&data, &rv); err != nil {
+		return nil, 0, fmt.Errorf("lock claim row %q: %w", key, err)
 	}
 	obj, err := runtime.Decode(r.codec, data)
 	if err != nil {
-		return nil, fmt.Errorf("decode claim %q: %w", key, err)
+		return nil, 0, fmt.Errorf("decode claim %q: %w", key, err)
 	}
 	claim, ok := obj.(*ipam.IPClaim)
 	if !ok {
-		return nil, fmt.Errorf("claim row %q decoded to %T", key, obj)
+		return nil, 0, fmt.Errorf("claim row %q decoded to %T", key, obj)
 	}
-	return claim, nil
+	if err := (storage.APIObjectVersioner{}).UpdateObject(claim, uint64(rv)); err != nil {
+		return nil, 0, err
+	}
+	return claim, rv, nil
 }
 
 var _ rest.Updater = (*AllocatingREST)(nil)

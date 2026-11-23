@@ -283,7 +283,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	}
 	// A claim being bound in place (see bindStranded) keeps the identity it
 	// was stored with.
-	if _, healing := healingUID(ctx); !healing {
+	if _, healing := healingFrom(ctx); !healing {
 		rest.FillObjectMetaSystemFields(objectMeta)
 	}
 
