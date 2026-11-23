@@ -62,11 +62,39 @@ and check whether the class still exists.
     ORDER BY 4 DESC
     LIMIT 20;
    ```
-2. **Who holds them?** The IPAllocations keep `spec.ownerRef`:
-   ```sh
-   datumctl ipam allocation list --unclaimed
+2. **Which are claims that overrode their class?** A claim that set
+   `reclaimPolicy: Retain` on a class whose default is Delete, created before
+   that override needed a lease, is held for good: the class owner never chose
+   to keep it. These are the rows to release first. The query lists every
+   unleased row whose class does not default to Retain, including rows
+   retained before IPAM timestamped retention and rows whose class is gone:
+   ```sql
+   SELECT a.allocation_key, a.pool_key, a.class_name, a.retained_at,
+          CASE WHEN c.key IS NULL THEN '(class not found)'
+               ELSE coalesce(convert_from(c.data, 'UTF8')::jsonb #>> '{spec,reclaimPolicy}', 'Delete')
+          END AS class_default
+     FROM ipam_cidr_allocations a
+     LEFT JOIN ipam_objects c
+       ON c.key = 'project/' || coalesce(nullif(a.class_project, ''), split_part(a.pool_key, '/', 2))
+                  || '/ipam.miloapis.com/ipclasses/' || a.class_name
+    WHERE a.claim_key IS NULL AND a.purpose = 'Claim'
+      AND (a.expires_at = 'infinity' OR a.retained_at IS NULL)
+      AND coalesce(convert_from(c.data, 'UTF8')::jsonb #>> '{spec,reclaimPolicy}', '') <> 'Retain'
+    ORDER BY a.retained_at NULLS FIRST, a.allocation_key;
    ```
-3. **Is it one consumer creating and deleting Retain claims under new names?**
+   A row that did not record its class's project is matched to a class in its
+   pool's project, as the sweeper does. Two errors follow, both on rows written
+   before migration 007. A pool provisioned under another project's class can
+   show `(class not found)` for a class that exists. A class in the pool's
+   project that is a reference (`spec.source`) shows `Delete`, though the class
+   it refers to may retain by default.
+3. **Who holds them?** The IPAllocations keep `spec.ownerRef`. In a project,
+   this lists every retained allocation with no deadline, including those
+   whose class retains by default:
+   ```sh
+   datumctl ipam allocation list --no-lease -o wide
+   ```
+4. **Is it one consumer creating and deleting Retain claims under new names?**
    That holds a new address per name and never reclaims one. Look for a high
    `ipam_retentions_total` rate with a low `ipam_reclaims_total{result="reclaimed"}`.
 
@@ -76,9 +104,10 @@ and check whether the class still exists.
   on the pool, which also caps classes that set none. Lowering a pool's cap
   applies to what the pool already retains. A class's lease applies from the
   next retention.
-- Release what is not needed: `datumctl ipam allocation release <name>`. The
-  consumer that retained it can do this itself: the IPAM Consumer role grants
-  it, and a bound allocation is refused.
+- Release what is not needed: `datumctl ipam allocation release <name>`. An
+  allocation with no lease deadline can be released only by an IPAM Admin
+  (permission `ipallocations.release-unleased`), or by deleting its namespace.
+  Ask the owner first: an address held with no lease is often still in use.
 - Once a lease applies, the sweeper releases the allocation on a pass shortly
   after `status.expiresAt`, usually the next; a pass skips a pool a live
   claim holds, so a release can wait for a later one. That holds in the default enforce mode; a

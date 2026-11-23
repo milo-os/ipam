@@ -24,6 +24,7 @@ import (
 	"go.miloapis.com/ipam/pkg/apis/ipam"
 	ipaminstall "go.miloapis.com/ipam/pkg/apis/ipam/install"
 	ipamv1alpha1 "go.miloapis.com/ipam/pkg/apis/ipam/v1alpha1"
+	"go.miloapis.com/ipam/pkg/ipamerrors"
 )
 
 // fakeReleaseChecker answers every release-unleased check the same way and
@@ -484,7 +485,9 @@ func TestTheNamespaceControllerReleasesUnleasedAllocations(t *testing.T) {
 
 // A consumer refused by the read before the transaction is refused without
 // waiting for the pool: a release in progress elsewhere holds it, and the
-// refusal still comes back at once.
+// refusal still comes back at once. A reclaim does wait, as any claim does:
+// whether the claim agrees with the row is judged under the lock, and a
+// mismatch is refused before the permission.
 func TestAnUnleasedReleaseIsRefusedWithoutWaitingForThePool(t *testing.T) {
 	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
 	ctx := claimCtx(testProject)
@@ -508,10 +511,35 @@ func TestAnUnleasedReleaseIsRefusedWithoutWaitingForThePool(t *testing.T) {
 	if !apierrors.IsForbidden(err) {
 		t.Fatalf("release while the pool is held returned %v, want an immediate 403", err)
 	}
+}
 
-	_, err = claimStorageWith(t, db, releaseChecker(false)).Create(deadline,
-		retainClaim("vpc", ipam.ReclaimDelete), nil, &metav1.CreateOptions{})
-	if !apierrors.IsForbidden(err) {
-		t.Fatalf("reclaim under Delete while the pool is held returned %v, want an immediate 403", err)
+// A recreated claim that could not take the address back under any policy is
+// told why with the mismatch 409, not sent to an admin with a 403: an admin's
+// permission would not make it agree. The authorizer is still asked before
+// the transaction, and the address stays retained.
+func TestAMismatchedReclaimUnderDeleteOfAnUnleasedAddressIsAConflict(t *testing.T) {
+	r, _, db := newLifecycleREST(t, ipamv1alpha1.ReclaimRetain)
+	ctx := claimCtx(testProject)
+	claim := retainClaim("vpc", "")
+	retainAndDelete(t, r, ctx, claim)
+	rowsBefore := countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations`)
+
+	mismatched := retainClaim("vpc", ipam.ReclaimDelete)
+	length := int32(26)
+	mismatched.Spec.PrefixLength = &length
+	consumer := releaseChecker(false)
+	_, err := claimStorageWith(t, db, consumer).Create(ctx, mismatched, nil, &metav1.CreateOptions{})
+	if ipamerrors.ReasonFor(err) != ipamerrors.ReasonRetainedAllocationMismatch {
+		t.Fatalf("mismatched reclaim under Delete returned %v, want 409 %s", err, ipamerrors.ReasonRetainedAllocationMismatch)
+	}
+	if !strings.Contains(err.Error(), "asks for a /26") {
+		t.Errorf("message %q does not name the prefix length asked for", err.Error())
+	}
+	if got := consumer.calls(); len(got) != 1 {
+		t.Errorf("release-unleased asked %d times, want once, before the transaction", len(got))
+	}
+	assertStillRetained(t, db, claim)
+	if n := countRows(t, db, `SELECT count(*) FROM ipam_cidr_allocations`); n != rowsBefore {
+		t.Errorf("%d allocation rows after the refused reclaim, want the %d before it", n, rowsBefore)
 	}
 }

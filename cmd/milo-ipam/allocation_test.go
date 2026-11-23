@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,6 +64,74 @@ func TestAllocationListFilters(t *testing.T) {
 				if strings.Contains(out, "ipallocation/"+name) {
 					t.Errorf("filter did not exclude %q:\n%s", name, out)
 				}
+			}
+		})
+	}
+}
+
+// --no-lease lists retained allocations with no deadline, as the server
+// judges them for release: including those retained before deadlines were
+// recorded and those whose lease is still to be worked out.
+func TestAllocationListNoLease(t *testing.T) {
+	soon := metav1.NewTime(time.Now().Add(time.Hour))
+	bound := newAllocation("bound", "c", "10.1.0.0/26", "p", "claim-a")
+	leased := newAllocation("leased", "c", "10.1.0.64/26", "p", "")
+	leased.Status.ExpiresAt = &soon
+	pending := newAllocation("pending", "c", "10.1.0.128/26", "p", "")
+	pending.Status.Conditions = []metav1.Condition{{
+		Type: ipamv1alpha1.AllocationConditionRetained, Status: metav1.ConditionTrue,
+		Reason: ipamv1alpha1.RetainedReasonLeasePending,
+	}}
+	none := newAllocation("none", "c", "10.1.0.192/26", "p", "")
+	none.Status.Conditions = []metav1.Condition{{
+		Type: ipamv1alpha1.AllocationConditionRetained, Status: metav1.ConditionTrue,
+		Reason: ipamv1alpha1.RetainedReasonNoLease,
+	}}
+	untimestamped := newAllocation("untimestamped", "c", "10.1.1.0/26", "p", "")
+	reserved := newAllocation("reserved", "", "10.1.255.0/24", "p", "")
+	reserved.Spec.Purpose = ipamv1alpha1.PurposeReservation
+
+	ta := newTestApp(newFakeClientset(bound, leased, pending, none, untimestamped, reserved),
+		&globalOptions{output: outputName, color: "never"})
+	cmd := newAllocationListCommand(ta.app)
+	if err := cmd.Flags().Set("no-lease", "true"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := ta.out.String(), "ipallocation/none\nipallocation/pending\nipallocation/untimestamped\n"; got != want {
+		t.Errorf("--no-lease listed\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestLeaseColumn(t *testing.T) {
+	now := time.Now()
+	at := func(d time.Duration) *metav1.Time { t := metav1.NewTime(now.Add(d)); return &t }
+	cases := []struct {
+		name   string
+		claim  string
+		expiry *metav1.Time
+		reason string
+		want   string
+	}{
+		{name: "bound", claim: "web", want: "—"},
+		{name: "running", expiry: at(3 * time.Hour), want: "in 3h"},
+		{name: "expired", expiry: at(-2 * time.Hour), want: "expired 2h ago"},
+		{name: "pending", reason: ipamv1alpha1.RetainedReasonLeasePending, want: "pending"},
+		{name: "none", reason: ipamv1alpha1.RetainedReasonNoLease, want: "never"},
+		{name: "untimestamped", want: "never"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			al := newAllocation("a", "c", "10.0.0.0/24", "p", tc.claim)
+			al.Status.ExpiresAt = tc.expiry
+			if tc.reason != "" {
+				al.Status.Conditions = []metav1.Condition{{Type: ipamv1alpha1.AllocationConditionRetained,
+					Status: metav1.ConditionTrue, Reason: tc.reason}}
+			}
+			if got := leaseColumn(al, now); got != tc.want {
+				t.Errorf("leaseColumn = %q, want %q", got, tc.want)
 			}
 		})
 	}

@@ -44,6 +44,8 @@ runbook, the on-call experience regresses.
 | `IPAMRetainedSetUnread` | warning | [`ipam-retained-set-unread.md`](ipam-retained-set-unread.md) |
 | `IPAMRetentionRowsStuck` | warning (no SLO) | [`ipam-retention-rows-stuck.md`](ipam-retention-rows-stuck.md) |
 | `IPAMRetainedWithoutLeaseRising` | warning (per `ip_family`, no SLO) | [`ipam-retained-without-lease-rising.md`](ipam-retained-without-lease-rising.md) |
+| `IPAMQuotaClaimWaitsHigh` | warning (per `pod`) | [`ipam-quota-claim-waits.md`](ipam-quota-claim-waits.md) |
+| `IPAMQuotaClaimWaitGetsAfterGone` | warning (per `pod`, no SLO) | [`ipam-quota-claim-waits.md`](ipam-quota-claim-waits.md) |
 
 ## First 5 minutes — universal checklist
 
@@ -145,6 +147,7 @@ team's wiki, not here.
 - [`ipam-claim-latency-high.md`](ipam-claim-latency-high.md)
 - [`ipam-db-connection-pool-saturated.md`](ipam-db-connection-pool-saturated.md)
 - [`ipam-pool-exhaustion-imminent.md`](ipam-pool-exhaustion-imminent.md)
+- [`ipam-quota-claim-waits.md`](ipam-quota-claim-waits.md)
 - [`ipam-read-latency-high.md`](ipam-read-latency-high.md)
 - [`ipam-watch-lag-high.md`](ipam-watch-lag-high.md)
 - [`ipam-watcher-stuck.md`](ipam-watcher-stuck.md)

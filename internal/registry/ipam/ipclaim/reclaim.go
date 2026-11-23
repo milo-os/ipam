@@ -191,11 +191,13 @@ type reclaimResult struct {
 // is a release in two steps: deleting the claim afterwards frees an address
 // that only an admin may release. It needs the release-unleased permission on
 // the allocation, as deleting the IPAllocation does, and is refused with 403
-// otherwise, leaving the row retained. The locked row decides; the permission
-// is asked about before the transaction when an unlocked read already shows
-// no deadline, so the authorizer's round trip holds no connection and no
-// lock, and a caller without it is refused at once. A caller the release
-// admits, including one allowed deletecollection on ipallocations, is
+// otherwise, leaving the row retained. The locked row decides, and only once
+// the claim agrees with the row: a claim that could not take the address back
+// under any policy is refused with its 409, not sent to an admin. The
+// permission is asked about before the transaction when an unlocked read
+// already shows no deadline, so the authorizer's round trip holds no
+// connection and no lock, and the answer is used under the lock. A caller the
+// release admits, including one allowed deletecollection on ipallocations, is
 // admitted here too: it could free the address by deleting the IPAllocation.
 func (r *AllocatingREST) tryReclaim(
 	ctx context.Context,
@@ -220,7 +222,8 @@ func (r *AllocatingREST) tryReclaim(
 	}
 
 	// A generated name never reclaims (it is refused below and drawn again),
-	// so it is not asked about, and not refused with 403 in place of that.
+	// so it is not asked about. The answer, or the authorizer's failure, is
+	// kept for the check under the lock; nothing is refused here.
 	ask := access.NewUnleasedReleaseAsk(r.releaseChecker, claim.Namespace, allocationName)
 	if reclaimPolicy == v1alpha1.ReclaimDelete && !generatedName {
 		unleased, err := allocator.RetainedWithoutDeadline(ctx, r.db, allocationKey)
@@ -228,13 +231,7 @@ func (r *AllocatingREST) tryReclaim(
 			return reclaimResult{handled: true, outcome: reasonTxError, err: err}
 		}
 		if unleased {
-			allowed, err := ask.Allowed(ctx)
-			if err != nil {
-				return reclaimResult{handled: true, outcome: reasonInternal, err: err}
-			}
-			if !allowed {
-				return reclaimResult{handled: true, outcome: reasonForbidden, err: unleasedReclaimForbidden(claim.Name, allocationName)}
-			}
+			_, _ = ask.Allowed(ctx)
 		}
 	}
 

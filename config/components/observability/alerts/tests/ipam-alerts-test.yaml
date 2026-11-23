@@ -369,3 +369,72 @@ tests:
         values: _x30 0 1860+60x29
     alert_rule_test:
       - {eval_time: 50m, alertname: IPAMRetainedSetUnread, exp_alerts: []}
+
+  # IPAMQuotaClaimWaitsHigh: 150 open waits on IPAM pod a, held: firing from 10m. IPAM pod b holds 50, and a Milo API server pod holds 500 under its own job; neither fires.
+  - interval: 1m
+    input_series:
+      - series: milo_quota_admission_waiters_current{job="ipam-apiserver",pod="a"}
+        values: 150x20
+      - series: milo_quota_admission_waiters_current{job="ipam-apiserver",pod="b"}
+        values: 50x20
+      - series: milo_quota_admission_waiters_current{job="milo-apiserver",pod="m"}
+        values: 500x20
+    alert_rule_test:
+      - {eval_time: 9m, alertname: IPAMQuotaClaimWaitsHigh, exp_alerts: []}
+      - eval_time: 11m
+        alertname: IPAMQuotaClaimWaitsHigh
+        exp_alerts:
+          - exp_labels: {pod: a, severity: warning, service: ipam, team: connect, slo: claim_latency}
+            exp_annotations:
+              summary: "IPAM apiserver a has held more than 100 open quota claim waits for 10 minutes"
+              description: "This pod holds 150 open quota claim waits, and a wait\nnormally ends in about a second. Milo is judging claims slowly, or a caller\ncreates quota-tracked IPAM resources in bulk faster than they are judged.\nThose creates are slow, and fail when their wait runs out.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-quota-claim-waits.md"
+
+  # A burst of 500 waits for 5 minutes, then back to 5: shorter than the 10 minutes, so nothing fires.
+  - interval: 1m
+    input_series:
+      - series: milo_quota_admission_waiters_current{job="ipam-apiserver",pod="a"}
+        values: 500x5 5x15
+    alert_rule_test:
+      - {eval_time: 12m, alertname: IPAMQuotaClaimWaitsHigh, exp_alerts: []}
+
+  # IPAMQuotaClaimWaitGetsAfterGone: one read after a 410 a minute against 60 waits a minute, 15 reads and 900 waits in 15 minutes, past both bounds. The same series under Milo's job does not fire.
+  - interval: 1m
+    input_series:
+      - series: milo_quota_admission_claim_wait_gets_after_gone_total{job="ipam-apiserver",pod="a"}
+        values: 0+1x30
+      - series: milo_quota_admission_waiter_registrations_total{job="ipam-apiserver",pod="a"}
+        values: 0+60x30
+      - series: milo_quota_admission_claim_wait_gets_after_gone_total{job="milo-apiserver",pod="m"}
+        values: 0+1x30
+      - series: milo_quota_admission_waiter_registrations_total{job="milo-apiserver",pod="m"}
+        values: 0+60x30
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: IPAMQuotaClaimWaitGetsAfterGone
+        exp_alerts:
+          - exp_labels: {pod: a, severity: warning, service: ipam, team: connect}
+            exp_annotations:
+              summary: "Quota claim waits on IPAM apiserver a often meet 410 Gone"
+              description: "Quota claim waits on this pod read their claim after a 410 15\ntimes in 15 minutes: Milo's claim cache lost the versions they watch from, for\nexample after a Milo API server started again.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-quota-claim-waits.md"
+
+  # The same reads against 1,000 waits a minute: fewer than one in 100 waits, so 410s are still rare.
+  - interval: 1m
+    input_series:
+      - series: milo_quota_admission_claim_wait_gets_after_gone_total{job="ipam-apiserver",pod="a"}
+        values: 0+1x30
+      - series: milo_quota_admission_waiter_registrations_total{job="ipam-apiserver",pod="a"}
+        values: 0+1000x30
+    alert_rule_test:
+      - {eval_time: 25m, alertname: IPAMQuotaClaimWaitGetsAfterGone, exp_alerts: []}
+
+  # Three reads in the window against 10 waits a minute: past one in 100, but under 5 reads, so it does not fire.
+  - interval: 1m
+    input_series:
+      - series: milo_quota_admission_claim_wait_gets_after_gone_total{job="ipam-apiserver",pod="a"}
+        values: 0x10 3x20
+      - series: milo_quota_admission_waiter_registrations_total{job="ipam-apiserver",pod="a"}
+        values: 0+10x30
+    alert_rule_test:
+      - {eval_time: 20m, alertname: IPAMQuotaClaimWaitGetsAfterGone, exp_alerts: []}

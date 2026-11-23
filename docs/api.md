@@ -117,7 +117,7 @@ An address held with no deadline is held on purpose, typically because whatever 
 
 Deleting a namespace still frees every address its allocations hold, with or without a deadline. The server also admits the release for a caller allowed `deletecollection` on `ipallocations` in the namespace, which the namespace controller holds through Kubernetes RBAC on every resource. No Milo IAM role can grant it: the ipallocations ProtectedResource does not declare it.
 
-The same permission is needed to take an address with no deadline back under `reclaimPolicy: Delete`. Recreating the claim under its own name with a `Delete` policy, its own or its class's, would free the address when that claim is deleted, so without the permission the create is refused with 403 and the allocation stays retained. A reclaim under `Retain`, or of an address with a lease deadline, needs nothing more than creating the claim. A dry run is answered the same way.
+The same permission is needed to take an address with no deadline back under `reclaimPolicy: Delete`. Recreating the claim under its own name with a `Delete` policy, its own or its class's, would free the address when that claim is deleted, so without the permission the create is refused with 403 and the allocation stays retained. A claim that does not match the retained allocation (its class, family, scope, prefix length or address) gets the 409 `RetainedAllocationMismatch` first, since the permission would not let it take the address back. A reclaim under `Retain`, or of an address with a lease deadline, needs nothing more than creating the claim. A dry run is answered the same way.
 
 ## Retention leases
 
