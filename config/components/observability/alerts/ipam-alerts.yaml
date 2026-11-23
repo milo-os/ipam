@@ -653,3 +653,66 @@ spec:
               has been for 6 hours. These addresses stay held until someone releases them by
               hand; on a scarce range they are capacity that does not come back.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-without-lease-rising.md"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Quota admission. IPAM runs Milo's ResourceQuotaEnforcement plugin
+    # in-process (cmd/ipam/admission.go), so the plugin's metrics come from
+    # IPAM's own /metrics. A quota-tracked create waits in admission for its
+    # ResourceClaim on the Milo control plane, holding one watch on that claim.
+    # Adopted from Milo's milo.quota.claim-waits rules (Milo v0.36.26,
+    # config/telemetry/alerts/quota/claim-waits.yaml), scoped to
+    # job="ipam-apiserver": every API server that runs the plugin exports the
+    # same metric names, and Milo's own rules cover Milo's pods.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: ipam-quota-admission
+      interval: 30s
+      rules:
+        - alert: IPAMQuotaClaimWaitsHigh
+          # A wait lasts until its claim is judged (normally about a second),
+          # the claim wait timeout (30s by default), or 4s before the
+          # request's own deadline, whichever comes first. Nothing in
+          # admission caps concurrent waits. Milo measured one open wait at 8
+          # to 9 goroutines and 0.35 to 0.6 MB resident, and set 100 as a
+          # third of the 300 its API server held cleanly. The cost is the
+          # plugin's, so it lands on the IPAM pod the same way.
+          expr: |
+            max by (pod) (milo_quota_admission_waiters_current{job="ipam-apiserver"}) > 100
+          for: 10m
+          labels:
+            severity: warning
+            service: ipam
+            team: connect
+            slo: claim_latency
+          annotations:
+            summary: "IPAM apiserver {{ $labels.pod }} has held more than 100 open quota claim waits for 10 minutes"
+            description: |
+              This pod holds {{ $value | humanize }} open quota claim waits, and a wait
+              normally ends in about a second. Milo is judging claims slowly, or a caller
+              creates quota-tracked IPAM resources in bulk faster than they are judged.
+              Those creates are slow, and fail when their wait runs out.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-quota-claim-waits.md"
+
+        - alert: IPAMQuotaClaimWaitGetsAfterGone
+          # A wait watches its claim from the resourceVersion its own create
+          # returned, so 410 Gone means Milo's claim cache no longer holds
+          # that version; the wait then reads the claim, at most three times.
+          # At least 5 such reads in 15 minutes, and more than one per 100
+          # waits, means 410s are not rare.
+          expr: |
+            (sum by (pod) (increase(milo_quota_admission_claim_wait_gets_after_gone_total{job="ipam-apiserver"}[15m])) >= 5)
+            and
+            (
+              sum by (pod) (increase(milo_quota_admission_claim_wait_gets_after_gone_total{job="ipam-apiserver"}[15m]))
+              > 0.01 * sum by (pod) (increase(milo_quota_admission_waiter_registrations_total{job="ipam-apiserver"}[15m]))
+            )
+          labels:
+            severity: warning
+            service: ipam
+            team: connect
+          annotations:
+            summary: "Quota claim waits on IPAM apiserver {{ $labels.pod }} often meet 410 Gone"
+            description: |
+              Quota claim waits on this pod read their claim after a 410 {{ $value | humanize }}
+              times in 15 minutes: Milo's claim cache lost the versions they watch from, for
+              example after a Milo API server started again.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-quota-claim-waits.md"
