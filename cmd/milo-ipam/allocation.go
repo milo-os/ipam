@@ -61,6 +61,7 @@ func newAllocationListCommand(a *app) *cobra.Command {
 		pool      string
 		purpose   string
 		unclaimed bool
+		noLease   bool
 		scopeArgs []string
 	)
 	cmd := &cobra.Command{
@@ -70,8 +71,13 @@ func newAllocationListCommand(a *app) *cobra.Command {
 		Long: `List the addresses handed out of pools.
 
 --unclaimed is the leak check: allocations with no claim bound. Under reclaim
-policy Retain that is an address still held after its claim was deleted, and
-nothing frees it until someone does so deliberately.
+policy Retain that is an address still held after its claim was deleted.
+
+--no-lease narrows that to retained allocations with no lease deadline. The
+retention sweeper never releases these: each is held until it is released or
+a claim of the same name takes it back. Releasing one needs an IPAM Admin.
+It includes allocations whose lease is still to be worked out (LEASE
+"pending"), which may yet get a deadline. -o wide adds a LEASE column.
 
 ` + scopeGrammarHelp(),
 		Args: cobra.NoArgs,
@@ -79,7 +85,10 @@ nothing frees it until someone does so deliberately.
   datumctl ipam allocation list --pool us-central-1-tenant-v4 -o wide
 
   # Addresses still held with no claim behind them — the Retain leak check
-  datumctl ipam allocation list --unclaimed`,
+  datumctl ipam allocation list --unclaimed
+
+  # Retained addresses nothing will release on a schedule
+  datumctl ipam allocation list --no-lease -o wide`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cs, ns, err := a.client()
 			if err != nil {
@@ -110,6 +119,9 @@ nothing frees it until someone does so deliberately.
 					continue
 				}
 				if unclaimed && al.Spec.ClaimRef != nil {
+					continue
+				}
+				if noLease && !retainedWithoutLease(al) {
 					continue
 				}
 				if !scopeContains(al.Spec.Scope, wantScope) {
@@ -143,6 +155,7 @@ nothing frees it until someone does so deliberately.
 	f.StringVar(&pool, "pool", "", "Only show allocations drawn from this pool")
 	f.StringVar(&purpose, "purpose", "", "Only show allocations of this purpose: Claim|Reservation|PoolCarve")
 	f.BoolVar(&unclaimed, "unclaimed", false, "Only show allocations with no claim bound (retained or reserved)")
+	f.BoolVar(&noLease, "no-lease", false, "Only show retained allocations with no lease deadline, including ones still to be evaluated")
 	f.StringArrayVar(&scopeArgs, "scope", nil, scopeFlagUsage("Only show allocations whose scope includes these references"))
 	return cmd
 }
@@ -203,8 +216,9 @@ func (a *app) renderAllocationTable(allocs []ipamv1alpha1.IPAllocation) error {
 	wide := a.opts.output == outputWide
 	headers := []string{"NAME", "ADDRESS", "CLASS", "POOL", "CLAIM", "PHASE", "AGE"}
 	if wide {
-		headers = []string{"NAME", "ADDRESS", "CLASS", "POOL", "CLAIM", "PURPOSE", "SCOPE", "OWNER", "RECLAIM", "PHASE", "AGE"}
+		headers = []string{"NAME", "ADDRESS", "CLASS", "POOL", "CLAIM", "PURPOSE", "SCOPE", "OWNER", "RECLAIM", "LEASE", "PHASE", "AGE"}
 	}
+	now := time.Now()
 	t := newTable(a.io.Out, headers)
 	for i := range allocs {
 		al := &allocs[i]
@@ -212,7 +226,7 @@ func (a *app) renderAllocationTable(allocs []ipamv1alpha1.IPAllocation) error {
 			t.row(al.Name, orDash(allocationAddress(al)), orDash(al.Spec.ClassName), al.Spec.PoolRef.Name,
 				allocationClaimName(al), orDash(string(al.Spec.Purpose)), formatScope(al.Spec.Scope),
 				formatObjectRef(al.Spec.OwnerRef), orDash(string(al.Spec.ReclaimPolicy)),
-				phaseText(string(al.Status.Phase)), humanDuration(al.CreationTimestamp))
+				leaseColumn(al, now), phaseText(string(al.Status.Phase)), humanDuration(al.CreationTimestamp))
 		} else {
 			t.row(al.Name, orDash(allocationAddress(al)), orDash(al.Spec.ClassName), al.Spec.PoolRef.Name,
 				allocationClaimName(al), phaseText(string(al.Status.Phase)),
@@ -274,6 +288,45 @@ func (a *app) resolveAllocation(cs clientset.Interface, ns, arg string) ([]*ipam
 	return []*ipamv1alpha1.IPAllocation{al}, nil
 }
 
+// retained reports whether al is a claim's address held after the claim was
+// deleted.
+func retained(al *ipamv1alpha1.IPAllocation) bool {
+	return al.Spec.Purpose == ipamv1alpha1.PurposeClaim && al.Spec.ClaimRef == nil
+}
+
+// leasePending reports whether the server has yet to work out al's lease.
+func leasePending(al *ipamv1alpha1.IPAllocation) bool {
+	c := meta.FindStatusCondition(al.Status.Conditions, ipamv1alpha1.AllocationConditionRetained)
+	return c != nil && c.Reason == ipamv1alpha1.RetainedReasonLeasePending
+}
+
+// retainedWithoutLease reports whether al is retained with no lease deadline,
+// as the server judges it when it decides who may release it: a lease still
+// to be worked out counts, and so does an allocation retained before
+// deadlines were recorded.
+func retainedWithoutLease(al *ipamv1alpha1.IPAllocation) bool {
+	return retained(al) && al.Status.ExpiresAt == nil
+}
+
+// leaseColumn is the LEASE cell of the wide list: when a retained
+// allocation's lease runs out, or why it has no deadline, in the words the
+// server's own table uses. An allocation that is not retained has no lease.
+func leaseColumn(al *ipamv1alpha1.IPAllocation, now time.Time) string {
+	switch {
+	case !retained(al):
+		return "—"
+	case al.Status.ExpiresAt != nil:
+		at := al.Status.ExpiresAt.Time
+		if at.After(now) {
+			return "in " + shortDuration(at.Sub(now))
+		}
+		return "expired " + shortDuration(now.Sub(at)) + " ago"
+	case leasePending(al):
+		return "pending"
+	}
+	return "never"
+}
+
 // leaseText says when a retained allocation's lease runs out. It does not
 // promise a release: the CLI cannot see whether the server's retention
 // sweeper runs in enforce mode, which releases an expired allocation, or in
@@ -289,8 +342,7 @@ func leaseText(al *ipamv1alpha1.IPAllocation, now time.Time) string {
 		return "ran out " + at.UTC().Format(time.RFC3339) + " (" + shortDuration(now.Sub(at)) +
 			" ago); released by the retention sweeper when it runs in enforce mode"
 	}
-	if c := meta.FindStatusCondition(al.Status.Conditions, ipamv1alpha1.AllocationConditionRetained); c != nil &&
-		c.Reason == ipamv1alpha1.RetainedReasonLeasePending {
+	if leasePending(al) {
 		return "not yet evaluated"
 	}
 	return "none — held until released or reclaimed"

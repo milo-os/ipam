@@ -29,7 +29,7 @@ milo-ipam claim show <name|address>
 milo-ipam claim release <name> [--yes] [--dry-run]
 
 # Allocations (IPAllocation — namespaced, system-created)
-milo-ipam allocation list [--class <n>] [--pool <n>] [--purpose <p>] [--unclaimed]
+milo-ipam allocation list [--class <n>] [--pool <n>] [--purpose <p>] [--unclaimed] [--no-lease]
 milo-ipam allocation show <name|address>
 milo-ipam allocation release <name> [--yes] [--dry-run]
 
