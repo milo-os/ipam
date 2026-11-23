@@ -1,7 +1,7 @@
 apiVersion: k6.io/v1alpha1
 kind: TestRun
 metadata:
-  name: ipam-perf-cross-project-throughput
+  name: ipam-perf-cleanup
   namespace: ipam-system
 spec:
   parallelism: 1
@@ -10,27 +10,25 @@ spec:
   script:
     configMap:
       name: ipam-k6-test-scripts
-      file: cross-project-claim-throughput.js
+      file: cleanup.js
   runner:
     image: grafana/k6:latest
     serviceAccountName: ipam-k6-runner
     resources:
       requests:
-        cpu: 250m
-        memory: 256Mi
+        cpu: 100m
+        memory: 128Mi
       limits:
-        cpu: 1000m
-        memory: 512Mi
+        cpu: 500m
+        memory: 256Mi
     env:
       - name: IPAM_API_URL
         value: "https://kubernetes.default.svc.cluster.local:443"
       - name: K6_INSECURE_SKIP_TLS_VERIFY
         value: "true"
-      - name: NAMESPACE_COUNT
-        value: "10"
+      - name: IPAM_TENANCY
+        value: "impersonate"
       - name: PROJECT_COUNT
         value: "5"
-      - name: VUS
-        value: "10"
-      - name: DURATION
-        value: "2m"
+      - name: NAMESPACE_COUNT
+        value: "4"

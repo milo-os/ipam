@@ -26,5 +26,11 @@ spec:
         value: "https://kubernetes.default.svc.cluster.local:443"
       - name: K6_INSECURE_SKIP_TLS_VERIFY
         value: "true"
+      - name: IPAM_TENANCY
+        value: "impersonate"
+      - name: PROJECT_COUNT
+        value: "5"
+      - name: NAMESPACE_COUNT
+        value: "4"
       - name: PREFIX_STEPS
         value: "20,22,24,26,28"

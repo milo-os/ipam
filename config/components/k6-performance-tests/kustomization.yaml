@@ -6,31 +6,29 @@ kind: Component
 # so the generated ConfigMap lands in ipam-system alongside the runner pods.
 #
 # The ConfigMap below is generated from test/load/src/ via hack/bundle-k6.sh
-# (run via `task -t test/load/Taskfile.yaml generate`). Do not edit the files
-# under generated/ directly — they're auto-generated.
+# (run via `task test/load:generate`). Do not edit the files under generated/
+# directly. The list here must match test/load/src/: a script added there
+# needs a line here and a TestRun under testruns/.
 
 configMapGenerator:
   - name: ipam-k6-test-scripts
     files:
       - generated/setup-pools.js
       - generated/prefix-claim-throughput.js
+      - generated/class-chain-claim-throughput.js
       - generated/pool-exhaustion.js
       - generated/read-latency.js
       - generated/pool-scale.js
-      - generated/host-prefix-claim-concurrent.js
-      - generated/concurrent-claims.js
-      - generated/cross-project-claim-throughput.js
-      - generated/watch-latency.js
-      - generated/mixed-load.js
-      - generated/ipv6-claim-throughput.js
+      - generated/cleanup.js
     options:
       disableNameSuffixHash: true
 
 resources:
-  # RBAC only — TestRun manifests are applied individually via
+  # RBAC only. TestRun manifests are applied individually via
   # `task test/load:k6:run TEST=<name>` so they execute sequentially rather
-  # than all firing at once (setup must complete before throughput tests run).
+  # than all firing at once (setup must complete before the tests run).
   - rbac.yaml
+  - tenant-rbac.yaml
 
 labels:
   - pairs:

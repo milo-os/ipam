@@ -1,133 +1,88 @@
 // prefix-claim-throughput.js
 //
-// Measures the hot path of the IPAM service: IPClaim creation throughput and
-// latency under sustained load, with a multi-tenant traffic mix.
+// Claim throughput on the shortest allocation path: a flat IPv4 class
+// (perf-v4) offered directly by one root pool (perf-v4-root, 10.0.0.0/8).
 //
-// 90% of iterations: same-project claim — VU picks a random project N, sends
-//                    an IPClaim against perf-prefix-N with the project N
-//                    tenant headers (no projectRef in spec).
-// 10% of iterations: cross-project claim — VU picks a random project N != 0
-//                    and claims from project 0's shared pool (perf-shared-prefix)
-//                    using its own project identity in headers and projectRef
-//                    in the claim spec pointing at project 0.
-//                    Reflects real-world usage: cross-project claiming is only
-//                    used for public IP address provisioning.
+// Each iteration picks a random project and namespace, creates an IPClaim of
+// class perf-v4 asking for a /CLAIM_PREFIX_LENGTH (default /28), records the
+// create latency and outcome, and deletes the claim. Claims are not held, so
+// the pool never fills and with quota on a project holds at most one claim per
+// VU at a time.
 //
-// Run setup-pools.js first to provision per-project + shared pools.
+// Thresholds (CLAUDE.md acceptance criteria):
+//   ipam_claim_create_latency_ms{phase:success}  p95 < 500ms, p99 < 2000ms
+//   ipam_claim_success_rate                      > 0.95
+//   http_req_failed                              < 0.05
+//   ipam_quota_denied                            == 0 (quota on and short of grants)
 //
-// Configuration:
-//   NAMESPACE_COUNT - Pool of namespaces (must match setup, default 10)
-//   PROJECT_COUNT   - Number of perf projects (must match setup, default 5)
-//   VUS             - Concurrent virtual users (default 10)
-//   DURATION        - Test duration (default 2m)
-//   IPAM_API_URL    - Apiserver URL (default localhost:8001)
-//   CROSS_RATIO     - Fraction of iterations that are cross-project (default 0.1)
+// Run setup-pools.js first.
+//
+// Configuration: VUS (10), DURATION (2m), CLAIM_PREFIX_LENGTH (28), plus the
+// transport and project variables in lib/ipam-client.js.
 
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import {
-  createIPClaimForProject,
-  deleteIPClaimForProject,
-  createCrossProjectIPClaim,
-  nsFor,
-  projectIDFor,
+  FLAT,
+  INSECURE,
+  LOAD_LABEL,
+  allocatedCIDR,
+  describe,
+  ipClaim,
+  ipClaimPath,
+  ipamDelete,
+  ipamPost,
+  namespaces,
+  outcome,
+  pick,
+  projects,
+  uniqueName,
 } from '../lib/ipam-client.js';
 
-const NAMESPACE_COUNT = parseInt(__ENV.NAMESPACE_COUNT || '10');
-const PROJECT_COUNT = parseInt(__ENV.PROJECT_COUNT || '5');
-const VUS = parseInt(__ENV.VUS || '10');
-const DURATION = __ENV.DURATION || '2m';
-const CROSS_RATIO = parseFloat(__ENV.CROSS_RATIO || '0.1');
-const SHARED_PREFIX = 'perf-shared-prefix';
-const SHARED_OWNER_PROJECT = projectIDFor(0);
-
-const claimCreateLatency = new Trend('ipam_claim_create_latency_ms', true);
-const claimDeleteLatency = new Trend('ipam_claim_delete_latency_ms', true);
-const claimSuccessRate = new Rate('ipam_claim_success_rate');
-const claimsCreated = new Counter('ipam_claims_created');
-const claimsDenied = new Counter('ipam_claims_denied');
-const claimErrors = new Counter('ipam_claim_errors');
-
-const sameProjectLatency = new Trend('ipam_same_project_claim_ms', true);
-const crossProjectLatency = new Trend('ipam_cross_project_claim_ms', true);
+const createLatency = new Trend('ipam_claim_create_latency_ms', true);
+const deleteLatency = new Trend('ipam_claim_delete_latency_ms', true);
+const successRate = new Rate('ipam_claim_success_rate');
+const quotaDenied = new Counter('ipam_quota_denied');
+const failures = new Counter('ipam_claim_failures');
 
 export const options = {
-  insecureSkipTLSVerify: __ENV.K6_INSECURE_SKIP_TLS_VERIFY !== 'false',
-  scenarios: {
-    steady_throughput: {
-      executor: 'constant-vus',
-      vus: VUS,
-      duration: DURATION,
-      tags: { scenario: 'steady' },
-    },
-  },
+  insecureSkipTLSVerify: INSECURE,
+  vus: parseInt(__ENV.VUS || '10', 10),
+  duration: __ENV.DURATION || '2m',
   thresholds: {
     'ipam_claim_create_latency_ms{phase:success}': ['p(95)<500', 'p(99)<2000'],
-    'ipam_claim_success_rate': ['rate>0.95'],
-    'http_req_failed': ['rate<0.05'],
+    ipam_claim_success_rate: ['rate>0.95'],
+    http_req_failed: ['rate<0.05'],
+    ipam_quota_denied: ['count==0'],
   },
 };
 
-function recordCreate(res, mode) {
-  const ok = check(res, { [`${mode} claim created`]: (r) => r.status === 201 });
-  if (ok) {
-    claimsCreated.add(1);
-    claimCreateLatency.add(res.timings.duration, { phase: 'success', mode });
-    claimSuccessRate.add(1);
-    if (mode === 'same') sameProjectLatency.add(res.timings.duration);
-    else crossProjectLatency.add(res.timings.duration);
-  } else if (res.status === 507) {
-    claimsDenied.add(1);
-    claimCreateLatency.add(res.timings.duration, { phase: 'denied', mode });
-    claimSuccessRate.add(0);
-  } else {
-    claimErrors.add(1);
-    claimCreateLatency.add(res.timings.duration, { phase: 'error', mode });
-    claimSuccessRate.add(0);
-    if (__ITER < 5) {
-      console.error(`${mode} claim error ${res.status}: ${res.body}`);
-    }
-  }
-  return ok;
-}
+const PROJECTS = projects();
+const NAMESPACES = namespaces();
+let reported = 0;
 
 export default function () {
-  const ns = nsFor(Math.floor(Math.random() * NAMESPACE_COUNT));
-  const claimName = `claim-${__VU}-${__ITER}`;
-  const isCross = Math.random() < CROSS_RATIO;
+  const project = pick(PROJECTS);
+  const ns = pick(NAMESPACES);
+  const name = uniqueName('tp');
 
-  let createRes;
-  let mode;
-  let callerProject;
+  const body = ipClaim(ns, name, { className: FLAT.className, prefixLength: FLAT.claimPrefixLength }, LOAD_LABEL);
+  const res = ipamPost(project, ipClaimPath(ns), body, 'ipclaim_create');
+  const result = outcome(res);
+  const ok = result === 'ok' && allocatedCIDR(res) !== '';
 
-  if (isCross) {
-    mode = 'cross';
-    // Pick any project except project 0 (which owns the shared pool).
-    const callerIdx = 1 + Math.floor(Math.random() * Math.max(1, PROJECT_COUNT - 1));
-    callerProject = projectIDFor(callerIdx);
-    createRes = createCrossProjectIPClaim(
-      ns,
-      claimName,
-      SHARED_PREFIX,
-      SHARED_OWNER_PROJECT,
-      callerProject,
-      28,
-    );
-  } else {
-    mode = 'same';
-    const projectIdx = Math.floor(Math.random() * PROJECT_COUNT);
-    callerProject = projectIDFor(projectIdx);
-    const poolName = `perf-prefix-${projectIdx}`;
-    createRes = createIPClaimForProject(ns, claimName, poolName, 28, callerProject);
+  createLatency.add(res.timings.duration, { phase: ok ? 'success' : 'failure', outcome: result });
+  successRate.add(ok);
+  check(res, { 'claim Bound with a CIDR': () => ok });
+
+  if (!ok) {
+    failures.add(1, { outcome: result });
+    if (result === 'quota_denied') quotaDenied.add(1);
+    if (reported++ < 5) console.warn(`create ${project}/${ns}/${name}: ${describe(res)}`);
+    return;
   }
 
-  const ok = recordCreate(createRes, mode);
-
-  if (ok) {
-    const delRes = deleteIPClaimForProject(ns, claimName, callerProject);
-    claimDeleteLatency.add(delRes.timings.duration);
-    if (delRes.status !== 200 && delRes.status !== 202 && delRes.status !== 404) {
-      claimErrors.add(1);
-    }
-  }
+  const del = ipamDelete(project, ipClaimPath(ns, name), 'ipclaim_delete');
+  deleteLatency.add(del.timings.duration);
+  check(del, { 'claim deleted': (r) => r.status === 200 || r.status === 202 });
 }

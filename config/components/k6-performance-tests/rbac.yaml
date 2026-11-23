@@ -1,3 +1,11 @@
+# The identity the in-cluster k6 runner authenticates as.
+#
+# The runner never calls IPAM as itself. Every IPAM request is made as the
+# impersonated user ipam-perf-tester (tenant-rbac.yaml), carrying a project in
+# the iam.miloapis.com/parent-* user extras: IPAM scopes every read and write to
+# a project, and resolving a claim's class needs one. So the runner needs only
+# the right to impersonate that user and those extras, plus namespace create
+# and delete for the claim namespaces setup-pools.js and cleanup.js manage.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -10,15 +18,19 @@ kind: ClusterRole
 metadata:
   name: ipam-k6-runner
 rules:
-  - apiGroups: ["ipam.miloapis.com"]
-    resources: ["*"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  - apiGroups: [""]
+    resources: ["users"]
+    verbs: ["impersonate"]
+    resourceNames: ["ipam-perf-tester"]
+  - apiGroups: ["authentication.k8s.io"]
+    resources:
+      - "userextras/iam.miloapis.com/parent-name"
+      - "userextras/iam.miloapis.com/parent-type"
+      - "userextras/iam.miloapis.com/parent-api-group"
+    verbs: ["impersonate"]
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "create", "delete", "patch"]
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["clusterroles", "clusterrolebindings"]
-    verbs: ["get", "list", "create", "delete", "patch"]
+    verbs: ["get", "list", "create", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

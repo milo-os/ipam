@@ -1,0 +1,35 @@
+# What the impersonated load-test user may do in IPAM.
+#
+# The k6 scripts (IPAM_TENANCY=impersonate, the default) send every IPAM
+# request as user ipam-perf-tester with a project in the iam.miloapis.com/
+# parent-* extras. IPAM authorizes that user by delegated SubjectAccessReview,
+# so it needs ordinary RBAC here. ipclasses is included because a claim reads
+# its class on every allocation.
+#
+# Applied by the component, and on its own by `task test/load:rbac` for runs
+# from a workstation through kubectl proxy.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ipam-perf-tester
+rules:
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipclasses", "ipclasses/status", "ippools", "ippools/status", "ipclaims", "ipclaims/status"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["ipam.miloapis.com"]
+    resources: ["ipallocations", "ipallocations/status"]
+    verbs: ["get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ipam-perf-tester
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ipam-perf-tester
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: ipam-perf-tester

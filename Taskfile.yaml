@@ -215,31 +215,23 @@ tasks:
     cmd: chainsaw test test/e2e/{{.SUITE}}
 
   # ----- k6 load tests (delegated to test/load/Taskfile.yaml) -----
+  #
+  # The interface (targets, variables, exit codes) is in test/load/README.md.
 
   test/load:setup:
-    desc: Provision pools and namespaces for perf tests
+    desc: Provision classes, root pools and namespaces for perf tests
     cmds:
       - task: load:setup
 
   test/load:throughput:
-    desc: Run prefix-claim throughput load test
+    desc: Run flat IPv4 claim throughput load test
     cmds:
       - task: load:throughput
 
-  test/load:asn-throughput:
-    desc: Run ASN-claim throughput load test
+  test/load:class-chain:
+    desc: Run class-chain claim throughput load test (steady and first-claim cases)
     cmds:
-      - task: load:asn-throughput
-
-  test/load:address-concurrent:
-    desc: Run IPAddressClaim concurrency + uniqueness load test
-    cmds:
-      - task: load:address-concurrent
-
-  test/load:validate:
-    desc: Lint all k6 scripts with k6 inspect
-    cmds:
-      - task: load:validate
+      - task: load:class-chain
 
   test/load:exhaustion:
     desc: Run pool-exhaustion deny-path load test
@@ -251,35 +243,40 @@ tasks:
     cmds:
       - task: load:reads
 
-  test/load:mixed:
-    desc: Run mixed read+write production-traffic load test
-    cmds:
-      - task: load:mixed
-
   test/load:scale:
     desc: Run pool-scale load test
     cmds:
       - task: load:scale
 
-  test/load:scale-setup:
-    desc: Provision 1000-project scale test pools (20 parallel VUs)
-    cmds:
-      - task: load:scale-setup
-
-  test/load:scale-throughput:
-    desc: 'Throughput test at 1000-project scale. Vars: VUS, DURATION'
-    cmds:
-      - task: load:scale-throughput
-
   test/load:cleanup:
-    desc: Delete all perf namespaces and pool resources
+    desc: Delete every load-test claim, pool, class and namespace
     cmds:
       - task: load:cleanup
+
+  test/load:ci:
+    desc: Run setup, the CI_SUITE tests and cleanup; non-zero if any test failed
+    cmds:
+      - task: load:ci
+
+  test/load:rbac:
+    desc: Grant the impersonated load-test user its IPAM RBAC
+    cmds:
+      - task: load:rbac
+
+  test/load:validate:
+    desc: Lint all k6 scripts with k6 inspect
+    cmds:
+      - task: load:validate
 
   test/load:generate:
     desc: Bundle k6 scripts for the in-cluster k6-performance-tests component
     cmds:
       - task: load:generate
+
+  test/load:verify-generated:
+    desc: Fail if the bundled k6 scripts are stale against test/load/
+    cmds:
+      - task: load:verify-generated
 
   # ----- k6 in-cluster operator workflow -----
 
@@ -289,19 +286,19 @@ tasks:
       - task: load:k6:install-operator
 
   test/load:k6:apply:
-    desc: Push k6 ConfigMap + RBAC + TestRun manifests to the cluster
+    desc: Push the k6 scripts ConfigMap and RBAC to the cluster
     cmds:
       - task: load:k6:apply
 
   test/load:k6:run:
-    desc: 'Trigger a single in-cluster TestRun. Var: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load'
+    desc: 'Trigger a single in-cluster TestRun. Var: TEST=setup|throughput|class-chain|exhaustion|reads|scale|cleanup'
     cmds:
       - task: load:k6:run
         vars:
           TEST: '{{.TEST}}'
 
   test/load:k6:logs:
-    desc: 'Tail logs from an in-cluster TestRun. Var: TEST=setup|throughput|asn-throughput|exhaustion|reads|scale|address-concurrent|mixed-load'
+    desc: 'Tail logs from an in-cluster TestRun. Var: TEST=setup|throughput|class-chain|exhaustion|reads|scale|cleanup'
     cmds:
       - task: load:k6:logs
         vars:
