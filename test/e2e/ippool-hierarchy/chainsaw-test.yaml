@@ -7,6 +7,9 @@ spec:
     Hierarchical IPPool delegation: environment -> region -> leaf.
     - Child IPPool with spec.parentPoolRef carves a sub-block from its parent
     - Two child regional pools must be non-overlapping
+    - A child IPPool created by server-side apply (the path kubectl apply
+      --server-side and Flux take) is carved exactly as a created one is,
+      and reapplying it keeps the same range
     - Leaf IPClaim against the child IPPool resolves inside the child range
     - DELETE of a regional IPPool while a leaf claim still holds an
       allocation is rejected with HTTP 409.
@@ -90,15 +93,18 @@ spec:
               ($error == null): true
               (contains($stdout, 'OK hier-region-1 cidr=')): true
 
-    - name: create-region-2-pool-non-overlap
-      description: Second child pool must allocate a non-overlapping /12
+    - name: apply-region-2-pool-non-overlap
+      description: |
+        Second child pool, created by server-side apply rather than create,
+        must be carved like the first: Ready, Allocated=True, and a /12 that
+        does not overlap region 1. A second apply must keep the same range.
       try:
-        - create:
-            file: test-data/region-2-pool.yaml
         - script:
             timeout: 45s
             content: |
               set -e
+              kubectl apply --server-side --field-manager kustomize-controller \
+                -f test-data/region-2-pool.yaml
               for i in $(seq 1 30); do
                 phase=$(kubectl get ippool hier-region-2 \
                   -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
@@ -127,9 +133,24 @@ spec:
                   print(f'FAIL: {a} overlaps {b}', file=sys.stderr); sys.exit(1)
               print(f'OK regions {a} and {b} non-overlapping')
               "
+              allocated=$(kubectl get ippool hier-region-2 \
+                -o jsonpath='{.status.conditions[?(@.type=="Allocated")].status}')
+              if [ "$allocated" != "True" ]; then
+                echo "FAIL: hier-region-2 Allocated condition is '$allocated', want True"
+                exit 1
+              fi
+              kubectl apply --server-side --field-manager kustomize-controller \
+                -f test-data/region-2-pool.yaml
+              again=$(kubectl get ippool hier-region-2 -o jsonpath='{.status.allocatedCIDR}')
+              if [ "$again" != "$c2" ]; then
+                echo "FAIL: reapply moved hier-region-2 from $c2 to $again"
+                exit 1
+              fi
+              echo "OK reapply kept $again"
             check:
               ($error == null): true
               (contains($stdout, 'OK regions ')): true
+              (contains($stdout, 'OK reapply kept ')): true
 
     - name: claim-leaf-against-child-pool
       description: /24 IPClaim against hier-region-1; CIDR must be within region 1

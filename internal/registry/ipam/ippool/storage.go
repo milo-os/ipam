@@ -213,21 +213,14 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 		return nil, mapAllocationError(err)
 	}
 
-	pool.Status.AllocatedCIDR = cidr
-	pool.Status.Phase = ipam.PoolReady
-	pool.Status.Conditions = []metav1.Condition{{
-		Type:               "Allocated",
-		Status:             metav1.ConditionTrue,
-		Reason:             "AllocationSucceeded",
-		Message:            fmt.Sprintf("CIDR %s allocated from %s", cidr, parentName),
-		LastTransitionTime: metav1.Now(),
-	}}
-	if _, ipnet, perr := net.ParseCIDR(cidr); perr == nil {
-		// A freshly carved child pool has no sub-allocations yet; seed all
-		// utilization fields from an empty allocation set.
-		setPoolStatusCapacity(pool, []net.IPNet{*ipnet}, nil)
-	} else {
-		pool.Status.Capacity = ipam.PoolCapacity{}
+	setCarvedStatus(pool, cidr, parentName)
+
+	// A server-side dry-run reports the carve it would make and keeps none of
+	// it: the transaction is rolled back before the pool row is written, so the
+	// parent loses no space and watchers see nothing.
+	if isDryRun(options) {
+		_ = tx.Rollback(ctx)
+		return pool, nil
 	}
 
 	data, err := runtime.Encode(r.codec, pool)
@@ -256,6 +249,40 @@ func (r *AllocatingIPPoolREST) Create(ctx context.Context, obj runtime.Object, c
 	}
 
 	return pool, nil
+}
+
+// setCarvedStatus records a successful carve of cidr out of parentName on a
+// child pool's status.
+func setCarvedStatus(pool *ipam.IPPool, cidr, parentName string) {
+	pool.Status.AllocatedCIDR = cidr
+	pool.Status.Phase = ipam.PoolReady
+	pool.Status.Conditions = []metav1.Condition{{
+		Type:               conditionAllocated,
+		Status:             metav1.ConditionTrue,
+		Reason:             reasonAllocationSucceeded,
+		Message:            fmt.Sprintf("CIDR %s allocated from %s", cidr, parentName),
+		LastTransitionTime: metav1.Now(),
+	}}
+	if _, ipnet, perr := net.ParseCIDR(cidr); perr == nil {
+		// A freshly carved child pool has no sub-allocations yet; seed all
+		// utilization fields from an empty allocation set.
+		setPoolStatusCapacity(pool, []net.IPNet{*ipnet}, nil)
+	} else {
+		pool.Status.Capacity = ipam.PoolCapacity{}
+	}
+}
+
+// isDryRun reports whether options request a server-side dry-run.
+func isDryRun(options *metav1.CreateOptions) bool {
+	if options == nil {
+		return false
+	}
+	for _, v := range options.DryRun {
+		if v == metav1.DryRunAll {
+			return true
+		}
+	}
+	return false
 }
 
 // Delete rejects any pool — root or child — that still has allocations

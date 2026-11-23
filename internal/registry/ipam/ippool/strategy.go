@@ -92,9 +92,9 @@ func (ipPoolStrategy) PrepareForCreate(_ context.Context, obj runtime.Object) {
 	setPoolStatusCapacity(p, []net.IPNet{*ipnet}, nil)
 	p.Status.Phase = ipam.PoolReady
 	p.Status.Conditions = []metav1.Condition{{
-		Type:               "Allocated",
+		Type:               conditionAllocated,
 		Status:             metav1.ConditionTrue,
-		Reason:             "AllocationSucceeded",
+		Reason:             reasonAllocationSucceeded,
 		Message:            "IPPool is ready for allocation",
 		LastTransitionTime: metav1.Now(),
 	}}
