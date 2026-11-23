@@ -283,11 +283,15 @@ spec:
           # connection: zero events for 5m while allocation traffic is
           # actively flowing. Without the traffic guard this would page on
           # every quiet weekend; with it, it only fires when the apiserver is
-          # producing changelog rows that nobody is dispatching.
+          # producing changelog rows that nobody is dispatching. Refused
+          # claims write no changelog row, so the guard counts successes only.
           expr: |
             sum(rate(ipam_watch_events_total[5m])) == 0
             and
-            sum(rate(ipam_allocation_attempts_total[5m])) > 0
+            (
+              sum(rate(ipam_allocation_attempts_total[5m]))
+              - (sum(rate(ipam_allocation_failures_total[5m])) or vector(0))
+            ) > 0
           for: 5m
           labels:
             severity: warning
@@ -295,10 +299,10 @@ spec:
             team: connect
             slo: watch_freshness
           annotations:
-            summary: "IPAM watcher dispatched no events for 5m despite active allocation traffic"
+            summary: "IPAM watcher dispatched no events for 5m despite successful allocations"
             description: |
               `ipam_watch_events_total` has been flat for 5 minutes while
-              `ipam_allocation_attempts_total` is incrementing — the apiserver is
+              allocations are succeeding (attempts minus failures) — the apiserver is
               writing changelog rows but the LISTEN/NOTIFY watcher is not
               dispatching them. Watch consumers (e.g. controllers, kubectl -w)
               are silently stale.

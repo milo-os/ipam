@@ -438,3 +438,62 @@ tests:
         values: 0+10x30
     alert_rule_test:
       - {eval_time: 20m, alertname: IPAMQuotaClaimWaitGetsAfterGone, exp_alerts: []}
+
+  # IPAMWatcherStuck: allocations succeed but the watcher dispatches nothing. Fires once the condition has held for 5m.
+  - interval: 1m
+    input_series:
+      - series: ipam_watch_events_total{pod="a",kind="ipclaims",event_type="ADDED"}
+        values: 0x30
+      - series: ipam_allocation_attempts_total{pod="a",resource="ipclaim",ip_family="IPv4",project="p",org=""}
+        values: 0+2x30
+      - series: ipam_allocation_failures_total{pod="a",resource="ipclaim",reason="pool_exhausted",ip_family="IPv4",project="p",org=""}
+        values: 0+1x30
+    alert_rule_test:
+      - {eval_time: 5m, alertname: IPAMWatcherStuck, exp_alerts: []}
+      - eval_time: 15m
+        alertname: IPAMWatcherStuck
+        exp_alerts:
+          - exp_labels: {severity: warning, service: ipam, team: connect, slo: watch_freshness}
+            exp_annotations:
+              summary: "IPAM watcher dispatched no events for 5m despite successful allocations"
+              description: "`ipam_watch_events_total` has been flat for 5 minutes while\nallocations are succeeding (attempts minus failures) — the apiserver is\nwriting changelog rows but the LISTEN/NOTIFY watcher is not\ndispatching them. Watch consumers (e.g. controllers, kubectl -w)\nare silently stale.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-watcher-stuck.md"
+
+  # IPAMWatcherStuck: successes with no failure series at all still count as traffic.
+  - interval: 1m
+    input_series:
+      - series: ipam_watch_events_total{pod="a",kind="ipclaims",event_type="ADDED"}
+        values: 0x30
+      - series: ipam_allocation_attempts_total{pod="a",resource="ipclaim",ip_family="IPv4",project="p",org=""}
+        values: 0+1x30
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: IPAMWatcherStuck
+        exp_alerts:
+          - exp_labels: {severity: warning, service: ipam, team: connect, slo: watch_freshness}
+            exp_annotations:
+              summary: "IPAM watcher dispatched no events for 5m despite successful allocations"
+              description: "`ipam_watch_events_total` has been flat for 5 minutes while\nallocations are succeeding (attempts minus failures) — the apiserver is\nwriting changelog rows but the LISTEN/NOTIFY watcher is not\ndispatching them. Watch consumers (e.g. controllers, kubectl -w)\nare silently stale.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-watcher-stuck.md"
+
+  # IPAMWatcherStuck: a client retrying a claim that keeps being refused. Every attempt fails and writes no changelog row, so the flat watch counter is expected.
+  - interval: 1m
+    input_series:
+      - series: ipam_watch_events_total{pod="a",kind="ipclaims",event_type="ADDED"}
+        values: 0x30
+      - series: ipam_allocation_attempts_total{pod="a",resource="ipclaim",ip_family="",project="p",org=""}
+        values: 0+2x30
+      - series: ipam_allocation_failures_total{pod="a",resource="ipclaim",reason="class_not_found",ip_family="",project="p",org=""}
+        values: 0+2x30
+    alert_rule_test:
+      - {eval_time: 20m, alertname: IPAMWatcherStuck, exp_alerts: []}
+
+  # IPAMWatcherStuck: allocations succeed and the watcher keeps dispatching.
+  - interval: 1m
+    input_series:
+      - series: ipam_watch_events_total{pod="a",kind="ipclaims",event_type="ADDED"}
+        values: 0+1x30
+      - series: ipam_allocation_attempts_total{pod="a",resource="ipclaim",ip_family="IPv4",project="p",org=""}
+        values: 0+1x30
+    alert_rule_test:
+      - {eval_time: 20m, alertname: IPAMWatcherStuck, exp_alerts: []}
