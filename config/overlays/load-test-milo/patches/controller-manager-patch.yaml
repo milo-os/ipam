@@ -1,0 +1,8 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milo-controller-manager
+spec:
+  # One replica: leader election makes a second one pure overhead here.
+  replicas: 1

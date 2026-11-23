@@ -1,0 +1,18 @@
+# Expose milo-apiserver on the kind node at NodePort 30000. test-infra's kind
+# config maps host port 30000 -> node port 30000 (it is the Grafana port, unused
+# here because the observability stack is not installed). That gives k6 a direct
+# TLS path to Milo from the runner, with no Envoy hop: the Envoy route in Milo's
+# overlay carries a retry policy (3 retries, 2s per-try timeout) that would
+# silently re-send IPClaim creates and cap latency, which is exactly wrong for a
+# benchmark. Milo's serving cert has `localhost` as a SAN.
+- op: replace
+  path: /spec/type
+  value: NodePort
+- op: replace
+  path: /spec/ports/0
+  value:
+    name: https
+    port: 6443
+    protocol: TCP
+    targetPort: https
+    nodePort: 30000

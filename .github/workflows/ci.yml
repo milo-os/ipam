@@ -60,10 +60,29 @@ jobs:
       - name: Build k6 component
         run: kustomize build config/components/k6-performance-tests/ > /dev/null
 
+      # The load-test environment (.github/workflows/load-test.yaml). The two
+      # Milo overlays pull a remote base from github.com/milo-os/milo, so this
+      # also catches a ref that no longer resolves.
+      - name: Build load-test overlays
+        run: |
+          set -e
+          for o in load-test load-test-latency load-test-milo load-test-milo-api; do
+            kustomize build "config/overlays/${o}/" > /dev/null
+            echo "  ok  config/overlays/${o}"
+          done
+
       # The install path for the IAM manifests, rendered by the infra Flux
-      # Kustomization rather than by either overlay above.
+      # Kustomization rather than by any overlay. Infra deploys this bundle to
+      # production, so CI has to keep building it.
       - name: Build Milo IAM bundle
         run: kustomize build config/milo/ > /dev/null
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Load-test Milo pin matches go.mod
+        run: ./hack/verify-load-test-pin.sh
 
   k6-validate:
     name: Validate k6 scripts

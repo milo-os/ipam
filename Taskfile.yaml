@@ -6,6 +6,15 @@ vars:
   IPAM_IMAGE_TAG: "dev"
   TEST_INFRA_CLUSTER_NAME: "test-infra"
   TEST_INFRA_REPO_REF: 'v0.6.0'
+  # ----- Full-environment load test (task load-test:*) -----
+  # One kind cluster per run. CLUSTER_NAME is the variable test-infra reads, so
+  # exporting it before `task load-test:up` is the whole override. The name is
+  # also what the image is loaded into and what `load-test:down` deletes.
+  LOAD_TEST_CLUSTER_NAME: '{{.CLUSTER_NAME | default "ipam-load-test"}}'
+  # Added per Postgres round trip between IPAM and Postgres. 0 = off (default):
+  # the latency overlay and Toxiproxy are not deployed at all.
+  POSTGRES_LATENCY_MS: '{{.POSTGRES_LATENCY_MS | default "0"}}'
+  POSTGRES_LATENCY_JITTER_MS: '{{.POSTGRES_LATENCY_JITTER_MS | default "0"}}'
 
 includes:
   test-infra:
@@ -304,6 +313,84 @@ tasks:
         vars:
           TEST: '{{.TEST}}'
 
+  # ----- Full-environment load test -----
+  #
+  # Milo (apiserver + quota controllers) and IPAM run in one kind cluster, IPAM
+  # is registered as an APIService in Milo, and k6 drives it through Milo's
+  # project control planes, so every IPClaim create passes IPAM's quota
+  # admission. The steps live in hack/load-test.sh; these targets are the
+  # entry points CI (.github/workflows/load-test.yaml) and people share.
+  #
+  # Needs TASK_X_REMOTE_TASKFILES=1 (like every target here that touches
+  # test-infra), docker, kind, kubectl, kustomize, flux, helm, k6.
+  # Host ports 30000 (Milo) and 30443 are bound by the kind cluster, so only one
+  # such cluster can run per Docker host.
+
+  load-test:up:
+    desc: 'Bring up the full environment: kind + Milo + IPAM (quota on) + seeded quota. Vars: POSTGRES_LATENCY_MS, PROJECT_COUNT, CLUSTER_NAME'
+    cmds:
+      - task: load-test:cluster
+      - task: load-test:build
+      - task: load-test:deploy
+      - task: load-test:smoke
+
+  load-test:cluster:
+    desc: Create the kind cluster (name from CLUSTER_NAME) with Flux, cert-manager, Envoy Gateway, Kyverno
+    cmds:
+      - CLUSTER_NAME='{{.LOAD_TEST_CLUSTER_NAME}}' task --yes test-infra:cluster-up
+
+  load-test:build:
+    desc: Build the IPAM image and load it into the load-test kind cluster
+    cmds:
+      - task: dev:build
+      - kind load docker-image "{{.IPAM_IMAGE_NAME}}:{{.IPAM_IMAGE_TAG}}" --name "{{.LOAD_TEST_CLUSTER_NAME}}"
+
+  load-test:deploy:
+    desc: Deploy Milo, IPAM and Postgres, register IPAM behind Milo, seed quota and projects
+    env:
+      POSTGRES_LATENCY_MS: '{{.POSTGRES_LATENCY_MS}}'
+      POSTGRES_LATENCY_JITTER_MS: '{{.POSTGRES_LATENCY_JITTER_MS}}'
+    cmds:
+      - ./hack/load-test.sh deploy-milo
+      - ./hack/load-test.sh deploy-ipam
+      - ./hack/load-test.sh register
+      - ./hack/load-test.sh seed
+      - ./hack/load-test.sh postgres-latency
+
+  load-test:postgres-latency:
+    desc: 'Set (or clear, with 0) added IPAM->Postgres latency on a running environment. Var: POSTGRES_LATENCY_MS (needs the latency overlay deployed)'
+    env:
+      POSTGRES_LATENCY_MS: '{{.POSTGRES_LATENCY_MS}}'
+      POSTGRES_LATENCY_JITTER_MS: '{{.POSTGRES_LATENCY_JITTER_MS}}'
+    cmds:
+      - ./hack/load-test.sh postgres-latency
+
+  load-test:smoke:
+    desc: Create one IPClaim through Milo and assert quota admission granted it
+    cmds:
+      - ./hack/load-test.sh smoke
+
+  load-test:run:
+    desc: 'Run the k6 suite against the environment. Var: LOAD_TESTS (default "setup throughput class-chain exhaustion reads scale cleanup"). Exits non-zero if any threshold fails'
+    cmds:
+      - ./hack/load-test.sh run
+
+  load-test:diagnostics:
+    desc: Dump IPAM, Milo and Postgres logs and state into test/load/diagnostics/
+    cmds:
+      - ./hack/load-test.sh diagnostics
+
+  load-test:down:
+    desc: Delete the load-test kind cluster
+    cmds:
+      - CLUSTER_NAME='{{.LOAD_TEST_CLUSTER_NAME}}' task --yes test-infra:cluster-down
+      - rm -rf .milo
+
+  load-test:verify-milo-pin:
+    desc: Fail if the Milo ref in the load-test overlays differs from the go.mod version of go.miloapis.com/milo
+    cmds:
+      - ./hack/verify-load-test-pin.sh
+
   # ----- Verification gates -----
 
   verify:
@@ -346,3 +433,7 @@ tasks:
       - kustomize build config/overlays/dev/   > /dev/null && echo "  ok  config/overlays/dev"
       - kustomize build config/overlays/test-infra/ > /dev/null && echo "  ok  config/overlays/test-infra"
       - kustomize build config/components/k6-performance-tests/ > /dev/null && echo "  ok  config/components/k6-performance-tests"
+      - kustomize build config/overlays/load-test/ > /dev/null && echo "  ok  config/overlays/load-test"
+      - kustomize build config/overlays/load-test-latency/ > /dev/null && echo "  ok  config/overlays/load-test-latency"
+      - kustomize build config/overlays/load-test-milo/ > /dev/null && echo "  ok  config/overlays/load-test-milo"
+      - kustomize build config/overlays/load-test-milo-api/ > /dev/null && echo "  ok  config/overlays/load-test-milo-api"

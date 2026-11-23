@@ -1,0 +1,34 @@
+# Additive to the base ipam-apiserver NetworkPolicy, which only admits
+# kube-system and allows egress to kube-system. In this environment milo-apiserver
+# (milo-system) is both the caller of IPAM (aggregation front-proxy) and the
+# target of IPAM's quota/authn/authz calls. NetworkPolicies union, so this
+# widens the base rather than replacing it (same shape as the infra repo's
+# ipam-apiserver-milo-egress).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ipam-apiserver-milo
+  namespace: ipam-system
+spec:
+  podSelector:
+    matchLabels:
+      app: ipam-apiserver
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: milo-system
+      ports:
+        - protocol: TCP
+          port: 8443
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: milo-system
+      ports:
+        - protocol: TCP
+          port: 6443

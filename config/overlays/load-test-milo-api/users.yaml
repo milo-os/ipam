@@ -1,0 +1,22 @@
+# The two users Milo's own test-infra overlay seeds (milo
+# config/overlays/test-infra/resources/test-users.yaml). Organization creation
+# attaches the requesting user as owner, so the `admin` identity behind
+# test-admin-token has to exist as an iam User first.
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: User
+metadata:
+  name: admin
+spec:
+  email: admin@test.local
+  givenName: Admin
+  familyName: User
+---
+apiVersion: iam.miloapis.com/v1alpha1
+kind: User
+metadata:
+  name: test-user
+spec:
+  email: test-user@test.local
+  givenName: Test
+  familyName: User

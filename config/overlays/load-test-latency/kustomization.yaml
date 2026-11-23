@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# load-test plus the postgres-latency component. Selected by
+# `task load-test:deploy-ipam` when POSTGRES_LATENCY_MS > 0; the plain
+# load-test overlay is the default so the latency path is strictly opt-in.
+resources:
+  - ../load-test
+
+components:
+  - ../../components/postgres-latency

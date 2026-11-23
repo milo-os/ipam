@@ -1,0 +1,19 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ResourceRegistration
+metadata:
+  name: ipam-load-test-ipclaims-per-project
+  labels:
+    ipam.miloapis.com/load-test: "true"
+spec:
+  consumerType:
+    apiGroup: resourcemanager.miloapis.com
+    kind: Project
+  type: Entity
+  resourceType: ipam.miloapis.com/ipclaims
+  description: IPClaim objects a project holds (load-test registration).
+  baseUnit: claim
+  displayUnit: claims
+  unitConversionFactor: 1
+  claimingResources:
+    - apiGroup: ipam.miloapis.com
+      kind: IPClaim

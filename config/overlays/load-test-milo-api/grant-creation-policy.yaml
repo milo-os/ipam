@@ -1,0 +1,36 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: GrantCreationPolicy
+metadata:
+  name: ipam-load-test-ipclaim-grant
+  labels:
+    ipam.miloapis.com/load-test: "true"
+spec:
+  disabled: false
+  trigger:
+    resource:
+      apiVersion: resourcemanager.miloapis.com/v1alpha1
+      kind: Project
+    constraints:
+      # Only the load-test projects; nothing else in the cluster is granted.
+      - expression: 'has(trigger.metadata.labels) && "ipam.miloapis.com/load-test" in trigger.metadata.labels && trigger.metadata.labels["ipam.miloapis.com/load-test"] == "true"'
+  target:
+    parentContext:
+      apiGroup: resourcemanager.miloapis.com
+      kind: Project
+      nameExpression: trigger.metadata.name
+    resourceGrantTemplate:
+      metadata:
+        name: "ipam-load-test-{{trigger.metadata.name}}"
+        namespace: milo-system
+        labels:
+          quota.miloapis.com/auto-created: "true"
+          ipam.miloapis.com/load-test: "true"
+      spec:
+        consumerRef:
+          apiGroup: resourcemanager.miloapis.com
+          kind: Project
+          name: "{{trigger.metadata.name}}"
+        allowances:
+          - resourceType: ipam.miloapis.com/ipclaims
+            buckets:
+              - amount: 100000000

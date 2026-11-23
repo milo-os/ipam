@@ -1,0 +1,59 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# IPAM with Milo quota admission ON, for the CI load test (.github/workflows/
+# load-test.yaml). This is the IPAM half of a "full environment"; it is applied
+# to the kind (host) cluster alongside:
+#
+#   ../load-test-milo       Milo's apiserver, controller-manager and etcd
+#   ../load-test-milo-api   objects applied THROUGH Milo: the IPAM APIService
+#                           and the quota registration/policies
+#
+# Unlike dev and test-infra, which force ENABLE_QUOTA=false, this overlay runs
+# the real quota plugin. It points IPAM's --kubeconfig (quota informers and
+# per-project claim clients), --authentication-kubeconfig and
+# --authorization-kubeconfig at milo-apiserver, which is the same wiring the
+# production deployment uses (datum-cloud/infra apps/ipam-system).
+#
+# Deliberately NOT included: the api-registration component. IPAM is registered
+# as an APIService in Milo (see ../load-test-milo-api), not in the kind host
+# apiserver, so every request reaches IPAM through Milo's aggregator with the
+# tenant identity Milo stamps on it.
+
+namespace: ipam-system
+
+resources:
+  - ../../base
+  - secret.yaml
+  - tls-certificate.yaml
+  - milo-client-secret.yaml
+  - milo-networkpolicy.yaml
+
+components:
+  - ../../components/namespace
+  - ../../components/postgres
+
+images:
+  - name: ghcr.io/milo-os/ipam
+    newName: ipam-apiserver
+    newTag: dev
+
+patches:
+  - path: patches/deployment-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+  - path: patches/tls-volume-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+  - path: patches/milo-kubeconfig-volume-patch.yaml
+    target:
+      kind: Deployment
+      name: ipam-apiserver
+
+labels:
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      environment: load-test
