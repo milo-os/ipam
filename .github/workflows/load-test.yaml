@@ -1,0 +1,223 @@
+name: Load test
+
+# Full-environment benchmark of the IPClaim create path: Milo (apiserver + quota
+# controllers) and IPAM run in a kind cluster, IPAM is an APIService behind Milo,
+# and k6 drives it through Milo's project control planes, so every claim passes
+# IPAM's quota admission. The environment is config/overlays/load-test*; the
+# steps are in hack/load-test.sh; this file only schedules and packages them.
+#
+# Triggers, and why not the obvious one:
+#   workflow_dispatch  Run on demand against any branch. This is how a change is
+#                      measured before and after (milo-os/ipam#195): dispatch
+#                      once on main, once on the branch, compare the summaries.
+#   pull_request       Only when the `load-test` label is on the PR, so a PR
+#                      author opts in per PR. Same-repo PRs only: this job runs
+#                      on a self-hosted runner and must never run fork code.
+#   schedule           Nightly on main, to give the benchmark a history and
+#                      catch a regression within a day.
+# Not on every PR, and not on every push to main: one run is ~30-60 minutes of a
+# whole runner and builds a Kubernetes control plane from scratch, which is
+# unaffordable at that frequency and would make the PR queue wait on it.
+#
+# Runner: self-hosted only (vars.MILO_LINUX_RUNNER). Unlike the lint job there is
+# no fallback to ubuntu-latest: the numbers are only comparable between runs on
+# the same class of machine, and a shared hosted runner would produce noise that
+# reads like a regression. If the variable is unset the job is skipped.
+
+on:
+  workflow_dispatch:
+    inputs:
+      postgres_latency_ms:
+        description: >-
+          Milliseconds added to every IPAM-to-Postgres round trip (0 = none).
+          Runs at different values are not comparable.
+        type: string
+        default: "3"
+      tests:
+        description: Space-separated `task test/load:<name>` targets to run
+        type: string
+        default: ""
+      project_count:
+        description: Number of perf projects to seed
+        type: string
+        default: "5"
+  schedule:
+    - cron: "17 3 * * *"
+  pull_request:
+    types: [labeled, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  load-test:
+    name: IPClaim load test (Milo quota on)
+    if: >-
+      vars.MILO_LINUX_RUNNER != '' && (
+        github.event_name != 'pull_request' || (
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          contains(github.event.pull_request.labels.*.name, 'load-test') &&
+          (github.event.action != 'labeled' || github.event.label.name == 'load-test')
+        )
+      )
+    runs-on: ${{ vars.MILO_LINUX_RUNNER }}
+    timeout-minutes: 90
+    # One environment at a time across the repository: the kind cluster binds
+    # fixed host ports (30000 for Milo, 30443), so two runs on one Docker host
+    # collide. Queued runs wait rather than cancel; a benchmark cancelled
+    # mid-way tells you nothing. This is job-level, not workflow-level, on
+    # purpose: a workflow-level group is entered before the job's `if` is
+    # evaluated, so every unlabelled pull_request event would join the group and
+    # could displace a pending nightly or labelled run. A job skipped by its
+    # `if` never enters the group.
+    concurrency:
+      group: load-test
+      cancel-in-progress: false
+    env:
+      TASK_X_REMOTE_TASKFILES: "1"
+      # Unique per run. Also what `load-test:build` loads the image into and
+      # what `load-test:down` deletes.
+      CLUSTER_NAME: ipam-load-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # ---- Knobs. Everything a person adjusts is in this block. ----
+      # Added per Postgres round trip. 0 disables Toxiproxy entirely. A repo
+      # variable overrides the default for scheduled and labelled runs.
+      POSTGRES_LATENCY_MS: ${{ inputs.postgres_latency_ms || vars.LOAD_TEST_POSTGRES_LATENCY_MS || '3' }}
+      POSTGRES_LATENCY_JITTER_MS: "0"
+      PROJECT_COUNT: ${{ inputs.project_count || '5' }}
+      # `task test/load:<name>` targets, in order. `setup` must stay first.
+      LOAD_TESTS: ${{ inputs.tests || vars.LOAD_TESTS || 'setup throughput class-chain exhaustion reads scale cleanup' }}
+
+      KIND_VERSION: v0.30.0
+      KUBECTL_VERSION: v1.32.0
+      KUSTOMIZE_VERSION: v5.4.3
+      FLUX_VERSION: 2.7.0
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check runner prerequisites
+        run: |
+          missing=0
+          for bin in docker git curl envsubst jq; do
+            command -v "${bin}" >/dev/null || { echo "::error::${bin} is not installed on this runner"; missing=1; }
+          done
+          docker info >/dev/null || { echo "::error::cannot reach the Docker daemon"; missing=1; }
+          exit "${missing}"
+
+      # Installed under RUNNER_TEMP, not /usr/local/bin: a self-hosted runner
+      # need not grant sudo. test-infra's ensure-tools only installs a tool that
+      # is missing (and kind when the version differs), so having them on PATH
+      # keeps it from reaching for sudo.
+      - name: Install Task
+        uses: arduino/setup-task@v3.0.0
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: grafana/setup-k6-action@43b9fc21641a76002687994433dd586f56e791b1 # v1.2.2
+
+      - name: Install kind, kubectl, kustomize, flux
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/load-test-bin"
+          mkdir -p "${bin}"
+          curl -fsSL -o "${bin}/kind" "https://github.com/kubernetes-sigs/kind/releases/download/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSL -o "${bin}/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar -xz -C "${bin}" kustomize
+          curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" | tar -xz -C "${bin}" flux
+          chmod +x "${bin}"/*
+          echo "${bin}" >> "${GITHUB_PATH}"
+
+      - name: Static checks (fail before the cluster, not after it)
+        run: |
+          task --yes load-test:verify-milo-pin
+          task --yes verify:kustomize
+          task --yes test/load:validate
+          task --yes test/load:verify-generated
+
+      # The kind cluster binds fixed host ports, and the concurrency group above
+      # guarantees no other run of this workflow is live, so any ipam-load-*
+      # cluster still here is left over from a run that was killed before its
+      # teardown step could run.
+      - name: Remove leftover load-test clusters
+        run: |
+          for c in $(kind get clusters 2>/dev/null | grep '^ipam-load-' || true); do
+            [ "${c}" = "${CLUSTER_NAME}" ] && continue
+            echo "deleting leftover kind cluster ${c}"
+            kind delete cluster --name "${c}"
+          done
+
+      - name: Create kind cluster
+        run: task --yes load-test:cluster
+
+      - name: Build IPAM image and load it into kind
+        run: task --yes load-test:build
+
+      # Milo, IPAM + Postgres (through Toxiproxy when POSTGRES_LATENCY_MS > 0),
+      # the IPAM APIService in Milo, quota registration/policies, projects and
+      # their grants. Ends by applying the Postgres latency.
+      - name: Deploy the environment
+        run: task --yes load-test:deploy
+
+      # One claim through Milo, asserting a Granted ResourceClaim exists for it.
+      # If quota admission silently did not run, fail here instead of publishing
+      # a benchmark of the wrong thing.
+      - name: Smoke test quota admission
+        run: task --yes load-test:smoke
+
+      # Runs every test in LOAD_TESTS, keeps going after a failure so all the
+      # summaries are collected, and exits non-zero if any test failed. k6 exits
+      # 99 when a threshold is crossed, which is what fails this step.
+      - name: Run k6 load tests
+        run: task --yes load-test:run
+
+      - name: Dump diagnostics
+        if: failure()
+        run: |
+          task --yes load-test:diagnostics || true
+          kind export logs "test/load/diagnostics/kind-logs" --name "${CLUSTER_NAME}" || true
+
+      - name: Summarise k6 results
+        if: always()
+        run: |
+          {
+            echo "### Load test (Milo quota on, Postgres +${POSTGRES_LATENCY_MS}ms)"
+            echo
+            echo "k6 exit codes: 0 pass, 99 threshold crossed, 107 script error, 108 run aborted."
+            echo
+            echo "| test | exit | requests/s | p50 ms | p95 ms | p99 ms | failed |"
+            echo "|---|---|---|---|---|---|---|"
+            for f in test/load/results/*.json; do
+              [ -f "${f}" ] || continue
+              t="$(basename "${f}" .json)"
+              rc="$(cat "test/load/results/${t}.exit" 2>/dev/null || echo "?")"
+              jq -r --arg n "${t}" --arg rc "${rc}" '
+                .metrics as $m |
+                "| \($n) | \($rc) | \($m.http_reqs.rate // "n/a" | if type=="number" then (.*10|round/10) else . end)" +
+                " | \($m.http_req_duration.med // "n/a" | if type=="number" then (.*10|round/10) else . end)" +
+                " | \($m.http_req_duration["p(95)"] // "n/a" | if type=="number" then (.*10|round/10) else . end)" +
+                " | \($m.http_req_duration["p(99)"] // "n/a" | if type=="number" then (.*10|round/10) else . end)" +
+                " | \($m.http_req_failed.value // "n/a") |"
+              ' "${f}" 2>/dev/null || echo "| ${t} | ${rc} | unreadable | | | | |"
+            done
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload k6 summaries and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: load-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test/load/results/
+            test/load/diagnostics/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Tear down kind cluster
+        if: always()
+        run: task --yes load-test:down
