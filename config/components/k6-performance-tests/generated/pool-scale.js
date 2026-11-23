@@ -60,6 +60,16 @@ if (TENANCY !== 'impersonate' && TENANCY !== 'milo') {
   throw new Error(`IPAM_TENANCY must be "impersonate" or "milo", got "${TENANCY}"`);
 }
 
+// Quota-on runs (IPAM_TENANCY=milo, the only way a project reaches Milo's quota
+// admission) carry the wait for Milo to grant a ResourceClaim inside every claim
+// create. limit(strict, quotaOn) picks a script's latency target for the mode it
+// runs in. QUOTA_ON=true|false overrides the inference. The reasoning behind each
+// quota-on number is in test/load/README.md.
+export const QUOTA_ON = __ENV.QUOTA_ON ? __ENV.QUOTA_ON === 'true' : TENANCY === 'milo';
+export function limit(strict, quotaOn) {
+  return QUOTA_ON ? quotaOn : strict;
+}
+
 const IMPERSONATE_USER = __ENV.IPAM_IMPERSONATE_USER || 'ipam-perf-tester';
 const IMPERSONATE_GROUP = __ENV.IPAM_IMPERSONATE_GROUP || '';
 
@@ -579,7 +589,7 @@ const thresholds = {
   ipam_scale_ratio_violation: ['count==0'],
 };
 // One entry per step so each depth's p95 appears in the end-of-test summary.
-for (const s of STEPS) thresholds[`ipam_scale_create_latency_ms{depth:${s}}`] = ['p(95)<2000'];
+for (const s of STEPS) thresholds[`ipam_scale_create_latency_ms{depth:${s}}`] = [`p(95)<${limit(2000, 5000)}`];
 
 export const options = {
   insecureSkipTLSVerify: INSECURE,

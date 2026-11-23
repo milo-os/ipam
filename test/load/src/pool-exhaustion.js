@@ -45,6 +45,7 @@ import {
   remove,
   uniqueName,
 } from '../lib/ipam-client.js';
+import { limit } from '../lib/ipam-client.js';
 
 const CLASS = 'perf-exhaust';
 const POOL = 'perf-exhaust-pool';
@@ -73,8 +74,8 @@ export const options = {
     },
   },
   thresholds: {
-    ipam_deny_latency_ms: ['p(95)<200'],
-    ipam_success_latency_ms: ['p(95)<800'],
+    ipam_deny_latency_ms: [`p(95)<${limit(200, 6000)}`],
+    ipam_success_latency_ms: [`p(95)<${limit(800, 2000)}`],
     ipam_deny_rate: ['rate>0.90'],
     ipam_quota_denied: ['count==0'],
   },

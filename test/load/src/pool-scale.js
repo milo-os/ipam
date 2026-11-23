@@ -50,6 +50,7 @@ import {
   remove,
   uniqueName,
 } from '../lib/ipam-client.js';
+import { limit } from '../lib/ipam-client.js';
 
 const STEPS = (__ENV.PREFIX_STEPS || '20,22,24,26,28').split(',').map((s) => parseInt(s, 10));
 const FILL_PCT = parseFloat(__ENV.FILL_PCT || '0.8');
@@ -78,7 +79,7 @@ const thresholds = {
   ipam_scale_ratio_violation: ['count==0'],
 };
 // One entry per step so each depth's p95 appears in the end-of-test summary.
-for (const s of STEPS) thresholds[`ipam_scale_create_latency_ms{depth:${s}}`] = ['p(95)<2000'];
+for (const s of STEPS) thresholds[`ipam_scale_create_latency_ms{depth:${s}}`] = [`p(95)<${limit(2000, 5000)}`];
 
 export const options = {
   insecureSkipTLSVerify: INSECURE,

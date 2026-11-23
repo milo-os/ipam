@@ -38,6 +38,7 @@ import {
   projects,
   uniqueName,
 } from '../lib/ipam-client.js';
+import { limit } from '../lib/ipam-client.js';
 
 const createLatency = new Trend('ipam_claim_create_latency_ms', true);
 const deleteLatency = new Trend('ipam_claim_delete_latency_ms', true);
@@ -50,7 +51,7 @@ export const options = {
   vus: parseInt(__ENV.VUS || '10', 10),
   duration: __ENV.DURATION || '2m',
   thresholds: {
-    'ipam_claim_create_latency_ms{phase:success}': ['p(95)<500', 'p(99)<2000'],
+    'ipam_claim_create_latency_ms{phase:success}': [`p(95)<${limit(500, 6000)}`, `p(99)<${limit(2000, 10000)}`],
     ipam_claim_success_rate: ['rate>0.95'],
     http_req_failed: ['rate<0.05'],
     ipam_quota_denied: ['count==0'],

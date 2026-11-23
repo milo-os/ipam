@@ -27,8 +27,8 @@
 // ipam_chain_claim_latency_ms{case:steady} and {case:first} before and after.
 //
 // Thresholds (provisional; override with the variables in brackets):
-//   ipam_chain_claim_latency_ms{case:steady,phase:success} p95 < 500ms  [CHAIN_STEADY_P95_MS]
-//   ipam_chain_claim_latency_ms{case:first,phase:success}  p95 < 1000ms [CHAIN_FIRST_P95_MS]
+//   ipam_chain_claim_latency_ms{case:steady,phase:success} p95 < 500ms  [CHAIN_STEADY_P95_MS; 7000 quota-on]
+//   ipam_chain_claim_latency_ms{case:first,phase:success}  p95 < 1000ms [CHAIN_FIRST_P95_MS; 7000 quota-on]
 //   ipam_chain_claim_success_rate{case:*}                  > 0.95
 //   http_req_failed < 0.05, ipam_quota_denied == 0
 //
@@ -37,7 +37,7 @@
 // Configuration:
 //   VUS (10), DURATION (1m, per case), CASES (steady,first),
 //   STEADY_NETWORKS (4), LOCATIONS (2), PRUNE_POOLS (true),
-//   CHAIN_STEADY_P95_MS (500), CHAIN_FIRST_P95_MS (1000),
+//   CHAIN_STEADY_P95_MS (500, 7000 quota-on), CHAIN_FIRST_P95_MS (1000, 7000 quota-on),
 //   plus the transport and project variables in lib/ipam-client.js.
 
 import { check } from 'k6';
@@ -63,6 +63,7 @@ import {
   seconds,
   uniqueName,
 } from '../lib/ipam-client.js';
+import { limit } from '../lib/ipam-client.js';
 
 const VUS = parseInt(__ENV.VUS || '10', 10);
 const DURATION = __ENV.DURATION || '1m';
@@ -70,8 +71,8 @@ const CASES = (__ENV.CASES || 'steady,first').split(',').map((s) => s.trim()).fi
 const STEADY_NETWORKS = parseInt(__ENV.STEADY_NETWORKS || '4', 10);
 const LOCATIONS = parseInt(__ENV.LOCATIONS || '2', 10);
 const PRUNE_POOLS = (__ENV.PRUNE_POOLS || 'true') !== 'false';
-const STEADY_P95 = parseInt(__ENV.CHAIN_STEADY_P95_MS || '500', 10);
-const FIRST_P95 = parseInt(__ENV.CHAIN_FIRST_P95_MS || '1000', 10);
+const STEADY_P95 = parseInt(__ENV.CHAIN_STEADY_P95_MS || String(limit(500, 7000)), 10);
+const FIRST_P95 = parseInt(__ENV.CHAIN_FIRST_P95_MS || String(limit(1000, 7000)), 10);
 
 for (const c of CASES) {
   if (c !== 'steady' && c !== 'first') throw new Error(`CASES: unknown case "${c}" (want steady, first)`);

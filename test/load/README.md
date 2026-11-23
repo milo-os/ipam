@@ -33,6 +33,28 @@ provisional; override them with `CHAIN_STEADY_P95_MS` and `CHAIN_FIRST_P95_MS`.
 `ipam_chain_claim_latency_ms` for `case:steady` and `case:first` in
 `results/class-chain.json` before and after a change.
 
+## Quota-on targets
+
+The thresholds in the table above are the strict targets, for runs without quota admission. A run through Milo with quota on (`IPAM_TENANCY=milo`, which is how the load-test workflow runs) uses the looser targets below, because every claim create then also waits for Milo to grant a ResourceClaim. `QUOTA_ON=true|false` overrides the inference. The strict targets are unchanged and still apply to quota-off runs.
+
+In kind, with Milo v0.36.22, the wait for the grant dominated: across 1,757 creates the IPAM request averaged 930ms and the quota plugin's wait for the grant averaged 920ms (p50 up to 0.5s, p95 up to 5s), while Postgres queries stayed under 5ms and the namespace check was cached. With Milo v0.36.26 the grant wait is small (averages of 54ms and 56ms over about 1,800 creates), but the request still averages about 900ms. The IPAM log shows why: the Milo clients that the quota plugin and the namespace check use are throttled on the client side (client-go's default of 5 requests per second per project client), with waits of 1 to 2.2s on the ResourceClaim POST and GET. Creates therefore queue at about 10 per second at 10 VUs, and the wait comes before allocation, so a claim that is then refused with 507 pays it too.
+
+The quota-on limits are the worst p95 seen across short runs (30s, 10 VUs, with and without 3ms added to Postgres round trips, on both Milo versions) with roughly 2x headroom, so a healthy scheduled run passes and a change that multiplies latency still fails. Rate, failure and `ipam_quota_denied` thresholds are the same in both modes.
+
+| Threshold                                            | Strict  | Quota-on | Worst p95 measured |
+|------------------------------------------------------|---------|----------|--------------------|
+| `throughput` create p95 / p99                        | 500ms / 2000ms | 6000ms / 10000ms | 3.28s (max 3.76s) |
+| `class-chain` `steady` p95                           | 500ms   | 7000ms   | 3.51s              |
+| `class-chain` `first` p95                            | 1000ms  | 7000ms   | 2.88s              |
+| `exhaustion` deny p95                                | 200ms   | 6000ms   | 2.80s              |
+| `exhaustion` success p95                             | 800ms   | 2000ms   | 197ms (few samples) |
+| `reads` prefix list p95 / claim list p95             | 200ms   | 500ms    | 223ms / 184ms      |
+| `reads` claim get p95                                | 100ms   | 300ms    | 137ms              |
+| `reads` cluster list p95                             | 2000ms  | 2000ms   | 219ms              |
+| `scale` p95 per depth                                | 2000ms  | 5000ms   | 479ms (one sequential sweep, so little queueing) |
+
+Reads do not wait on quota; their limits are wider only because the extra hop through Milo and the added Postgres latency pushed them past the strict ones. These numbers come from one shared 4-CPU machine and short runs. Treat them as a regression guard, not as a target to design to, and tighten them once the grant wait is lower.
+
 ## Fixtures
 
 `setup` creates these in every project. Root pools of one project may not

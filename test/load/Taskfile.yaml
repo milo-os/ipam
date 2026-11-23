@@ -36,6 +36,7 @@ env:
   DURATION: '{{.DURATION}}'
   CASES: '{{.CASES}}'
   K6_INSECURE_SKIP_TLS_VERIFY: '{{.K6_INSECURE_SKIP_TLS_VERIFY}}'
+  QUOTA_ON: '{{.QUOTA_ON}}'
   # Per-script knobs (see each script's header).
   CLAIM_PREFIX_LENGTH: '{{.CLAIM_PREFIX_LENGTH}}'
   FLAT_CIDR: '{{.FLAT_CIDR}}'

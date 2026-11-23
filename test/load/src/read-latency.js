@@ -50,6 +50,7 @@ import {
   remove,
   seconds,
 } from '../lib/ipam-client.js';
+import { limit } from '../lib/ipam-client.js';
 
 const D = seconds(__ENV.DURATION || '3m');
 const SPIKE = seconds(__ENV.SPIKE_DURATION || '30s');
@@ -95,10 +96,10 @@ export const options = {
     },
   },
   thresholds: {
-    ipam_prefix_list_ms: ['p(95)<200'],
-    ipam_claim_list_ms: ['p(95)<200'],
-    ipam_claim_get_ms: ['p(95)<100'],
-    ipam_cluster_list_ms: ['p(95)<2000'],
+    ipam_prefix_list_ms: [`p(95)<${limit(200, 500)}`],
+    ipam_claim_list_ms: [`p(95)<${limit(200, 500)}`],
+    ipam_claim_get_ms: [`p(95)<${limit(100, 300)}`],
+    ipam_cluster_list_ms: [`p(95)<${limit(2000, 2000)}`],
     ipam_read_success_rate: ['rate>0.99'],
   },
 };
