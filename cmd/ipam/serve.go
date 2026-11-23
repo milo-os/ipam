@@ -213,6 +213,16 @@ type IPAMServerOptions struct {
 	// opt-out for an environment that wants to see what a pass would free
 	// before it frees anything.
 	RetentionSweepMode string
+
+	// KubeAPIQPS and KubeAPIBurst are the client-side rate limit of each
+	// client built from --kubeconfig. Defaults come from KUBE_API_QPS and
+	// KUBE_API_BURST when set; see clientlimits.go.
+	KubeAPIQPS   float32
+	KubeAPIBurst int
+
+	// envErr is a malformed KUBE_API_* value, reported by Validate so a bad
+	// environment fails the start instead of silently using the default.
+	envErr error
 }
 
 // minRetentionSweepInterval is the shortest interval between sweep passes. A
@@ -244,6 +254,11 @@ func NewIPAMServerOptions() *IPAMServerOptions {
 	// first and a reachable Milo quota backend.
 	disableAllAdmission(opts)
 
+	opts.KubeAPIQPS, opts.KubeAPIBurst, opts.envErr = kubeAPILimitsFromEnv(lookupEnv)
+	if opts.envErr != nil {
+		opts.KubeAPIQPS, opts.KubeAPIBurst = defaultKubeAPIQPS, defaultKubeAPIBurst
+	}
+
 	return opts
 }
 
@@ -266,6 +281,14 @@ func (o *IPAMServerOptions) AddFlags(fs *pflag.FlagSet) {
 		"What the retention sweeper does with a retained allocation whose lease has run out: "+
 			"enforce (release it) or "+
 			"observe (count it in ipam_retention_releases_total{mode=\"observe\"} and release nothing).")
+
+	fs.Float32Var(&o.KubeAPIQPS, "kube-api-qps", o.KubeAPIQPS,
+		"Requests per second each client built from --kubeconfig may send to it: the quota plugin's "+
+			"and the namespace check's per-project clients, and their root clients. Each client has its "+
+			"own limit. Must be greater than 0. Defaults to $"+kubeAPIQPSEnv+" when set.")
+	fs.IntVar(&o.KubeAPIBurst, "kube-api-burst", o.KubeAPIBurst,
+		"Most requests each client built from --kubeconfig may send in one burst before "+
+			"--kube-api-qps paces it. At least 1. Defaults to $"+kubeAPIBurstEnv+" when set.")
 }
 
 func (o *IPAMServerOptions) Complete() error { return nil }
@@ -281,7 +304,10 @@ func (o *IPAMServerOptions) Validate() error {
 	if _, err := allocator.ParseSweepMode(o.RetentionSweepMode); err != nil {
 		return fmt.Errorf("--retention-sweep-mode: %w", err)
 	}
-	return nil
+	if o.envErr != nil {
+		return o.envErr
+	}
+	return validateKubeAPILimits(o.KubeAPIQPS, o.KubeAPIBurst)
 }
 
 // Config builds the complete server configuration from options.
@@ -329,6 +355,9 @@ func (o *IPAMServerOptions) Config() (*ipamapiserver.Config, error) {
 		installConsumerContextFilter(genericConfig)
 	}
 
+	if err := o.applyCoreAPI(genericConfig); err != nil {
+		return nil, fmt.Errorf("apply core API options: %w", err)
+	}
 	if err := o.RecommendedOptions.ApplyTo(genericConfig); err != nil {
 		return nil, fmt.Errorf("apply recommended options: %w", err)
 	}

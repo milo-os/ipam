@@ -244,3 +244,26 @@ func TestNewNamespaceCheckerWithoutAConfigDisablesTheCheck(t *testing.T) {
 		t.Errorf("NewNamespaceChecker(nil) = %v, want nil so the check disables rather than denies", c)
 	}
 }
+
+// Each project's client takes the base config's rate limit, and each gets its
+// own bucket, so one busy project does not throttle another's claims.
+func TestProjectClientsTakeTheBaseRateLimitEach(t *testing.T) {
+	c := NewNamespaceChecker(&rest.Config{Host: "https://milo.invalid", QPS: 100, Burst: 200}).(*projectNamespaceChecker)
+
+	a, err := c.clientFor("p1")
+	if err != nil {
+		t.Fatalf("clientFor(p1): %v", err)
+	}
+	b, err := c.clientFor("p2")
+	if err != nil {
+		t.Fatalf("clientFor(p2): %v", err)
+	}
+	la := a.CoreV1().RESTClient().GetRateLimiter()
+	lb := b.CoreV1().RESTClient().GetRateLimiter()
+	if la == nil || la.QPS() != 100 {
+		t.Fatalf("p1 limiter = %v, want 100 QPS", la)
+	}
+	if la == lb {
+		t.Error("p1 and p2 share one limiter, want one each")
+	}
+}

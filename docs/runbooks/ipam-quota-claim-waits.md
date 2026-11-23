@@ -59,6 +59,11 @@ in admission, before the registry's Create, so it shows in
 ## Mitigate
 
 - Slow judging is fixed on the Milo side; IPAM has no knob for it.
+- If the IPAM log shows `client-side throttling` waits on ResourceClaim or
+  namespace requests, IPAM's own clients are the bottleneck, not Milo. Raise
+  `KUBE_API_QPS` and `KUBE_API_BURST` on the apiserver container (defaults 100
+  and 200; or the `--kube-api-qps` and `--kube-api-burst` flags). The limit
+  applies to each client separately, and IPAM keeps one per project.
 - A bulk caller can be slowed with API Priority and Fairness on the IPAM
   apiserver, or asked to spread its creates.
 - 410s after a Milo restart stop by themselves once its caches are warm; the
