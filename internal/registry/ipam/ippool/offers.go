@@ -26,7 +26,20 @@ import (
 // it. That strands nobody: spec.classNames is mutable, the error names the two
 // classes to reconcile, and the fix can ride along in the same request as
 // whatever else the edit changes.
+//
+// An update that creates the pool (server-side apply of a new object) is
+// handed to Create instead, so a child pool is carved however it is created
+// (see createOnUpdate). An update of a child pool that is stored without a
+// range carves it, or records why it cannot be (see carveStranded).
 func (r *AllocatingIPPoolREST) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, forceAllowCreate bool, options *metav1.UpdateOptions) (runtime.Object, bool, error) {
+	if forceAllowCreate || r.strategy.AllowCreateOnUpdate(ctx) {
+		if _, err := r.Get(ctx, name, &metav1.GetOptions{}); apierrors.IsNotFound(err) {
+			return r.createOnUpdate(ctx, name, objInfo, createValidation, options)
+		} else if err != nil {
+			return nil, false, err
+		}
+	}
+
 	validate := func(ctx context.Context, obj, old runtime.Object) error {
 		if updateValidation != nil {
 			if err := updateValidation(ctx, obj, old); err != nil {
@@ -44,6 +57,10 @@ func (r *AllocatingIPPoolREST) Update(ctx context.Context, name string, objInfo 
 		return obj, created, err
 	}
 	r.applyRetentionCap(ctx, name, obj, options)
+	if pool, ok := obj.(*ipam.IPPool); ok && pool.Spec.ParentPoolRef != nil &&
+		pool.Status.AllocatedCIDR == "" && (options == nil || len(options.DryRun) == 0) {
+		obj = r.carveStranded(ctx, pool)
+	}
 	return obj, created, nil
 }
 
