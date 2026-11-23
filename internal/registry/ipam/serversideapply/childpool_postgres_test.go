@@ -2,6 +2,7 @@ package serversideapply
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -352,6 +353,234 @@ func TestAStrandedChildPoolReportsWhyItIsNotCarved(t *testing.T) {
 		t.Fatalf("apply child after recreate: created=%v err=%v", created, err)
 	}
 	assertCarved(t, got, "10.0.0.0/24")
+}
+
+// createChild POSTs a child pool, as kubectl create does.
+func (r *registries) createChild(t *testing.T, ctx context.Context, name, parent string, prefixLength int64, dryRun bool) (*ipam.IPPool, error) {
+	t.Helper()
+	opts := &metav1.CreateOptions{}
+	if dryRun {
+		opts.DryRun = []string{metav1.DryRunAll}
+	}
+	obj, err := r.pool.Create(ctx, applied(t, r.scheme, "IPPool", childPoolManifest(name, parent, prefixLength)), nil, opts)
+	if err != nil {
+		return nil, err
+	}
+	return obj.(*ipam.IPPool), nil
+}
+
+func assertNotStored(t *testing.T, r *registries, ctx context.Context, name string) {
+	t.Helper()
+	if _, err := r.pool.Get(ctx, name, &metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Errorf("pool %s was stored: get err = %v", name, err)
+	}
+	if n := r.carves(t, name); n != 0 {
+		t.Errorf("pool %s holds %d carves, want 0", name, n)
+	}
+}
+
+func assertUncarvedForMissingParent(t *testing.T, p *ipam.IPPool) {
+	t.Helper()
+	if p.Status.Phase != ipam.PoolPending || p.Status.AllocatedCIDR != "" {
+		t.Errorf("dry-run status = phase %q cidr %q, want Pending and no range", p.Status.Phase, p.Status.AllocatedCIDR)
+	}
+	c := meta.FindStatusCondition(p.Status.Conditions, "Allocated")
+	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != "ParentNotFound" {
+		t.Errorf("Allocated condition = %+v, want False/ParentNotFound", c)
+	}
+}
+
+// Flux dry-runs every object in a set before applying any. A server-side
+// dry-run of a child pool whose parent does not exist yet must therefore
+// succeed, or a set holding a new parent and its child fails on every
+// reconcile and the parent is never applied. It answers with the pool
+// uncarved and stores nothing. This holds for apply and for a plain POST.
+func TestDryRunOfAChildPoolWithoutItsParentSucceeds(t *testing.T) {
+	r := newRegistries(t)
+	ctx := projectCtx(applyProject, metav1.NamespaceNone)
+
+	got, _, err := r.serverSideApply(t, ctx, childPoolManifest("child", "parent", 24), true)
+	if err != nil {
+		t.Fatalf("dry-run apply with a missing parent: %v", err)
+	}
+	assertUncarvedForMissingParent(t, got)
+	assertNotStored(t, r, ctx, "child")
+
+	got, err = r.createChild(t, ctx, "child", "parent", 24, true)
+	if err != nil {
+		t.Fatalf("dry-run create with a missing parent: %v", err)
+	}
+	assertUncarvedForMissingParent(t, got)
+	assertNotStored(t, r, ctx, "child")
+}
+
+// The dry-run is lenient; the real request is not. A real create of a child
+// pool whose parent is missing is still refused, whichever verb sends it, so
+// the caller retries once the parent exists.
+func TestARealCreateWithoutItsParentIsStillRefused(t *testing.T) {
+	r := newRegistries(t)
+	ctx := projectCtx(applyProject, metav1.NamespaceNone)
+
+	if _, _, err := r.serverSideApply(t, ctx, childPoolManifest("child", "parent", 24), false); !apierrors.IsBadRequest(err) {
+		t.Errorf("apply with a missing parent: err = %v, want 400", err)
+	}
+	if _, err := r.createChild(t, ctx, "child", "parent", 24, false); !apierrors.IsBadRequest(err) {
+		t.Errorf("create with a missing parent: err = %v, want 400", err)
+	}
+	assertNotStored(t, r, ctx, "child")
+}
+
+// A dry-run against a parent that exists but is full is still refused: the
+// real create would be, and no ordering of the set changes that.
+func TestDryRunAgainstAFullParentIsStillRefused(t *testing.T) {
+	r := newRegistries(t)
+	ctx := projectCtx(applyProject, metav1.NamespaceNone)
+
+	if _, _, err := r.serverSideApply(t, ctx, rootPoolManifest("small", "10.1.0.0/24"), false); err != nil {
+		t.Fatalf("apply root pool: %v", err)
+	}
+	if _, _, err := r.serverSideApply(t, ctx, childPoolManifest("too-big", "small", 16), true); statusCode(err) != 507 {
+		t.Errorf("dry-run larger than the parent: err = %v, want 507", err)
+	}
+}
+
+// A plain POST with dryRun=All of a child pool reports the carve it would
+// make and keeps none of it.
+func TestDryRunCreateOfAChildPoolLeavesNoCarve(t *testing.T) {
+	r := newRegistries(t)
+	ctx := projectCtx(applyProject, metav1.NamespaceNone)
+
+	if _, _, err := r.serverSideApply(t, ctx, rootPoolManifest("parent", "10.0.0.0/16"), false); err != nil {
+		t.Fatalf("apply root pool: %v", err)
+	}
+	got, err := r.createChild(t, ctx, "child", "parent", 24, true)
+	if err != nil {
+		t.Fatalf("dry-run create: %v", err)
+	}
+	if got.Status.AllocatedCIDR != "10.0.0.0/24" {
+		t.Errorf("dry-run allocatedCIDR = %q, want the would-be carve 10.0.0.0/24", got.Status.AllocatedCIDR)
+	}
+	assertNotStored(t, r, ctx, "child")
+
+	// The space the dry-run reported is still free for a real create.
+	real, err := r.createChild(t, ctx, "child", "parent", 24, false)
+	if err != nil {
+		t.Fatalf("create after dry-run: %v", err)
+	}
+	assertCarved(t, real, "10.0.0.0/24")
+}
+
+// fluxApply does what Flux's apply of a set of custom objects does: dry-run
+// every object, stop on the first refusal, then apply each in turn and stop on
+// the first refusal. Flux sorts a set of one kind by name, so the caller passes
+// the manifests in name order.
+func (r *registries) fluxApply(t *testing.T, ctx context.Context, manifests ...map[string]any) error {
+	t.Helper()
+	for _, m := range manifests {
+		if _, _, err := r.serverSideApply(t, ctx, m, true); err != nil {
+			return err
+		}
+	}
+	for _, m := range manifests {
+		if _, _, err := r.serverSideApply(t, ctx, m, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// A first install holding a new parent and its child in one set goes through
+// in one reconcile when the parent comes first. Before dry-runs of a child
+// with a missing parent were accepted, the child's dry-run failed and the set
+// failed on every reconcile, so the parent was never applied.
+func TestASetWithANewParentAndChildEndsCarved(t *testing.T) {
+	r := newRegistries(t)
+	ctx := projectCtx(applyProject, metav1.NamespaceNone)
+
+	// "env" sorts before "region", so Flux applies the parent first.
+	if err := r.fluxApply(t, ctx, rootPoolManifest("env", "10.0.0.0/16"), childPoolManifest("region", "env", 24)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	assertCarved(t, r.storedPool(t, ctx, "region"), "10.0.0.0/24")
+	if n := r.carves(t, "region"); n != 1 {
+		t.Errorf("child holds %d carves, want 1", n)
+	}
+}
+
+// Applies one at a time end with the child carved in either order. Parent
+// then child goes through at once. Child then parent has the child refused
+// until the parent exists, and a retry of the child then carves it.
+func TestApplyingAParentAndChildInEitherOrderEndsCarved(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		childFirst bool
+	}{{"parent then child", false}, {"child then parent", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRegistries(t)
+			ctx := projectCtx(applyProject, metav1.NamespaceNone)
+			parent := rootPoolManifest("parent", "10.0.0.0/16")
+			child := childPoolManifest("child", "parent", 24)
+
+			if tc.childFirst {
+				if _, _, err := r.serverSideApply(t, ctx, child, false); !apierrors.IsBadRequest(err) {
+					t.Fatalf("apply child before its parent: err = %v, want 400", err)
+				}
+				assertNotStored(t, r, ctx, "child")
+			}
+			if _, _, err := r.serverSideApply(t, ctx, parent, false); err != nil {
+				t.Fatalf("apply parent: %v", err)
+			}
+			got, created, err := r.serverSideApply(t, ctx, child, false)
+			if err != nil || !created {
+				t.Fatalf("apply child: created=%v err=%v", created, err)
+			}
+			assertCarved(t, got, "10.0.0.0/24")
+			if n := r.carves(t, "child"); n != 1 {
+				t.Errorf("child holds %d carves, want 1", n)
+			}
+		})
+	}
+}
+
+// Two reapplies of a stranded child pool racing each other carve it once.
+func TestConcurrentReappliesOfAStrandedChildPoolCarveOnce(t *testing.T) {
+	r := newRegistries(t)
+	ctx := projectCtx(applyProject, metav1.NamespaceNone)
+
+	if _, _, err := r.serverSideApply(t, ctx, rootPoolManifest("parent", "10.0.0.0/16"), false); err != nil {
+		t.Fatalf("apply root pool: %v", err)
+	}
+	r.strand(t, ctx, "child", "parent", 24)
+
+	const racers = 2
+	var wg sync.WaitGroup
+	results := make([]*ipam.IPPool, racers)
+	errs := make([]error, racers)
+	start := make(chan struct{})
+	for i := range racers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results[i], _, errs[i] = r.serverSideApply(t, ctx, childPoolManifest("child", "parent", 24), false)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i := range racers {
+		if errs[i] != nil {
+			t.Errorf("reapply %d: %v", i, errs[i])
+			continue
+		}
+		if results[i].Status.AllocatedCIDR != "10.0.0.0/24" {
+			t.Errorf("reapply %d returned allocatedCIDR %q, want 10.0.0.0/24", i, results[i].Status.AllocatedCIDR)
+		}
+	}
+	if n := r.carves(t, "child"); n != 1 {
+		t.Errorf("child holds %d carves after %d racing reapplies, want 1", n, racers)
+	}
+	assertCarved(t, r.storedPool(t, ctx, "child"), "10.0.0.0/24")
 }
 
 func statusCode(err error) int32 {
