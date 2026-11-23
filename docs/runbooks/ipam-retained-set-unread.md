@@ -9,10 +9,12 @@
 No apiserver replica has read the retained set for more than three sweep
 intervals, and at least five minutes. Every replica runs that read at the
 start of each retention pass, whether or not it wins the sweep lock, and
-publishes the `ipam_retained_*` gauges from it. A failed read keeps the old
-gauges and the pass carries on, so passes still complete and
+publishes the `ipam_retained_*` gauges from it. When only that read fails,
+the old gauges stay and the pass carries on, so passes still complete and
 [`IPAMRetentionSweeperStalled`](ipam-retention-sweeper-stalled.md) stays
-quiet.
+quiet. When passes stop too, as in a database outage, that alert fires and
+this one stands down. A fleet that exports no read timestamp at all, such as
+one rolled back to an image from before it, fires this alert as never read.
 
 While no replica can read it:
 
@@ -42,11 +44,11 @@ A `$value` of decades means no replica has read the set since it started.
    slow, and a missing column means the schema is behind the binary.
 2. **Is the database itself failing?** If the allocation alerts fire too,
    follow [`ipam-db-connection-pool-saturated.md`](ipam-db-connection-pool-saturated.md).
-3. **Is the schema behind the binary?** Check the `migrate` init container's
-   logs on a current pod, and compare the latest applied version with the
-   newest file in `migrations/`:
-   ```sql
-   SELECT max(version_id) FROM goose_db_version WHERE is_applied;
+3. **Is the schema behind the binary?** A failed `migrate up` holds new pods
+   in `Init:Error`, so look for a rollout that is stuck. Then compare the
+   database's version with the binary's migrations:
+   ```sh
+   kubectl -n ipam-system exec deploy/ipam-apiserver -c apiserver -- /ipam migrate status
    ```
 4. **What do the gauges hide?** Run the read by hand to see the current counts:
    ```sql

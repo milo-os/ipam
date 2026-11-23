@@ -630,20 +630,30 @@ spec:
 
         - alert: IPAMRetainedSetUnread
           # Every replica reads the retained set at the start of each pass,
-          # whether or not it wins the sweep lock. A failed read keeps the old
-          # gauges and the pass still completes, so IPAMRetentionSweeperStalled
-          # stays quiet, and IPAMRetentionReleasesStalled drops a replica whose
-          # read is stale. When every replica's read fails, both are silent and
-          # the dashboard shows frozen counts. The threshold is the freshness
-          # bound IPAMRetentionReleasesStalled uses. A replica that has never
-          # read reports 0, so a fleet that has failed since it started fires
-          # with a $value of decades.
+          # whether or not it wins the sweep lock. When only that read fails
+          # (a timeout, a missing column), the old gauges stay and the pass
+          # still completes, so IPAMRetentionSweeperStalled stays quiet and
+          # IPAMRetentionReleasesStalled drops every replica as stale. The
+          # threshold is the freshness bound IPAMRetentionReleasesStalled uses.
+          #
+          # A replica that has never read reports 0, and a fleet that exports
+          # no timestamp at all (an image from before the gauge) counts as
+          # never read: both fire with a $value of decades. When passes stop
+          # too, as in a database outage, IPAMRetentionSweeperStalled already
+          # fires, and this one stands down rather than page twice.
           expr: |
             (
-              time() - max(ipam_retained_gauges_last_success_timestamp_seconds)
-              > clamp_min(3 * max(ipam_retention_sweep_interval_seconds), 300)
+              (
+                time() - max(ipam_retained_gauges_last_success_timestamp_seconds)
+                > clamp_min(3 * max(ipam_retention_sweep_interval_seconds), 300)
+              )
+              or on() (absent(ipam_retained_gauges_last_success_timestamp_seconds) * time())
             )
-            and on() max(ipam_retention_sweep_interval_seconds) > 0
+            and on() (max(ipam_retention_sweep_interval_seconds) > 0)
+            unless on() (
+              time() - max(ipam_retention_sweep_last_success_timestamp_seconds)
+              > 5 * max(ipam_retention_sweep_interval_seconds)
+            )
           for: 15m
           labels:
             severity: warning
@@ -654,9 +664,10 @@ spec:
             summary: "No IPAM replica has read the retained set for {{ $value | humanizeDuration }}"
             description: |
               No apiserver replica has read the retained set for more than three sweep intervals
-              (five minutes at least). The retained-allocation gauges are frozen at their last
-              values, so IPAMRetentionReleasesStalled and IPAMRetainedWithoutLeaseRising cannot
-              fire, and the Retention dashboard row is out of date. Releases may still be happening.
+              (five minutes at least), though sweep passes still complete. The retained-allocation
+              gauges are frozen at their last values, so IPAMRetentionReleasesStalled and
+              IPAMRetainedWithoutLeaseRising cannot fire, and the Retention dashboard row is out
+              of date. Releases may still be happening.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-set-unread.md"
 
         - alert: IPAMRetainedWithoutLeaseRising
