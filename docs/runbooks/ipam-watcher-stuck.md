@@ -6,8 +6,9 @@
 
 ## What this alert means
 
-The IPAM apiserver is producing changelog rows (allocation traffic is flowing,
-`ipam_allocation_attempts_total` is incrementing) but its LISTEN/NOTIFY watcher
+The IPAM apiserver is producing changelog rows (allocations are succeeding:
+`ipam_allocation_attempts_total` is rising faster than
+`ipam_allocation_failures_total`) but its LISTEN/NOTIFY watcher
 has dispatched **zero** events for 5 minutes (`ipam_watch_events_total` is
 flat). Watch consumers — controllers using `kubectl -w`, the
 `PostgresWatcher` cache in any client — are silently stale.
@@ -15,7 +16,7 @@ flat). Watch consumers — controllers using `kubectl -w`, the
 ## Source signals
 
 - `ipam_watch_events_total` — primary (rate must be > 0 when traffic is flowing)
-- `ipam_allocation_attempts_total` — traffic guard
+- `ipam_allocation_attempts_total` minus `ipam_allocation_failures_total` — traffic guard. Refused claims write no changelog row, so they are left out.
 - `ipam_watch_lag_seconds_bucket` — companion (will trip `IPAMWatchLagHigh` shortly)
 - `ipam_watcher_poll_batch_size` — does the poll fallback see anything?
 - Provider dashboard → "Watch health" row
@@ -27,7 +28,7 @@ flat). Watch consumers — controllers using `kubectl -w`, the
    kubectl exec -n ipam-system <postgres-pod> -- \
      psql -d ipam -c "SELECT COUNT(*) FROM ipam_changelog WHERE created_at > now() - interval '1 minute';"
    ```
-   If this is 0 despite `rate(ipam_allocation_attempts_total[5m]) > 0`, the
+   If this is 0 while allocations are succeeding, the
    problem is on the write path, not the watcher — escalate to a different
    investigation.
 
