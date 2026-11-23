@@ -565,7 +565,9 @@ spec:
           # least, for scrape and evaluation delay), so a frozen replica can
           # neither fire the alert nor hide one. The failed read is counted in
           # ipam_retention_sweep_errors_total. Fresh replicas read the same
-          # database, so max() across them is the count.
+          # database, so max() across them is the count. When no replica is
+          # fresh this alert has nothing to judge, and IPAMRetainedSetUnread
+          # fires instead.
           #
           # Any replica that wins the sweep lock runs the pass in its own mode.
           # max(enforcing) == 1 lets a fleet that is part-way through a switch
@@ -625,6 +627,37 @@ spec:
               their lease deadline for at least 45 minutes, and their number has not fallen.
               Those addresses stay held instead of returning to their pools.
             runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-releases-stalled.md"
+
+        - alert: IPAMRetainedSetUnread
+          # Every replica reads the retained set at the start of each pass,
+          # whether or not it wins the sweep lock. A failed read keeps the old
+          # gauges and the pass still completes, so IPAMRetentionSweeperStalled
+          # stays quiet, and IPAMRetentionReleasesStalled drops a replica whose
+          # read is stale. When every replica's read fails, both are silent and
+          # the dashboard shows frozen counts. The threshold is the freshness
+          # bound IPAMRetentionReleasesStalled uses. A replica that has never
+          # read reports 0, so a fleet that has failed since it started fires
+          # with a $value of decades.
+          expr: |
+            (
+              time() - max(ipam_retained_gauges_last_success_timestamp_seconds)
+              > clamp_min(3 * max(ipam_retention_sweep_interval_seconds), 300)
+            )
+            and on() max(ipam_retention_sweep_interval_seconds) > 0
+          for: 15m
+          labels:
+            severity: warning
+            service: ipam
+            team: connect
+            slo: retention
+          annotations:
+            summary: "No IPAM replica has read the retained set for {{ $value | humanizeDuration }}"
+            description: |
+              No apiserver replica has read the retained set for more than three sweep intervals
+              (five minutes at least). The retained-allocation gauges are frozen at their last
+              values, so IPAMRetentionReleasesStalled and IPAMRetainedWithoutLeaseRising cannot
+              fire, and the Retention dashboard row is out of date. Releases may still be happening.
+            runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-set-unread.md"
 
         - alert: IPAMRetainedWithoutLeaseRising
           # lease="none" is the leak meter: retained addresses nothing will ever
