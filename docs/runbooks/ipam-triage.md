@@ -41,6 +41,7 @@ runbook, the on-call experience regresses.
 | `IPAMCascadeResolutionLatencyHigh` | warning | [`ipam-cascade-provisioning.md`](ipam-cascade-provisioning.md) |
 | `IPAMRetentionSweeperStalled` | warning | [`ipam-retention-sweeper-stalled.md`](ipam-retention-sweeper-stalled.md) |
 | `IPAMRetentionReleasesStalled` | warning (per `ip_family`) | [`ipam-retention-releases-stalled.md`](ipam-retention-releases-stalled.md) |
+| `IPAMRetainedSetUnread` | warning | [`ipam-retained-set-unread.md`](ipam-retained-set-unread.md) |
 | `IPAMRetentionRowsStuck` | warning (no SLO) | [`ipam-retention-rows-stuck.md`](ipam-retention-rows-stuck.md) |
 | `IPAMRetainedWithoutLeaseRising` | warning (per `ip_family`, no SLO) | [`ipam-retained-without-lease-rising.md`](ipam-retained-without-lease-rising.md) |
 | `IPAMQuotaClaimWaitsHigh` | warning (per `pod`) | [`ipam-quota-claim-waits.md`](ipam-quota-claim-waits.md) |

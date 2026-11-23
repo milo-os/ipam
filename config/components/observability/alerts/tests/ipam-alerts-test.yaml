@@ -247,6 +247,129 @@ tests:
               description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"
               runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retention-releases-stalled.md"
 
+  # IPAMRetainedSetUnread: both replicas' reads fail from 10m while passes keep completing. Stale after 5m, then 15m for: fires from 31m. Releases-stalled has no fresh replica to judge and stays quiet.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_enforcing{pod="a"}
+        values: 1x60
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x60
+      - series: ipam_retention_sweep_interval_seconds{pod="b"}
+        values: 60x60
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x60
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x10 600x50
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="b"}
+        values: 0+60x9 540x51
+      - series: ipam_retained_late_allocations{pod="a",ip_family="IPv4"}
+        values: 5x60
+      - series: ipam_retained_oldest_overdue_seconds{pod="a",ip_family="IPv4"}
+        values: 600x60
+    alert_rule_test:
+      - {eval_time: 30m, alertname: IPAMRetainedSetUnread, exp_alerts: []}
+      - eval_time: 35m
+        alertname: IPAMRetainedSetUnread
+        exp_alerts:
+          - exp_labels: {severity: warning, service: ipam, team: connect, slo: retention}
+            exp_annotations:
+              summary: "No IPAM replica has read the retained set for 25m 0s"
+              description: "No apiserver replica has read the retained set for more than three sweep intervals\n(five minutes at least), though sweep passes still complete. The retained-allocation\ngauges are frozen at their last values, so IPAMRetentionReleasesStalled and\nIPAMRetainedWithoutLeaseRising cannot fire, and the Retention dashboard row is out\nof date. Releases may still be happening.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-set-unread.md"
+      - {eval_time: 35m, alertname: IPAMRetentionReleasesStalled, exp_alerts: []}
+
+  # One replica's read fails and the other's keeps working: the fleet still has fresh gauges, so never.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x60
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x60
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="b"}
+        values: 0+60x10 600x50
+    alert_rule_test:
+      - {eval_time: 50m, alertname: IPAMRetainedSetUnread, exp_alerts: []}
+
+  # A disabled sweeper (interval 0) reads nothing, and is not alerted on.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 0x60
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0x60
+    alert_rule_test:
+      - {eval_time: 50m, alertname: IPAMRetainedSetUnread, exp_alerts: []}
+
+  # A fleet whose read has failed since it started reports 0 and fires. promtool's clock starts at 0, so $value is the test's elapsed time.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x60
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x60
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0x60
+    alert_rule_test:
+      - {eval_time: 10m, alertname: IPAMRetainedSetUnread, exp_alerts: []}
+      - eval_time: 25m
+        alertname: IPAMRetainedSetUnread
+        exp_alerts:
+          - exp_labels: {severity: warning, service: ipam, team: connect, slo: retention}
+            exp_annotations:
+              summary: "No IPAM replica has read the retained set for 25m 0s"
+              description: "No apiserver replica has read the retained set for more than three sweep intervals\n(five minutes at least), though sweep passes still complete. The retained-allocation\ngauges are frozen at their last values, so IPAMRetentionReleasesStalled and\nIPAMRetainedWithoutLeaseRising cannot fire, and the Retention dashboard row is out\nof date. Releases may still be happening.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-set-unread.md"
+
+  # A fleet that exports no read timestamp, such as an image from before the gauge, counts as never read and fires.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x60
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x60
+    alert_rule_test:
+      - {eval_time: 14m, alertname: IPAMRetainedSetUnread, exp_alerts: []}
+      - eval_time: 16m
+        alertname: IPAMRetainedSetUnread
+        exp_alerts:
+          - exp_labels: {severity: warning, service: ipam, team: connect, slo: retention}
+            exp_annotations:
+              summary: "No IPAM replica has read the retained set for 16m 0s"
+              description: "No apiserver replica has read the retained set for more than three sweep intervals\n(five minutes at least), though sweep passes still complete. The retained-allocation\ngauges are frozen at their last values, so IPAMRetentionReleasesStalled and\nIPAMRetainedWithoutLeaseRising cannot fire, and the Retention dashboard row is out\nof date. Releases may still be happening.\n"
+              runbook_url: "https://github.com/miloapis/ipam/blob/main/docs/runbooks/ipam-retained-set-unread.md"
+
+  # A whole-database outage: passes and reads stop together. IPAMRetentionSweeperStalled fires (its condition is what holds this one off), and this alert stands down.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_interval_seconds{pod="a"}
+        values: 60x60
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x10 600x50
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="a"}
+        values: 0+60x10 600x50
+    alert_rule_test:
+      - {eval_time: 50m, alertname: IPAMRetainedSetUnread, exp_alerts: []}
+
+  # Mixed fleet: one replica has the sweeper disabled and never reads, one restarted and reads 0 until its first pass, one is healthy. Never.
+  - interval: 1m
+    input_series:
+      - series: ipam_retention_sweep_interval_seconds{pod="off"}
+        values: 0x60
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="off"}
+        values: 0x60
+      - series: ipam_retention_sweep_interval_seconds{pod="ok"}
+        values: 60x60
+      - series: ipam_retention_sweep_last_success_timestamp_seconds{pod="ok"}
+        values: 0+60x60
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="ok"}
+        values: 0+60x60
+      - series: ipam_retention_sweep_interval_seconds{pod="new"}
+        values: _x30 60x30
+      - series: ipam_retained_gauges_last_success_timestamp_seconds{pod="new"}
+        values: _x30 0 1860+60x29
+    alert_rule_test:
+      - {eval_time: 50m, alertname: IPAMRetainedSetUnread, exp_alerts: []}
+
   # IPAMQuotaClaimWaitsHigh: 150 open waits on IPAM pod a, held: firing from 10m. IPAM pod b holds 50, and a Milo API server pod holds 500 under its own job; neither fires.
   - interval: 1m
     input_series:

@@ -48,8 +48,8 @@ design, or when the sweeper is disabled.
   whose `ipam_retained_gauges_last_success_timestamp_seconds` is more than
   three intervals old (five minutes at least), so a frozen replica neither
   fires it nor hides it. If every replica's read fails, the alert has no
-  data and stays silent; the database is then failing for the sweeper too,
-  and the error counter and the database alerts show it.
+  data and stays silent, and
+  [`IPAMRetainedSetUnread`](ipam-retained-set-unread.md) fires instead.
 - **Long intervals.** The two 15-minute windows each need a pass in them, so
   the alert is meant for sweep intervals under 15 minutes. The default is 1m.
 
