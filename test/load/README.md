@@ -177,6 +177,16 @@ Per test:
 | `CI_SUITE`              | ci                                | `throughput class-chain exhaustion reads` |
 | `SETUP_TIMEOUT`, `TEARDOWN_TIMEOUT` | all                   | per script         |
 
+The load-test workflow (`.github/workflows/load-test.yaml`) exposes `VUS`, `DURATION`, `CASES`, `STEADY_NETWORKS` and `LOCATIONS` as dispatch inputs (`vus`, `duration`, `chain_cases`, `steady_networks`, `locations`), next to `project_count` and `postgres_latency_ms`. Left empty they keep the defaults above, which is what the nightly run uses. For a run at scale, raise `vus` and lower `steady_networks` and `locations` to put more claims on each pool's lock, for example:
+
+```bash
+gh workflow run load-test.yaml --ref <branch> \
+  -f tests="setup class-chain cleanup" -f chain_cases=steady \
+  -f vus=100 -f duration=3m -f steady_networks=1 -f locations=1
+```
+
+A run with any of these set is comparable only with runs that set the same values, and a quota-on threshold crossed at high concurrency fails the job without losing the numbers.
+
 ## Tenancy: how a request names its project
 
 IPAM scopes every object to a project, read from the `iam.miloapis.com/parent-*`

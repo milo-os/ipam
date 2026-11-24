@@ -41,6 +41,38 @@ on:
         description: Number of perf projects to seed
         type: string
         default: "5"
+      # Concurrency and scale. Empty keeps each script's default, which is what
+      # the nightly runs use, so their history stays comparable. Runs with any
+      # of these set are comparable only with runs that set the same values.
+      vus:
+        description: >-
+          k6 virtual users for throughput, class-chain and exhaustion (empty =
+          script defaults: 10, 10, 20)
+        type: string
+        default: ""
+      duration:
+        description: >-
+          How long throughput, class-chain (per case), exhaustion and reads
+          (per phase) run; a k6 duration such as 2m (empty = script defaults)
+        type: string
+        default: ""
+      chain_cases:
+        description: >-
+          class-chain cases to run, comma-separated: steady, first (empty = both)
+        type: string
+        default: ""
+      steady_networks:
+        description: >-
+          class-chain networks per project in the steady case (empty = 4). Fewer
+          networks put more claims on each subnet pool's lock
+        type: string
+        default: ""
+      locations:
+        description: >-
+          class-chain locations per network in the steady case (empty = 2).
+          Pools per project = steady_networks x locations
+        type: string
+        default: ""
   schedule:
     - cron: "17 3 * * *"
   pull_request:
@@ -83,6 +115,14 @@ jobs:
       POSTGRES_LATENCY_MS: ${{ inputs.postgres_latency_ms || vars.LOAD_TEST_POSTGRES_LATENCY_MS || '3' }}
       POSTGRES_LATENCY_JITTER_MS: "0"
       PROJECT_COUNT: ${{ inputs.project_count || '5' }}
+      # k6 knobs. Exported to every step, so hack/load-test.sh's `task
+      # test/load:<name>` calls hand them to k6 (test/load/Taskfile.yaml env).
+      # Empty means the script's default.
+      VUS: ${{ inputs.vus || '' }}
+      DURATION: ${{ inputs.duration || '' }}
+      CASES: ${{ inputs.chain_cases || '' }}
+      STEADY_NETWORKS: ${{ inputs.steady_networks || '' }}
+      LOCATIONS: ${{ inputs.locations || '' }}
       # `task test/load:<name>` targets, in order. `setup` must stay first.
       LOAD_TESTS: ${{ inputs.tests || vars.LOAD_TESTS || 'setup throughput class-chain exhaustion reads scale cleanup' }}
 
@@ -185,6 +225,8 @@ jobs:
         run: |
           {
             echo "### Load test (Milo quota on, Postgres +${POSTGRES_LATENCY_MS}ms)"
+            echo
+            echo "Ref \`${GITHUB_REF_NAME}\` @ \`${GITHUB_SHA::7}\`. Projects ${PROJECT_COUNT}; VUS ${VUS:-default}; DURATION ${DURATION:-default}; class-chain CASES ${CASES:-default}, STEADY_NETWORKS ${STEADY_NETWORKS:-default}, LOCATIONS ${LOCATIONS:-default}."
             echo
             echo "k6 exit codes: 0 pass, 99 threshold crossed, 107 script error, 108 run aborted."
             echo
