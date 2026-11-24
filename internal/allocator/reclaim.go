@@ -59,12 +59,15 @@ type RowQuerier interface {
 // LockClaimAllocation before anything is decided from it.
 func HasClaimAllocation(ctx context.Context, db RowQuerier, allocationKey string) (bool, error) {
 	defer metrics.ObserveQuery("has_claim_allocation", time.Now())
+	return scanHasClaimAllocation(db.QueryRow(ctx, hasClaimAllocationSQL, allocationKey), allocationKey)
+}
+
+const hasClaimAllocationSQL = `SELECT EXISTS (SELECT 1 FROM ipam_cidr_allocations
+	                 WHERE allocation_key = $1 AND purpose = 'Claim')`
+
+func scanHasClaimAllocation(row pgx.Row, allocationKey string) (bool, error) {
 	var exists bool
-	err := db.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM ipam_cidr_allocations
-		                 WHERE allocation_key = $1 AND purpose = 'Claim')`, allocationKey,
-	).Scan(&exists)
-	if err != nil {
+	if err := row.Scan(&exists); err != nil {
 		return false, fmt.Errorf("look up allocation %q: %w", allocationKey, err)
 	}
 	return exists, nil

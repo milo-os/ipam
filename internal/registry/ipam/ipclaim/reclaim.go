@@ -153,6 +153,15 @@ func agreeOnBlock(row *allocator.ClaimAllocation, terms reclaimTerms) (int, *rec
 	return length, nil
 }
 
+// retainedLookup is what the unlocked check for a claim allocation row under
+// the claim's identity returned (allocator.HasClaimAllocation, or the first
+// result of allocator.BeginChainLookup): whether one exists, or why the check
+// failed.
+type retainedLookup struct {
+	found bool
+	err   error
+}
+
 // reclaimResult is what tryReclaim reports back to create.
 type reclaimResult struct {
 	// handled is false when there is no retained allocation under the claim's
@@ -176,12 +185,13 @@ type reclaimResult struct {
 // no free block left still hands back a block it is already holding.
 //
 // A create with nothing retained under its identity, which is nearly every
-// create, pays one indexed read outside any transaction. Otherwise, one
-// transaction: lock the row's pool, then the row; refuse a row still bound, or
-// one held on terms the claim does not ask for, including a pool the claim
-// would not be placed in now; rebind the row by compare-and-set; point the
-// IPAllocation at the claim; write the claim as Bound. Capacity does not move,
-// because the address never left. A dry run runs all of it and rolls back.
+// create, pays one indexed read outside any transaction, which the caller
+// makes and passes in as retained. Otherwise, one transaction: lock the row's
+// pool, then the row; refuse a row still bound, or one held on terms the claim
+// does not ask for, including a pool the claim would not be placed in now;
+// rebind the row by compare-and-set; point the IPAllocation at the claim;
+// write the claim as Bound. Capacity does not move, because the address never
+// left. A dry run runs all of it and rolls back.
 //
 // A generated name that lands on a retained identity was not chosen by
 // anyone, so it is refused as a collision and drawn again rather than handed
@@ -208,16 +218,16 @@ func (r *AllocatingREST) tryReclaim(
 	uniqueScope map[string]ipam.ScopeRef,
 	reclaimPolicy v1alpha1.ReclaimPolicy,
 	generatedName, dryRun bool,
+	retained retainedLookup,
 ) reclaimResult {
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 	allocationName := allocationNameFor(claim.Namespace, claim.Name)
 	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
 
-	exists, err := allocator.HasClaimAllocation(ctx, r.db, allocationKey)
-	if err != nil {
-		return reclaimResult{handled: true, outcome: reasonTxError, err: err}
+	if retained.err != nil {
+		return reclaimResult{handled: true, outcome: reasonTxError, err: retained.err}
 	}
-	if !exists {
+	if !retained.found {
 		return reclaimResult{}
 	}
 

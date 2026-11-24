@@ -130,15 +130,16 @@ type AllocatingREST struct {
 
 // txBeginner is the minimal slice of *pgxpool.Pool the allocation handlers
 // depend on. Narrowing the field to this interface lets unit tests inject a
-// fake transaction without a live Postgres. Query and QueryRow are the reads
-// made outside any transaction: the class, its ancestry, discovery, the pool
-// identities and the check for a retained allocation. None of them takes a
-// lock, and everything decided from them is decided again under the pool's
-// lock.
+// fake transaction without a live Postgres. Query, QueryRow and SendBatch are
+// the reads made outside any transaction: the class, its ancestry, discovery,
+// the pool identities and the check for a retained allocation, the last four
+// pipelined into two round trips. None of them takes a lock, and everything
+// decided from them is decided again under the pool's lock.
 type txBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
 // NewAllocatingStorage builds the IPClaim REST storage with synchronous
@@ -441,6 +442,19 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		return nil, fail(apierrors.NewBadRequest(err.Error()), reasonInvalid)
 	}
 
+	// The IPAllocation's name and key are the allocation row's identity, so
+	// they are resolved before the row is written rather than after.
+	allocationName := allocationNameFor(claim.Namespace, claim.Name)
+	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
+
+	// One round trip asks whether an allocation is retained under the claim's
+	// identity and makes the first read of the class chain. The answer to the
+	// first is acted on before anything the second says, so every refusal
+	// comes in the order it did when each was a round trip of its own: a
+	// duplicate's 409 before a broken chain, and the checks below that read
+	// nothing between the two.
+	chain, retainedFound, err := allocator.BeginChainLookup(ctx, r.db, class, claim.Spec.Scope, allocationKey)
+
 	// A claim recreated under the name of one whose address was retained takes
 	// that address back, before any pool is resolved: the retained row names
 	// its pool, and a reclaim provisions nothing and searches nothing.
@@ -453,7 +467,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		address:      claim.Spec.Address,
 
 		requireRetentionCap: requireRetentionCap,
-	}, uniqueScope, reclaimPolicy, generatedName, dryRun)
+	}, uniqueScope, reclaimPolicy, generatedName, dryRun, retainedLookup{found: retainedFound, err: err})
 	if reclaimed.handled {
 		if reclaimed.err != nil {
 			failSpan(spanReason(failureReason(reclaimed.err, reclaimed.outcome)))
@@ -492,7 +506,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	// a provisioned one an operator has since capped, accepted. A claim naming
 	// its address provisions nothing, and is left to that check.
 	if requireRetentionCap && wantBlock == nil {
-		if _, pending, err := allocator.ResolveExistingPool(ctx, r.db, class, claim.Spec.Scope); err == nil && len(pending) > 0 {
+		if pending, err := chain.Pending(ctx, r.db); err == nil && len(pending) > 0 {
 			failSpan(tracing.ReasonInvalid)
 			return nil, fail(retentionLeaseRequired(claim.Name, class, ""), reasonInvalid)
 		}
@@ -519,7 +533,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		defer func() { _ = dryTx.Rollback(ctx) }()
 		resolveDB = dryTx
 	}
-	poolKey, err := allocator.ResolvePoolFor(ctx, resolveDB, class, claim.Spec.Scope, wantBlock)
+	poolKey, err := chain.Resolve(ctx, resolveDB, wantBlock)
 	if err != nil {
 		failSpan(tracing.ReasonPoolNotFound)
 		return nil, fail(resolvePoolError(err), reasonTxError)
@@ -535,11 +549,6 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 	poolName := poolKey[strings.LastIndex(poolKey, "/")+1:]
 	claimKey := claimObjectKey(id, claim.Namespace, claim.Name)
 	span.SetAttributes(attribute.String(tracing.AttrPoolName, poolName))
-
-	// The IPAllocation's name and key are the allocation row's identity, so
-	// they are resolved before the row is written rather than after.
-	allocationName := allocationNameFor(claim.Namespace, claim.Name)
-	allocationKey := allocationObjectKey(id, claim.Namespace, allocationName)
 
 	cidr, err := r.allocator.AllocatePrefix(ctx, tx, allocator.PrefixRequest{
 		PoolKey:       poolKey,

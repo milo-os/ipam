@@ -316,7 +316,7 @@ local dbDurationP95Panel = common.tsPanel(
     },
   ],
   unit='s',
-  description='p95 wall-clock duration of named SQL statements inside the allocation transaction. Spikes in select_pool_for_update typically point to lock contention; spikes in load_existing_allocations point to large pools without an index hit.'
+  description='p95 wall-clock duration of named SQL statements on the allocation path. A *_batch label (claim_lookup_batch, resolve_chain_batch) times a whole pipelined round trip holding several statements, not one statement. Spikes in select_pool_for_update typically point to lock contention; spikes in load_existing_allocations point to large pools without an index hit.'
 );
 
 local pgxPoolSaturationPanel = common.tsPanel(

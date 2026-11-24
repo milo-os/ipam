@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
@@ -45,7 +47,12 @@ func DiscoverPoolFor(ctx context.Context, tx Querier, class *ResolvedClass, clai
 	if err != nil {
 		return "", err
 	}
+	return pickOfferingPool(class, claimScope, want, offered)
+}
 
+// pickOfferingPool is the half of DiscoverPoolFor that reads nothing: the
+// choice among the pools offering the chain's root.
+func pickOfferingPool(class *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet, offered []offeringPool) (string, error) {
 	var candidates []offeringPool
 	for _, c := range offered {
 		// The one filter that depends on the claim rather than on the class.
@@ -123,18 +130,25 @@ type offeringPool struct {
 // a pool in any project could publish itself to the name "backbone" and serve
 // claims of somebody else's class.
 func offeringPools(ctx context.Context, tx Querier, class *ResolvedClass) ([]offeringPool, error) {
-	pattern := resourceKeyPrefixFor(class.Project, "ippools") + "%"
+	rows, err := tx.Query(ctx, offeringPoolsSQL, offeringPoolsArgs(class)...)
+	return scanOfferingPools(rows, err, class)
+}
 
-	rows, err := tx.Query(ctx,
-		`SELECT o.pool_key, obj.data
-		   FROM ipam_pool_class_offer o
-		   JOIN ipam_objects obj ON obj.key = o.pool_key
-		  WHERE o.class_name = $1
-		    AND ipam_data_to_jsonb(obj.data) ->> 'kind' = 'IPPool'
-		    AND obj.key LIKE $2
-		  ORDER BY o.pool_key`,
-		class.Name, pattern,
-	)
+const offeringPoolsSQL = `SELECT o.pool_key, obj.data
+	   FROM ipam_pool_class_offer o
+	   JOIN ipam_objects obj ON obj.key = o.pool_key
+	  WHERE o.class_name = $1
+	    AND ipam_data_to_jsonb(obj.data) ->> 'kind' = 'IPPool'
+	    AND obj.key LIKE $2
+	  ORDER BY o.pool_key`
+
+func offeringPoolsArgs(class *ResolvedClass) []any {
+	return []any{class.Name, resourceKeyPrefixFor(class.Project, "ippools") + "%"}
+}
+
+// scanOfferingPools reads the rows offeringPoolsSQL returns, however it was
+// sent; err is the error sending it returned.
+func scanOfferingPools(rows pgx.Rows, err error, class *ResolvedClass) ([]offeringPool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list pools offering class %q: %w", class.Name, err)
 	}

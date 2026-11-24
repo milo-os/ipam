@@ -143,6 +143,13 @@ var (
 	//   "insert_allocation" — INSERT INTO ipam_cidr_allocations / ipam_asn_allocations
 	//   "insert_object" — INSERT INTO ipam_objects (claim row + child prefix)
 	//   "update_pool_status" — UPDATE ipam_objects ... when the pool status row is rewritten
+	//
+	// A name ending in _batch times one pipelined round trip holding several
+	// statements, from send to the last result read:
+	//   "claim_lookup_batch" — the retained-allocation check and the first read
+	//                          of the claim's class chain
+	//   "resolve_chain_batch" — the root's offering pools and every chain
+	//                           level's identity row
 	PostgresQueryDuration = metrics.NewHistogramVec(
 		&metrics.HistogramOpts{
 			Namespace:      "ipam",
