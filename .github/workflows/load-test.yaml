@@ -11,18 +11,18 @@ name: Load test
 #                      measured before and after (milo-os/ipam#195): dispatch
 #                      once on main, once on the branch, compare the summaries.
 #   pull_request       Only when the `load-test` label is on the PR, so a PR
-#                      author opts in per PR. Same-repo PRs only: this job runs
-#                      on a self-hosted runner and must never run fork code.
+#                      author opts in per PR. Same-repo PRs only, so a label
+#                      never runs fork code.
 #   schedule           Nightly on main, to give the benchmark a history and
 #                      catch a regression within a day.
 # Not on every PR, and not on every push to main: one run is ~30-60 minutes of a
 # whole runner and builds a Kubernetes control plane from scratch, which is
 # unaffordable at that frequency and would make the PR queue wait on it.
 #
-# Runner: self-hosted only (vars.MILO_LINUX_RUNNER). Unlike the lint job there is
-# no fallback to ubuntu-latest: the numbers are only comparable between runs on
-# the same class of machine, and a shared hosted runner would produce noise that
-# reads like a regression. If the variable is unset the job is skipped.
+# Runner: GitHub-hosted ubuntu-latest, like the e2e job. The milo-linux
+# self-hosted runners are unprivileged and have no Docker, so kind cannot start
+# there. Hosted runners vary from run to run, so compare runs by their trend, not
+# by one pair, and treat a single threshold crossing as a prompt to re-run.
 
 on:
   workflow_dispatch:
@@ -53,18 +53,16 @@ jobs:
   load-test:
     name: IPClaim load test (Milo quota on)
     if: >-
-      vars.MILO_LINUX_RUNNER != '' && (
-        github.event_name != 'pull_request' || (
-          github.event.pull_request.head.repo.full_name == github.repository &&
-          contains(github.event.pull_request.labels.*.name, 'load-test') &&
-          (github.event.action != 'labeled' || github.event.label.name == 'load-test')
-        )
+      github.event_name != 'pull_request' || (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        contains(github.event.pull_request.labels.*.name, 'load-test') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'load-test')
       )
-    runs-on: ${{ vars.MILO_LINUX_RUNNER }}
+    runs-on: ubuntu-latest
     timeout-minutes: 90
-    # One environment at a time across the repository: the kind cluster binds
-    # fixed host ports (30000 for Milo, 30443), so two runs on one Docker host
-    # collide. Queued runs wait rather than cancel; a benchmark cancelled
+    # One run at a time across the repository, so two benchmarks never share
+    # the account's runner capacity and skew each other. Queued runs wait
+    # rather than cancel; a benchmark cancelled
     # mid-way tells you nothing. This is job-level, not workflow-level, on
     # purpose: a workflow-level group is entered before the job's `if` is
     # evaluated, so every unlabelled pull_request event would join the group and
@@ -109,8 +107,8 @@ jobs:
           docker info >/dev/null || { echo "::error::cannot reach the Docker daemon"; missing=1; }
           exit "${missing}"
 
-      # Installed under RUNNER_TEMP, not /usr/local/bin: a self-hosted runner
-      # need not grant sudo. test-infra's ensure-tools only installs a tool that
+      # Installed under RUNNER_TEMP, not /usr/local/bin, so the job needs no
+      # sudo. test-infra's ensure-tools only installs a tool that
       # is missing (and kind when the version differs), so having them on PATH
       # keeps it from reaching for sudo.
       - name: Install Task
