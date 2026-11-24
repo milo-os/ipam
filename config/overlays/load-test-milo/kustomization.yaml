@@ -1,0 +1,58 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Milo control plane for the IPAM load test: etcd, milo-apiserver and
+# milo-controller-manager, which together provide the quota system (the
+# quota.miloapis.com API, the quota controllers, and the project/organization
+# control planes IPAM's quota plugin routes claims to).
+#
+# This is Milo's own test-infra overlay, consumed as a remote base at a pinned
+# tag, with the minimum layered on top that an *aggregated* service needs. Milo's
+# overlay is built to be driven by its own chainsaw suites and has no aggregation
+# wiring, so out of the box nothing can sit behind it.
+#
+# PIN: the ref below and the image tag must equal the go.mod version of
+# go.miloapis.com/milo, so the quota plugin compiled into IPAM talks to the same
+# release it was built against. `task load-test:verify-milo-pin` checks this and
+# CI runs it; bump all three together.
+
+namespace: milo-system
+
+resources:
+  - github.com/milo-os/milo/config/overlays/test-infra?ref=v0.36.26
+  # ProjectControlPlane CRD. Milo keeps it in the *infrastructure* cluster, which
+  # here is the kind host cluster; `task dev:deploy` in the milo repo applies it
+  # the same way. Without it Projects never become Ready.
+  - github.com/milo-os/milo/config/crd/overlays/infra-control-plane?ref=v0.36.26
+
+images:
+  - name: ghcr.io/milo-os/milo
+    newTag: v0.36.26
+
+patches:
+  # argo-events is only for Milo's own event-driven e2e suites; the quota path
+  # does not touch it and it adds a Flux HelmRelease to a CPU-bound runner.
+  - patch: |-
+      $patch: delete
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: argo-events
+  - patch: |-
+      $patch: delete
+      apiVersion: source.toolkit.fluxcd.io/v1
+      kind: HelmRepository
+      metadata:
+        name: argo
+  - path: patches/apiserver-patch.yaml
+    target:
+      kind: Deployment
+      name: milo-apiserver
+  - path: patches/controller-manager-patch.yaml
+    target:
+      kind: Deployment
+      name: milo-controller-manager
+  - path: patches/service-patch.yaml
+    target:
+      kind: Service
+      name: milo-apiserver

@@ -14,7 +14,7 @@ spec:
     stress test of the `SELECT ... FOR UPDATE` lock — it confirms the
     allocator returns distinct, non-overlapping blocks across back-to-back
     requests. True concurrent contention (many parallel CREATEs hitting the
-    same parent row) is covered by `test/load/concurrent-claims.js`.
+    same parent row) is covered by `test/e2e/class-cascade-concurrency` (separate processes). The k6 script that used to be cited here was removed: its uniqueness check used http.batch, which k6 throttles per host.
 
   # Every claim resolves its class, and resolving a class needs a project, so
   # the suite drives the apiserver as a project tenant. `task e2e` generates the

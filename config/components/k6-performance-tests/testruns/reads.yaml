@@ -16,17 +16,21 @@ spec:
     serviceAccountName: ipam-k6-runner
     resources:
       requests:
-        cpu: 250m
-        memory: 256Mi
-      limits:
-        cpu: 1000m
+        cpu: 500m
         memory: 512Mi
+      limits:
+        cpu: 2000m
+        memory: 1Gi
     env:
       - name: IPAM_API_URL
         value: "https://kubernetes.default.svc.cluster.local:443"
       - name: K6_INSECURE_SKIP_TLS_VERIFY
         value: "true"
-      - name: NAMESPACE_COUNT
-        value: "10"
+      - name: IPAM_TENANCY
+        value: "impersonate"
       - name: PROJECT_COUNT
         value: "5"
+      - name: NAMESPACE_COUNT
+        value: "4"
+      - name: DURATION
+        value: "3m"

@@ -2,593 +2,689 @@
 // Source: test/load/src/pool-scale.js
 // Lib:    test/load/lib/ipam-client.js
 
-// Shared HTTP client for the IPAM apiserver. Provides typed helpers for the
-// IPAM resources (IPPool, IPClaim, IPAllocation, ASNPool, ASNClaim) and
-// standardized request configuration.
-//
-// Configuration via environment variables:
-//   IPAM_API_URL    - Base URL of the apiserver (default: kubectl proxy localhost:8001)
-//   IPAM_TOKEN      - Explicit bearer token (overrides in-cluster SA token)
-//   IPAM_TOKEN_FILE - Path to a file containing a bearer token (default: SA token path)
-//   K6_INSECURE_SKIP_TLS_VERIFY - Skip TLS verification (default: true)
-//
-// When running inside the k6 operator, the test pod's ServiceAccount token
-// is mounted at /var/run/secrets/kubernetes.io/serviceaccount/token. The
-// client reads it automatically at init time if IPAM_TOKEN isn't set.
-
+import exec from 'k6/execution';
 import http from 'k6/http';
+import { Counter, Gauge, Trend } from 'k6/metrics';
 
-export const BASE_URL = __ENV.IPAM_API_URL || 'http://localhost:8001';
+// ---- test/load/lib/ipam-client.js ----
+// Shared HTTP client and fixtures for the IPAM k6 load tests.
+//
+// Every request this service serves belongs to a project: the apiserver reads
+// the project from UserInfo.Extra (iam.miloapis.com/parent-*), keys storage by
+// it, and resolves a claim's class inside it. A request carrying no project
+// has nothing to read and nowhere to write. So every IPAM call below is made
+// "as" a project, and how the project reaches the server depends on where the
+// scripts point:
+//
+//   IPAM_TENANCY=impersonate (default)
+//     IPAM_API_URL is a kube-apiserver that aggregates IPAM (kubectl proxy, or
+//     https://kubernetes.default.svc in-cluster). The project is sent as
+//     Kubernetes impersonation headers, which the kube-apiserver turns into
+//     UserInfo.Extra on the request it forwards to IPAM. This is the same
+//     mechanism the e2e suites use (test/e2e/lib/gen-impersonation-kubeconfig.sh).
+//     The caller needs `impersonate` on the user and the three userextras;
+//     the impersonated user needs RBAC on ipam.miloapis.com
+//     (config/components/k6-performance-tests/tenant-rbac.yaml).
+//
+//   IPAM_TENANCY=milo
+//     IPAM_API_URL is Milo's front door. Each project is reached through its
+//     control-plane path, /apis/resourcemanager.miloapis.com/v1alpha1/projects/
+//     <project>/control-plane, and Milo writes the extras itself. This is the
+//     path a quota-enforcing environment needs: Milo quota admission creates a
+//     ResourceClaim in the project's control plane, in the claim's namespace.
+//     The projects must already exist (PROJECTS), and IPAM_TOKEN must be a
+//     Milo credential allowed to use them.
+//
+// Configuration (all optional unless noted):
+//   IPAM_API_URL           Base URL (default http://localhost:8001, kubectl proxy)
+//   IPAM_TENANCY           impersonate | milo (default impersonate)
+//   IPAM_TOKEN             Bearer token (overrides IPAM_TOKEN_FILE)
+//   IPAM_TOKEN_FILE        Token file (default: the in-cluster SA token, if present)
+//   IPAM_IMPERSONATE_USER  User to impersonate (default ipam-perf-tester)
+//   IPAM_IMPERSONATE_GROUP One group to impersonate as well (default none)
+//   PROJECTS               Comma-separated project names; overrides the two below
+//   PROJECT_PREFIX         Project name prefix (default ipam-perf)
+//   PROJECT_COUNT          Number of projects PREFIX-0..N-1 (default 5)
+//   NAMESPACE_PREFIX       Claim namespace prefix (default ipam-perf)
+//   NAMESPACE_COUNT        Number of claim namespaces (default 4)
+//   K6_INSECURE_SKIP_TLS_VERIFY  "false" to verify TLS (default skip)
+
+
+export const BASE_URL = (__ENV.IPAM_API_URL || 'http://localhost:8001').replace(/\/+$/, '');
 export const API_GROUP = 'ipam.miloapis.com';
 export const API_VERSION = 'v1alpha1';
-export const API_BASE = `${BASE_URL}/apis/${API_GROUP}/${API_VERSION}`;
+export const API_VERSION_FULL = `${API_GROUP}/${API_VERSION}`;
+
+export const TENANCY = (__ENV.IPAM_TENANCY || 'impersonate').toLowerCase();
+if (TENANCY !== 'impersonate' && TENANCY !== 'milo') {
+  throw new Error(`IPAM_TENANCY must be "impersonate" or "milo", got "${TENANCY}"`);
+}
+
+// Quota-on runs (IPAM_TENANCY=milo, the only way a project reaches Milo's quota
+// admission) carry the wait for Milo to grant a ResourceClaim inside every claim
+// create. limit(strict, quotaOn) picks a script's latency target for the mode it
+// runs in. QUOTA_ON=true|false overrides the inference. The reasoning behind each
+// quota-on number is in test/load/README.md.
+export const QUOTA_ON = __ENV.QUOTA_ON ? __ENV.QUOTA_ON === 'true' : TENANCY === 'milo';
+export function limit(strict, quotaOn) {
+  return QUOTA_ON ? quotaOn : strict;
+}
+
+const IMPERSONATE_USER = __ENV.IPAM_IMPERSONATE_USER || 'ipam-perf-tester';
+const IMPERSONATE_GROUP = __ENV.IPAM_IMPERSONATE_GROUP || '';
+
+// The parent pair Milo's resourcemanager uses for a Project (internal/tenant).
+const PARENT_API_GROUP = 'resourcemanager.miloapis.com';
+const PARENT_TYPE = 'Project';
+
+export const INSECURE = __ENV.K6_INSECURE_SKIP_TLS_VERIFY !== 'false';
 
 const DEFAULT_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token';
 
 function loadToken() {
   if (__ENV.IPAM_TOKEN) {
-    return __ENV.IPAM_TOKEN;
+    return __ENV.IPAM_TOKEN.trim();
   }
   const path = __ENV.IPAM_TOKEN_FILE || DEFAULT_TOKEN_PATH;
   try {
     return open(path).trim();
   } catch (e) {
+    if (__ENV.IPAM_TOKEN_FILE) {
+      throw new Error(`IPAM_TOKEN_FILE ${path} could not be read: ${e}`);
+    }
     return '';
   }
 }
 
 const TOKEN = loadToken();
 
-export function defaultHeaders() {
-  const h = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-  };
-  if (TOKEN) {
-    h['Authorization'] = `Bearer ${TOKEN}`;
+// ---------------------------------------------------------------------------
+// Projects and namespaces
+// ---------------------------------------------------------------------------
+
+export function projects() {
+  if (__ENV.PROJECTS) {
+    return __ENV.PROJECTS.split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  const prefix = __ENV.PROJECT_PREFIX || 'ipam-perf';
+  const n = parseInt(__ENV.PROJECT_COUNT || '5', 10);
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(`${prefix}-${i}`);
+  return out;
+}
+
+export function namespaces() {
+  const prefix = __ENV.NAMESPACE_PREFIX || 'ipam-perf';
+  const n = parseInt(__ENV.NAMESPACE_COUNT || '4', 10);
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(`${prefix}-${i}`);
+  return out;
+}
+
+export function pick(list) {
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+// uniqueName returns a DNS-1123 name that no earlier iteration used. Names
+// must not repeat: with quota on, Milo derives the ResourceClaim name from the
+// IPClaim name, and reusing a name while the previous ResourceClaim is still
+// being cleaned up is refused ("still cleaning up from a previous attempt").
+export function uniqueName(prefix) {
+  // __VU and __ITER are undefined in setup() and teardown().
+  const vu = typeof __VU === 'undefined' ? 0 : __VU;
+  const iter = typeof __ITER === 'undefined' ? 0 : __ITER;
+  const rand = Math.floor(Math.random() * 0x7fffffff).toString(36);
+  return `${prefix}-${vu}-${iter}-${rand}`;
+}
+
+// ---------------------------------------------------------------------------
+// Transport
+// ---------------------------------------------------------------------------
+
+// apiRoot is the URL under which a project's Kubernetes-style API lives.
+export function apiRoot(project) {
+  if (TENANCY === 'milo') {
+    return `${BASE_URL}/apis/resourcemanager.miloapis.com/v1alpha1/projects/${project}/control-plane`;
+  }
+  return BASE_URL;
+}
+
+export function ipamURL(project, path) {
+  return `${apiRoot(project)}/apis/${API_GROUP}/${API_VERSION}${path}`;
+}
+
+function baseHeaders() {
+  const h = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  if (TOKEN) h.Authorization = `Bearer ${TOKEN}`;
+  return h;
+}
+
+// tenantHeaders carries the project in impersonate mode. Extra keys contain
+// "/", which is not legal in a header name, so Kubernetes expects them
+// percent-encoded; it lower-cases and unescapes them on receipt.
+function tenantHeaders(project) {
+  const h = baseHeaders();
+  if (TENANCY === 'impersonate') {
+    h['Impersonate-User'] = IMPERSONATE_USER;
+    if (IMPERSONATE_GROUP) h['Impersonate-Group'] = IMPERSONATE_GROUP;
+    h['Impersonate-Extra-iam.miloapis.com%2fparent-api-group'] = PARENT_API_GROUP;
+    h['Impersonate-Extra-iam.miloapis.com%2fparent-type'] = PARENT_TYPE;
+    h['Impersonate-Extra-iam.miloapis.com%2fparent-name'] = project;
   }
   return h;
 }
 
-function defaultParams(tag) {
+export function params(project, operation, extraTags) {
   return {
-    headers: defaultHeaders(),
-    tags: { operation: tag },
+    headers: tenantHeaders(project),
+    tags: Object.assign({ operation }, extraTags || {}),
   };
 }
 
-// Returns k6 params with Milo tenant headers identifying the calling project.
-// Merges with defaultHeaders() so auth + content-type are preserved.
-export function withProject(projectID) {
+export function ipamGet(project, path, operation, tags) {
+  return http.get(ipamURL(project, path), params(project, operation || 'get', tags));
+}
+
+export function ipamPost(project, path, body, operation, tags) {
+  return http.post(ipamURL(project, path), JSON.stringify(body), params(project, operation || 'create', tags));
+}
+
+export function ipamDelete(project, path, operation, tags) {
+  return http.del(ipamURL(project, path), null, params(project, operation || 'delete', tags));
+}
+
+// batchPost returns an http.batch() request descriptor for a create.
+export function batchPost(project, path, body, operation, tags) {
   return {
-    headers: {
-      ...defaultHeaders(),
-      'X-Remote-Extra-Iam.Miloapis.Com.Parent-Api-Group': 'resourcemanager.miloapis.com',
-      'X-Remote-Extra-Iam.Miloapis.Com.Parent-Type':      'Project',
-      'X-Remote-Extra-Iam.Miloapis.Com.Parent-Name':      projectID,
-    },
-    tags: {},
+    method: 'POST',
+    url: ipamURL(project, path),
+    body: JSON.stringify(body),
+    params: params(project, operation || 'create', tags),
   };
 }
 
-// withProjectTagged is like withProject but also sets an operation tag.
-export function withProjectTagged(projectID, tag) {
-  const p = withProject(projectID);
-  p.tags = { operation: tag };
-  return p;
+export function batchDelete(project, path, operation, tags) {
+  return {
+    method: 'DELETE',
+    url: ipamURL(project, path),
+    body: null,
+    params: params(project, operation || 'delete', tags),
+  };
 }
 
-// --- Generic helpers ---
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
 
-export function ipamGet(path, tag) {
-  return http.get(`${API_BASE}${path}`, defaultParams(tag || 'get'));
+export function ipClassPath(name) {
+  return name ? `/ipclasses/${name}` : '/ipclasses';
 }
 
-export function ipamPost(path, body, tag) {
-  return http.post(`${API_BASE}${path}`, JSON.stringify(body), defaultParams(tag || 'post'));
-}
-
-export function ipamDelete(path, tag) {
-  return http.del(`${API_BASE}${path}`, null, defaultParams(tag || 'delete'));
-}
-
-export function ipamList(path, tag) {
-  return http.get(`${API_BASE}${path}`, defaultParams(tag || 'list'));
-}
-
-// --- Path helpers ---
-
-export function nsFor(n) {
-  return `ipam-perf-${n}`;
-}
-
-// IPClaim is namespaced.
-export function ipClaimPath(ns, name) {
-  return name
-    ? `/namespaces/${ns}/ipclaims/${name}`
-    : `/namespaces/${ns}/ipclaims`;
-}
-
-// IPAllocation is namespaced (system-created allocation record).
-export function ipAllocationPath(ns, name) {
-  return name
-    ? `/namespaces/${ns}/ipallocations/${name}`
-    : `/namespaces/${ns}/ipallocations`;
-}
-
-// IPPool is cluster-scoped.
 export function ipPoolPath(name) {
   return name ? `/ippools/${name}` : '/ippools';
 }
 
-export function asnClaimPath(ns, name) {
-  return name
-    ? `/namespaces/${ns}/asnclaims/${name}`
-    : `/namespaces/${ns}/asnclaims`;
+export function ipClaimPath(ns, name) {
+  if (!ns) return '/ipclaims'; // across every namespace
+  return name ? `/namespaces/${ns}/ipclaims/${name}` : `/namespaces/${ns}/ipclaims`;
 }
 
-export function asnPoolPath(name) {
-  return name ? `/asnpools/${name}` : '/asnpools';
+export function ipAllocationPath(ns, name) {
+  if (!ns) return '/ipallocations';
+  return name ? `/namespaces/${ns}/ipallocations/${name}` : `/namespaces/${ns}/ipallocations`;
 }
 
-export function asnPoolClassPath(name) {
-  return name ? `/asnpoolclasses/${name}` : '/asnpoolclasses';
+// ---------------------------------------------------------------------------
+// Object builders
+// ---------------------------------------------------------------------------
+
+export function ipClass(name, spec) {
+  return { apiVersion: API_VERSION_FULL, kind: 'IPClass', metadata: { name }, spec };
 }
 
-// --- Resource builders ---
-
-// ipPool builds an IPPool body. visibility defaults to 'consumer'. Set
-// visibility='shared' to allow cross-project use, 'platform' for backbone.
-export function ipPool(name, cidr, {
-  ipFamily = 'IPv4',
-  visibility = 'consumer',
-  minLen = 20,
-  maxLen = 28,
-  strategy = 'FirstFit',
-} = {}) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'IPPool',
-    metadata: { name },
-    spec: {
-      cidr,
-      ipFamily,
-      visibility,
-      allocation: { minPrefixLength: minLen, maxPrefixLength: maxLen, strategy },
-    },
-  };
+export function ipPool(name, spec) {
+  return { apiVersion: API_VERSION_FULL, kind: 'IPPool', metadata: { name }, spec };
 }
 
-// ipClaim builds an IPClaim body. poolName is the IPPool name; the resulting
-// spec.poolRef is `{ name: poolName }` (same-project).
-export function ipClaim(ns, name, poolName, prefixLength, { ipFamily = 'IPv4', reclaimPolicy = 'Delete' } = {}) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'IPClaim',
-    metadata: { name, namespace: ns },
-    spec: {
-      ipFamily,
-      prefixLength,
-      poolRef: { name: poolName },
-      reclaimPolicy,
-    },
-  };
+export function ipClaim(ns, name, spec, labels) {
+  const metadata = { name, namespace: ns };
+  if (labels) metadata.labels = labels;
+  return { apiVersion: API_VERSION_FULL, kind: 'IPClaim', metadata, spec };
 }
 
-// crossProjectIPClaim is like ipClaim but sets spec.poolRef.projectRef to the
-// pool's owning project, so the apiserver resolves the pool in that project's
-// scope.
-export function crossProjectIPClaim(ns, name, poolName, sourceProjectID, prefixLength, opts = {}) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'IPClaim',
-    metadata: { name, namespace: ns },
-    spec: {
-      ipFamily: opts.ipFamily || 'IPv4',
-      prefixLength,
-      poolRef: {
-        name: poolName,
-        projectRef: { name: sourceProjectID },
-      },
-      reclaimPolicy: opts.reclaimPolicy || 'Delete',
-    },
-  };
+export function scopeRef(kind, name) {
+  return { apiGroup: 'networking.datumapis.com', kind, name };
 }
 
-export function asnPoolClass(name, { visibility = 'consumer' } = {}) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'ASNPoolClass',
-    metadata: { name },
-    spec: { visibility },
-  };
-}
+// ---------------------------------------------------------------------------
+// Fixtures. setup-pools.js creates these in every project; the scripts and
+// cleanup.js name them from here so the three never disagree.
+// ---------------------------------------------------------------------------
 
-export function asnPool(name, ranges, classRef) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'ASNPool',
-    metadata: { name },
-    spec: { ranges, classRef: { name: classRef } },
-  };
-}
+export const LOAD_LABEL = { 'ipam.miloapis.com/load-test': 'true' };
 
-export function asnClaim(ns, name, poolRef) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'ASNClaim',
-    metadata: { name, namespace: ns },
-    spec: { poolRef: { name: poolRef } },
-  };
-}
-
-export function asnClaimWithClassRef(ns, name, classRefName) {
-  return {
-    apiVersion: `${API_GROUP}/${API_VERSION}`,
-    kind: 'ASNClaim',
-    metadata: { name, namespace: ns },
-    spec: { classRef: { name: classRefName } },
-  };
-}
-
-// --- Typed helper functions ---
-
-// IPPool create / read / delete.
-export function createIPPool(name, cidr, opts) {
-  return ipamPost(ipPoolPath(), ipPool(name, cidr, opts), 'ippool_create');
-}
-
-export function getIPPool(name) {
-  return ipamGet(ipPoolPath(name), 'ippool_get');
-}
-
-export function listIPPools() {
-  return ipamList(ipPoolPath(), 'ippool_list');
-}
-
-export function deleteIPPool(name) {
-  return ipamDelete(ipPoolPath(name), 'ippool_delete');
-}
-
-// IPClaim helpers.
-export function createIPClaim(ns, name, poolName, prefixLength, opts) {
-  return ipamPost(ipClaimPath(ns), ipClaim(ns, name, poolName, prefixLength, opts), 'ipclaim_create');
-}
-
-export function deleteIPClaim(ns, name) {
-  return ipamDelete(ipClaimPath(ns, name), 'ipclaim_delete');
-}
-
-export function getIPClaim(ns, name) {
-  return ipamGet(ipClaimPath(ns, name), 'ipclaim_get');
-}
-
-export function listIPClaims(ns) {
-  return ipamList(ipClaimPath(ns), 'ipclaim_list');
-}
-
-// IPAllocation helpers (system-created; tests only read/list).
-export function listIPAllocations(ns) {
-  return ipamList(ipAllocationPath(ns), 'ipallocation_list');
-}
-
-// ASN helpers.
-export function createASNClaim(ns, name, poolRef) {
-  return ipamPost(asnClaimPath(ns), asnClaim(ns, name, poolRef), 'asn_claim_create');
-}
-
-export function deleteASNClaim(ns, name) {
-  return ipamDelete(asnClaimPath(ns, name), 'asn_claim_delete');
-}
-
-export function getASNClaim(ns, name) {
-  return ipamGet(asnClaimPath(ns, name), 'asn_claim_get');
-}
-
-export function listASNClaims(ns) {
-  return ipamList(asnClaimPath(ns), 'asn_claim_list');
-}
-
-export function createASNPoolClass(name, opts) {
-  return ipamPost(asnPoolClassPath(), asnPoolClass(name, opts), 'asn_pool_class_create');
-}
-
-export function createASNPool(name, ranges, classRef) {
-  return ipamPost(asnPoolPath(), asnPool(name, ranges, classRef), 'asn_pool_create');
-}
-
-// --- Namespace helpers (core API) ---
-
-export function createNamespace(name) {
-  const body = {
-    apiVersion: 'v1',
-    kind: 'Namespace',
-    metadata: { name },
-  };
-  return http.post(`${BASE_URL}/api/v1/namespaces`, JSON.stringify(body), defaultParams('ns_create'));
-}
-
-export function deleteNamespace(name) {
-  return http.del(`${BASE_URL}/api/v1/namespaces/${name}`, null, defaultParams('ns_delete'));
-}
-
-// --- RBAC helpers (core API, used by setup) ---
-
-export function createClusterRole(name, rules) {
-  const body = {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind: 'ClusterRole',
-    metadata: { name },
-    rules,
-  };
-  return http.post(
-    `${BASE_URL}/apis/rbac.authorization.k8s.io/v1/clusterroles`,
-    JSON.stringify(body),
-    defaultParams('cluster_role_create'),
-  );
-}
-
-export function createClusterRoleBinding(name, roleName, subjects) {
-  const body = {
-    apiVersion: 'rbac.authorization.k8s.io/v1',
-    kind: 'ClusterRoleBinding',
-    metadata: { name },
-    roleRef: {
-      apiGroup: 'rbac.authorization.k8s.io',
-      kind: 'ClusterRole',
-      name: roleName,
-    },
-    subjects,
-  };
-  return http.post(
-    `${BASE_URL}/apis/rbac.authorization.k8s.io/v1/clusterrolebindings`,
-    JSON.stringify(body),
-    defaultParams('cluster_role_binding_create'),
-  );
-}
-
-// --- Multi-tenant helpers ---
-
-// projectIDFor returns the perf project ID for index n.
-export function projectIDFor(n) {
-  return `ipam-perf-${n}`;
-}
-
-// createCrossProjectIPClaim posts a cross-project IPClaim with tenant headers
-// for callerProjectID, targeting a pool owned by sourceProjectID.
-export function createCrossProjectIPClaim(ns, name, poolName, sourceProjectID, callerProjectID, prefixLength, opts = {}) {
-  const body = crossProjectIPClaim(ns, name, poolName, sourceProjectID, prefixLength, opts);
-  const params = withProjectTagged(callerProjectID, 'cross_project_ipclaim_create');
-  return http.post(`${API_BASE}${ipClaimPath(ns)}`, JSON.stringify(body), params);
-}
-
-export function createIPClaimForProject(ns, name, poolName, prefixLength, projectID, opts = {}) {
-  const body = ipClaim(ns, name, poolName, prefixLength, opts);
-  const params = withProjectTagged(projectID, 'ipclaim_create');
-  return http.post(`${API_BASE}${ipClaimPath(ns)}`, JSON.stringify(body), params);
-}
-
-// buildIPClaimRequest returns an http.batch()-compatible descriptor instead
-// of firing the request. Use when multiple claims must be sent concurrently
-// from a single VU to test SELECT...FOR UPDATE contention.
-export function buildIPClaimRequest(ns, name, poolName, prefixLength, projectID, opts = {}) {
-  return {
-    method: 'POST',
-    url: `${API_BASE}${ipClaimPath(ns)}`,
-    body: JSON.stringify(ipClaim(ns, name, poolName, prefixLength, opts)),
-    params: withProjectTagged(projectID, 'ipclaim_create'),
-  };
-}
-
-export function deleteIPClaimForProject(ns, name, projectID) {
-  const params = withProjectTagged(projectID, 'ipclaim_delete');
-  return http.del(`${API_BASE}${ipClaimPath(ns, name)}`, null, params);
-}
-
-export function getIPClaimForProject(ns, name, projectID) {
-  const params = withProjectTagged(projectID, 'ipclaim_get');
-  return http.get(`${API_BASE}${ipClaimPath(ns, name)}`, params);
-}
-
-export function listIPClaimsForProject(ns, projectID) {
-  const params = withProjectTagged(projectID, 'ipclaim_list');
-  return http.get(`${API_BASE}${ipClaimPath(ns)}`, params);
-}
-
-export function listIPPoolsForProject(projectID) {
-  const params = withProjectTagged(projectID, 'ippool_list');
-  return http.get(`${API_BASE}${ipPoolPath()}`, params);
-}
-
-export function getIPPoolForProject(name, projectID) {
-  const params = withProjectTagged(projectID, 'ippool_get');
-  return http.get(`${API_BASE}${ipPoolPath(name)}`, params);
-}
-
-export function listIPAllocationsForProject(ns, projectID) {
-  const params = withProjectTagged(projectID, 'ipallocation_list');
-  return http.get(`${API_BASE}${ipAllocationPath(ns)}`, params);
-}
-
-export function createASNClaimForProject(ns, name, poolRef, projectID) {
-  const body = asnClaim(ns, name, poolRef);
-  const params = withProjectTagged(projectID, 'asn_claim_create');
-  return http.post(`${API_BASE}${asnClaimPath(ns)}`, JSON.stringify(body), params);
-}
-
-export function deleteASNClaimForProject(ns, name, projectID) {
-  const params = withProjectTagged(projectID, 'asn_claim_delete');
-  return http.del(`${API_BASE}${asnClaimPath(ns, name)}`, null, params);
-}
-
-// createASNClaimWithClassRefForProject posts an ASNClaim that references a
-// class (not a pool).
-export function createASNClaimWithClassRefForProject(ns, name, classRefName, projectID) {
-  const body = asnClaimWithClassRef(ns, name, classRefName);
-  const params = withProjectTagged(projectID, 'asn_claim_create');
-  return http.post(`${API_BASE}${asnClaimPath(ns)}`, JSON.stringify(body), params);
-}
-
-// LIST helpers used by the read-latency scenarios. All accept the project
-// tenant headers so reads stay scoped to the requesting tenant.
-export function listASNPoolsForProject(projectID) {
-  const params = withProjectTagged(projectID, 'asn_pool_list');
-  return http.get(`${API_BASE}${asnPoolPath()}`, params);
-}
-
-export function listASNClaimsForProject(ns, projectID) {
-  const params = withProjectTagged(projectID, 'asn_claim_list');
-  return http.get(`${API_BASE}${asnClaimPath(ns)}`, params);
-}
-
-// pool-scale.js
-//
-// Walks through increasing allocation density. For each prefix length in
-// PREFIX_STEPS, fills the pool to ~80% capacity and measures p95 create
-// latency. Tags every metric with {depth: N} so we can compare across steps.
-//
-// All requests are scoped to project 0 (`ipam-perf-0`) and target project 0's
-// per-project IPPool `perf-prefix-0` (10.0.0.0/16). The /16 size keeps the
-// sweep bounded while still letting us walk /20 -> /28 densities.
-//
-// Asserts (informally, via thresholds) that p95 latency does not increase
-// more than 3x from the smallest prefix length (loosest fill) to the largest
-// (densest fill). Locking is O(1) on the pool row, so depth must not degrade
-// allocation latency.
-//
-// Run setup-pools.js first; this script uses the perf-prefix-0 /16 pool.
-//
-// Configuration:
-//   PREFIX_STEPS         - Comma-separated prefix lengths (default 20,22,24,26,28)
-//   FILL_PCT             - Pool fill ratio per step (default 0.8)
-//   PARENT_PREFIX        - Pool to use (default perf-prefix-0)
-//   PARENT_LEN           - Parent prefix length (default 16, since perf-prefix-0 is /16)
-//   PROJECT              - Project ID for tenant headers (default ipam-perf-0)
-//   IPAM_API_URL         - Apiserver URL
-
-import { Counter, Trend } from 'k6/metrics';
-const PREFIX_STEPS = (__ENV.PREFIX_STEPS || '20,22,24,26,28').split(',').map(Number);
-const FILL_PCT = parseFloat(__ENV.FILL_PCT || '0.8');
-const PARENT_PREFIX = __ENV.PARENT_PREFIX || 'perf-prefix-0';
-const PARENT_LEN = parseInt(__ENV.PARENT_LEN || '16'); // perf-prefix-0 is 10.0.0.0/16
-const PROJECT = __ENV.PROJECT || projectIDFor(0);
-const FILL_NS = nsFor(0);
-// Maximum acceptable ratio of p95 latency between the deepest and shallowest
-// depth steps. Pool-row locking is O(1), so depth must not degrade allocation
-// latency more than this factor. The 3x default matches the design doc gate.
-const MAX_DEPTH_RATIO = parseFloat(__ENV.MAX_DEPTH_RATIO || '3.0');
-
-const createLatency = new Trend('ipam_scale_create_latency_ms', true);
-// Counter that fires when the deep-vs-shallow p95 ratio exceeds MAX_DEPTH_RATIO.
-// The threshold below turns this into a hard failure for the run.
-const ratioViolation = new Counter('ipam_scale_ratio_violation');
-
-// Per-depth latency samples collected during default() so we can compute the
-// cross-step p95 ratio after all steps complete. k6 doesn't expose submetric
-// data from inside iterations, so we keep a parallel record here.
-const latenciesByDepth = {};
-
-export const options = {
-  insecureSkipTLSVerify: __ENV.K6_INSECURE_SKIP_TLS_VERIFY !== 'false',
-  scenarios: {
-    sweep: {
-      executor: 'shared-iterations',
-      vus: 1,
-      iterations: 1,
-      maxDuration: '20m',
-    },
-  },
-  thresholds: {
-    'ipam_scale_create_latency_ms': ['p(95)<2000'],
-    // Hard gate: ratio of p95(deepest)/p95(shallowest) must be <= MAX_DEPTH_RATIO.
-    // The Counter is incremented in default() when the ratio is exceeded; a
-    // single increment fails the run via this threshold.
-    'ipam_scale_ratio_violation': ['count==0'],
-  },
+// Flat IPv4: one leaf class offered directly by one root pool. A claim of this
+// class resolves the class, locks the root pool and carves a block: the
+// shortest allocation path the service has.
+export const FLAT = {
+  className: 'perf-v4',
+  poolName: 'perf-v4-root',
+  cidr: __ENV.FLAT_CIDR || '10.0.0.0/8',
+  claimPrefixLength: parseInt(__ENV.CLAIM_PREFIX_LENGTH || '28', 10),
 };
 
-function p95(values) {
-  if (!values || values.length === 0) return 0;
-  const sorted = values.slice().sort((a, b) => a - b);
-  // Nearest-rank p95 with at-least-1 index.
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
-  return sorted[idx];
+export function flatFixture() {
+  return [
+    ipClass(FLAT.className, {
+      ipFamily: 'IPv4',
+      uniqueWithin: [],
+      allowedPrefixLengths: { min: 20, max: 28 },
+      defaultPrefixLength: 28,
+      strategy: 'FirstFit',
+      reclaimPolicy: 'Delete',
+    }),
+    ipPool(FLAT.poolName, {
+      cidr: FLAT.cidr,
+      ipFamily: 'IPv4',
+      visibility: 'consumer',
+      classNames: [FLAT.className],
+      allocation: { minPrefixLength: 20, maxPrefixLength: 28, strategy: 'FirstFit' },
+    }),
+  ];
 }
 
-function fillStep(prefixLen) {
-  // Possible /prefixLen subnets in /PARENT_LEN parent.
-  // Cap at 256 so a tight step doesn't create millions of rows.
-  const total = Math.pow(2, prefixLen - PARENT_LEN);
-  const target = Math.min(256, Math.floor(total * FILL_PCT));
+// Class chain: the network-services-operator shape used by the Postgres tests
+// in internal/allocator/placement_postgres_test.go.
+//
+//   perf-vpc       /48 per (network, project), first /64 withheld, from fd20::/32
+//   perf-subnet    /64 per (network, location, project), carved from perf-vpc
+//   perf-endpoint  /96 Block claims, carved from perf-subnet
+//
+// Only perf-vpc is offered by an operator-authored pool. The first claim for a
+// new (network, location) provisions the subnet pool, and the first for a new
+// network provisions the vpc pool above it: cascade provisioning.
+export const CHAIN = {
+  vpcClass: 'perf-vpc',
+  subnetClass: 'perf-subnet',
+  endpointClass: 'perf-endpoint',
+  rootPool: 'perf-vpc-root',
+  cidr: __ENV.CHAIN_CIDR || 'fd20::/32',
+};
 
-  console.log(`step depth=${prefixLen}: filling ${target}/${total} subnets (project=${PROJECT})`);
+export function chainFixture() {
+  return [
+    ipClass(CHAIN.vpcClass, {
+      ipFamily: 'IPv6',
+      poolPer: ['network', 'project'],
+      uniqueWithin: [],
+      allowedPrefixLengths: { min: 48, max: 48 },
+      defaultPrefixLength: 48,
+      reservations: { leading: 1, unitPrefixLength: 64 },
+      strategy: 'FirstFit',
+      reclaimPolicy: 'Retain',
+    }),
+    ipClass(CHAIN.subnetClass, {
+      ipFamily: 'IPv6',
+      parentClassName: CHAIN.vpcClass,
+      poolPer: ['network', 'location', 'project'],
+      uniqueWithin: [],
+      allowedPrefixLengths: { min: 64, max: 64 },
+      defaultPrefixLength: 64,
+      strategy: 'FirstFit',
+      reclaimPolicy: 'Retain',
+    }),
+    ipClass(CHAIN.endpointClass, {
+      ipFamily: 'IPv6',
+      parentClassName: CHAIN.subnetClass,
+      uniqueWithin: ['network'],
+      allowedPrefixLengths: { min: 96, max: 96 },
+      defaultPrefixLength: 96,
+      strategy: 'FirstFit',
+      reclaimPolicy: 'Delete',
+    }),
+    ipPool(CHAIN.rootPool, {
+      cidr: CHAIN.cidr,
+      ipFamily: 'IPv6',
+      visibility: 'platform',
+      classNames: [CHAIN.vpcClass],
+      allocation: { minPrefixLength: 48, maxPrefixLength: 48, strategy: 'FirstFit' },
+    }),
+  ];
+}
 
-  const created = [];
-  const samples = latenciesByDepth[prefixLen] || (latenciesByDepth[prefixLen] = []);
-  for (let i = 0; i < target; i++) {
-    const name = `scale-d${prefixLen}-${i}`;
-    const r = createIPClaimForProject(FILL_NS, name, PARENT_PREFIX, prefixLen, PROJECT);
-    if (r.status === 201) {
-      created.push(name);
-      createLatency.add(r.timings.duration, { depth: String(prefixLen) });
-      samples.push(r.timings.duration);
-    } else if (r.status === 507) {
-      console.log(`  pool exhausted at ${i}/${target}, breaking`);
-      break;
-    } else {
-      console.error(`  err depth=${prefixLen} i=${i}: ${r.status}`);
+export function endpointScope(network, location) {
+  return {
+    network: scopeRef('Network', network),
+    location: scopeRef('Location', location),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Response classification
+// ---------------------------------------------------------------------------
+
+function messageOf(res) {
+  try {
+    const b = res.json();
+    return (b && b.message) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// isQuotaDenial recognises Milo quota admission's refusal: a 403 whose message
+// is one of the quota plugin's user-facing texts. Counted apart from other
+// failures so a quota-on run that is short of grants says so by name.
+export function isQuotaDenial(res) {
+  return res.status === 403 && /quota/i.test(messageOf(res));
+}
+
+// outcome buckets a create response: ok | exhausted | quota_denied | conflict |
+// forbidden | throttled | unavailable | error.
+export function outcome(res) {
+  if (res.status === 201 || res.status === 200) return 'ok';
+  if (res.status === 507) return 'exhausted';
+  if (res.status === 403) return isQuotaDenial(res) ? 'quota_denied' : 'forbidden';
+  if (res.status === 409) return 'conflict';
+  if (res.status === 429) return 'throttled';
+  if (res.status === 503) return 'unavailable';
+  return 'error';
+}
+
+export function describe(res) {
+  const msg = messageOf(res) || String(res.body || '').slice(0, 300);
+  return `HTTP ${res.status} ${msg}`;
+}
+
+export function allocatedCIDR(res) {
+  try {
+    const b = res.json();
+    return (b && b.status && b.status.allocatedCIDR) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+export function boundPool(res) {
+  try {
+    const b = res.json();
+    return (b && b.status && b.status.poolRef && b.status.poolRef.name) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Idempotent apply and teardown helpers (setup/teardown only)
+// ---------------------------------------------------------------------------
+
+function pathFor(obj) {
+  switch (obj.kind) {
+    case 'IPClass': return ipClassPath();
+    case 'IPPool': return ipPoolPath();
+    case 'IPClaim': return ipClaimPath(obj.metadata.namespace);
+    default: throw new Error(`no path for kind ${obj.kind}`);
+  }
+}
+
+function itemPath(kind, name, ns) {
+  switch (kind) {
+    case 'IPClass': return ipClassPath(name);
+    case 'IPPool': return ipPoolPath(name);
+    case 'IPClaim': return ipClaimPath(ns, name);
+    default: throw new Error(`no path for kind ${kind}`);
+  }
+}
+
+// ensure creates obj in project, treating 409 AlreadyExists as success. It
+// throws on anything else so a setup that cannot build its fixture stops the
+// run (k6 exits 107) instead of measuring refusals.
+export function ensure(project, obj) {
+  const res = ipamPost(project, pathFor(obj), obj, `ensure_${obj.kind.toLowerCase()}`);
+  if (res.status === 201 || res.status === 200 || res.status === 409) return res;
+  throw new Error(`create ${obj.kind}/${obj.metadata.name} in ${project}: ${describe(res)}`);
+}
+
+// remove deletes a named object, treating 404 as success. Returns the response.
+export function remove(project, kind, name, ns) {
+  return ipamDelete(project, itemPath(kind, name, ns), `remove_${kind.toLowerCase()}`);
+}
+
+export function listItems(project, path) {
+  const res = ipamGet(project, path, 'list_items');
+  if (res.status !== 200) return [];
+  try {
+    return res.json().items || [];
+  } catch (e) {
+    return [];
+  }
+}
+
+// batchRun sends requests through http.batch in chunks, returning every
+// response in order.
+export function batchRun(requests, chunk) {
+  const size = chunk || 20;
+  let out = [];
+  for (let i = 0; i < requests.length; i += size) {
+    out = out.concat(http.batch(requests.slice(i, i + size)));
+  }
+  return out;
+}
+
+// pruneChainPools deletes the pools the class chain provisioned for networks
+// matching keep(networkName), children first: a subnet pool is carved from a
+// vpc pool, so the vpc pool goes only once its subnets are gone. Claims must
+// already be deleted. Returns the number of pools deleted.
+export function pruneChainPools(project, matches) {
+  const pools = listItems(project, ipPoolPath());
+  let deleted = 0;
+  for (const cls of [CHAIN.subnetClass, CHAIN.vpcClass]) {
+    const names = pools
+      .filter((p) => ((p.spec || {}).classRef || {}).name === cls)
+      .filter((p) => matches((((p.spec || {}).scope || {}).network || {}).name || ''))
+      .map((p) => p.metadata.name);
+    const reqs = names.map((n) => batchDelete(project, ipPoolPath(n), 'prune_pool'));
+    for (const r of batchRun(reqs)) {
+      if (r.status === 200 || r.status === 202) deleted++;
     }
   }
+  return deleted;
+}
 
-  // Cleanup so the next step gets fresh capacity
-  for (const name of created) {
-    deleteIPClaimForProject(FILL_NS, name, PROJECT);
+// ensureNamespace creates a claim namespace. In impersonate mode namespaces
+// are host-cluster objects and are created with the caller's own credentials,
+// not the impersonated tenant's. In milo mode they are created in the project
+// control plane, which is where quota admission writes ResourceClaims.
+export function ensureNamespace(project, name) {
+  const body = JSON.stringify({ apiVersion: 'v1', kind: 'Namespace', metadata: { name } });
+  const url = `${apiRoot(project)}/api/v1/namespaces`;
+  const res = http.post(url, body, { headers: baseHeaders(), tags: { operation: 'ns_create' } });
+  if (res.status === 201 || res.status === 409) return res;
+  throw new Error(`create namespace ${name} (${TENANCY}, project ${project}): ${describe(res)}`);
+}
+
+export function deleteNamespace(project, name) {
+  const url = `${apiRoot(project)}/api/v1/namespaces/${name}`;
+  return http.del(url, null, { headers: baseHeaders(), tags: { operation: 'ns_delete' } });
+}
+
+// ---------------------------------------------------------------------------
+// Durations
+// ---------------------------------------------------------------------------
+
+// seconds parses a k6-style duration ("90s", "2m", "1m30s", "1h") to seconds.
+export function seconds(d) {
+  const re = /(\d+(?:\.\d+)?)(ms|h|m|s)/g;
+  let total = 0;
+  let m;
+  let matched = false;
+  while ((m = re.exec(String(d))) !== null) {
+    matched = true;
+    const v = parseFloat(m[1]);
+    total += m[2] === 'h' ? v * 3600 : m[2] === 'm' ? v * 60 : m[2] === 's' ? v : v / 1000;
   }
-  return created.length;
+  if (!matched) throw new Error(`cannot parse duration "${d}"`);
+  return total;
+}
+
+export function dur(secs) {
+  return `${Math.max(0, Math.round(secs))}s`;
+}
+
+// ---- test/load/src/pool-scale.js ----
+// pool-scale.js
+//
+// Allocation latency must not grow with how full a pool is. The allocator
+// locks one pool row whatever the pool holds, but it also reads the pool's
+// existing allocations to find a free block, so a regression there shows up
+// as latency that climbs with density.
+//
+// For each prefix length in PREFIX_STEPS (20,22,24,26,28), against IPPool
+// perf-scale-pool (SCALE_CIDR, 172.16.0.0/16) in one project:
+//   1. fill the pool to FILL_PCT (0.8) with claims of that length
+//   2. time SAMPLES (50) create+delete pairs at that density, tagged depth:N
+//   3. drain the pool
+// At /28 the fill is 3276 claims, so this is the script that holds the most.
+//
+// It then compares the p95 at the deepest step with the p95 at the shallowest
+// and fails (ipam_scale_ratio_violation) if the ratio exceeds MAX_DEPTH_RATIO
+// (3). Everything runs in one VU and one iteration so the comparison sees
+// every sample; a fill or sample that cannot allocate aborts the run.
+//
+// The class and pool are created by setup() and deleted by teardown(), with
+// any claims left behind by an aborted run.
+//
+// Configuration: PREFIX_STEPS, FILL_PCT, SAMPLES, MAX_DEPTH_RATIO,
+// SCALE_CIDR, SCALE_PROJECT (first project), FILL_BATCH (20), plus the
+// transport and project variables in lib/ipam-client.js.
+//
+// With quota on, the project needs an ipclaims allowance of at least the
+// largest fill (0.8 x 2^(28 - pool length)) plus one.
+
+
+const STEPS = (__ENV.PREFIX_STEPS || '20,22,24,26,28').split(',').map((s) => parseInt(s, 10));
+const FILL_PCT = parseFloat(__ENV.FILL_PCT || '0.8');
+const SAMPLES = parseInt(__ENV.SAMPLES || '50', 10);
+const MAX_DEPTH_RATIO = parseFloat(__ENV.MAX_DEPTH_RATIO || '3');
+const CIDR = __ENV.SCALE_CIDR || '172.16.0.0/16';
+const POOL_LEN = parseInt(CIDR.split('/')[1], 10);
+const FILL_BATCH = parseInt(__ENV.FILL_BATCH || '20', 10);
+const PROJECT = __ENV.SCALE_PROJECT || projects()[0];
+const NS = namespaces()[0];
+const CLASS = 'perf-scale';
+const POOL = 'perf-scale-pool';
+const MIN_LEN = Math.min.apply(null, STEPS);
+const MAX_LEN = Math.max.apply(null, STEPS);
+
+for (const s of STEPS) {
+  if (!(s > POOL_LEN && s <= 32)) throw new Error(`PREFIX_STEPS: ${s} does not fit in ${CIDR}`);
+}
+
+const createLatency = new Trend('ipam_scale_create_latency_ms', true);
+const fillLatency = new Trend('ipam_scale_fill_latency_ms', true);
+const depthRatio = new Gauge('ipam_scale_depth_ratio');
+const ratioViolation = new Counter('ipam_scale_ratio_violation');
+
+const thresholds = {
+  ipam_scale_ratio_violation: ['count==0'],
+};
+// One entry per step so each depth's p95 appears in the end-of-test summary.
+for (const s of STEPS) thresholds[`ipam_scale_create_latency_ms{depth:${s}}`] = [`p(95)<${limit(2000, 5000)}`];
+
+export const options = {
+  insecureSkipTLSVerify: INSECURE,
+  batchPerHost: FILL_BATCH,
+  setupTimeout: __ENV.SETUP_TIMEOUT || '2m',
+  teardownTimeout: __ENV.TEARDOWN_TIMEOUT || '10m',
+  scenarios: {
+    sweep: {
+      executor: 'per-vu-iterations',
+      vus: 1,
+      iterations: 1,
+      maxDuration: __ENV.MAX_DURATION || '60m',
+    },
+  },
+  thresholds,
+};
+
+function claimBody(name, len) {
+  return ipClaim(NS, name, { className: CLASS, prefixLength: len }, Object.assign({ 'ipam.miloapis.com/scale-test': 'true' }, LOAD_LABEL));
+}
+
+function p95(values) {
+  const v = values.slice().sort((a, b) => a - b);
+  return v[Math.min(v.length - 1, Math.floor(v.length * 0.95))];
+}
+
+export function setup() {
+  ensure(PROJECT, ipClass(CLASS, {
+    ipFamily: 'IPv4',
+    uniqueWithin: [],
+    allowedPrefixLengths: { min: MIN_LEN, max: MAX_LEN },
+    defaultPrefixLength: MAX_LEN,
+    strategy: 'FirstFit',
+    reclaimPolicy: 'Delete',
+  }));
+  ensure(PROJECT, ipPool(POOL, {
+    cidr: CIDR,
+    ipFamily: 'IPv4',
+    visibility: 'consumer',
+    classNames: [CLASS],
+    allocation: { minPrefixLength: MIN_LEN, maxPrefixLength: MAX_LEN, strategy: 'FirstFit' },
+  }));
+}
+
+function step(len) {
+  const capacity = Math.pow(2, len - POOL_LEN);
+  const fill = Math.floor(capacity * FILL_PCT);
+  console.log(`depth /${len}: filling ${fill} of ${capacity}`);
+
+  const names = [];
+  for (let i = 0; i < fill; i++) names.push(`scale-${len}-${i}`);
+  const created = [];
+  for (let i = 0; i < names.length; i += FILL_BATCH) {
+    const chunk = names.slice(i, i + FILL_BATCH);
+    const res = batchRun(chunk.map((n) => batchPost(PROJECT, ipClaimPath(NS), claimBody(n, len), 'scale_fill')), FILL_BATCH);
+    res.forEach((r, j) => {
+      if (outcome(r) === 'ok') {
+        created.push(chunk[j]);
+        fillLatency.add(r.timings.duration, { depth: String(len) });
+      } else {
+        exec.test.abort(`depth /${len}: fill claim ${chunk[j]}: ${describe(r)}`);
+      }
+    });
+  }
+
+  const samples = [];
+  for (let i = 0; i < SAMPLES; i++) {
+    const name = uniqueName(`scale-${len}-s`);
+    const r = ipamPost(PROJECT, ipClaimPath(NS), claimBody(name, len), 'scale_sample', { depth: String(len) });
+    if (outcome(r) !== 'ok') exec.test.abort(`depth /${len}: sample claim: ${describe(r)}`);
+    createLatency.add(r.timings.duration, { depth: String(len) });
+    samples.push(r.timings.duration);
+    ipamDelete(PROJECT, ipClaimPath(NS, name), 'scale_sample_delete');
+  }
+
+  batchRun(created.map((n) => batchDelete(PROJECT, ipClaimPath(NS, n), 'scale_drain')), FILL_BATCH);
+  const v = p95(samples);
+  console.log(`depth /${len}: p95 ${v.toFixed(1)}ms over ${samples.length} samples`);
+  return v;
 }
 
 export default function () {
-  for (const len of PREFIX_STEPS) {
-    fillStep(len);
-  }
-
-  // After every step has finished, evaluate the cross-step p95 ratio. Walk
-  // PREFIX_STEPS rather than Object.keys so we honour the user-supplied step
-  // ordering (shallowest first → deepest last).
-  const depthsWithData = PREFIX_STEPS.filter(
-    (d) => Array.isArray(latenciesByDepth[d]) && latenciesByDepth[d].length > 0,
-  );
-  if (depthsWithData.length < 2) {
-    console.warn(`pool-scale: only ${depthsWithData.length} depth(s) produced samples; skipping ratio check`);
-    return;
-  }
-  const shallow = depthsWithData[0];
-  const deep = depthsWithData[depthsWithData.length - 1];
-  const p95Shallow = p95(latenciesByDepth[shallow]);
-  const p95Deep = p95(latenciesByDepth[deep]);
-  const ratio = p95Shallow > 0 ? p95Deep / p95Shallow : Infinity;
-
-  console.log(
-    `pool-scale ratio: depth=${shallow} p95=${p95Shallow.toFixed(1)}ms; ` +
-    `depth=${deep} p95=${p95Deep.toFixed(1)}ms; ratio=${ratio.toFixed(2)}x ` +
-    `(threshold ${MAX_DEPTH_RATIO}x)`,
-  );
-
-  if (ratio > MAX_DEPTH_RATIO) {
-    ratioViolation.add(1);
-    console.error(
-      `FAIL: depth ratio ${ratio.toFixed(2)}x > ${MAX_DEPTH_RATIO}x — ` +
-      `allocation latency is degrading with pool depth`,
-    );
-  }
+  const byDepth = {};
+  for (const len of STEPS) byDepth[len] = step(len);
+  const shallow = byDepth[MIN_LEN];
+  const deep = byDepth[MAX_LEN];
+  const ratio = deep / Math.max(shallow, 1);
+  depthRatio.add(ratio);
+  console.log(`p95 /${MAX_LEN} vs /${MIN_LEN}: ${deep.toFixed(1)}ms / ${shallow.toFixed(1)}ms = ${ratio.toFixed(2)}x (limit ${MAX_DEPTH_RATIO}x)`);
+  if (ratio > MAX_DEPTH_RATIO) ratioViolation.add(1);
 }
 
-export function handleSummary(data) {
-  const trend = data.metrics['ipam_scale_create_latency_ms'];
-  const violations = data.metrics['ipam_scale_ratio_violation'];
-  console.log('=== pool-scale summary ===');
-  console.log(JSON.stringify({ trend, violations }, null, 2));
-  return {
-    'stdout': '',
-  };
+export function teardown() {
+  const left = listItems(PROJECT, ipClaimPath(NS)).filter((c) => c.metadata.name.indexOf('scale-') === 0);
+  batchRun(left.map((c) => batchDelete(PROJECT, ipClaimPath(NS, c.metadata.name), 'scale_cleanup')), FILL_BATCH);
+  remove(PROJECT, 'IPPool', POOL);
+  remove(PROJECT, 'IPClass', CLASS);
 }

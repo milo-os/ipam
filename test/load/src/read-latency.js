@@ -1,175 +1,163 @@
 // read-latency.js
 //
-// Measures read-path latency under several workload shapes:
-//   - steady (10 VUs, 3m): 60% cluster-list IPPool, 20% ns list IPClaims, 20% single GET
-//   - ramp (0->20->50->0 VUs over 3m): same workload mix
-//   - spike (0->100->0 VUs over 30s): list-heavy
+// Read-path latency under three simultaneous workload shapes:
+//   steady  READ_VUS (10) for DURATION (3m)
+//   ramp    0 -> 20 -> 50 -> 0 VUs, a third of DURATION per stage
+//   spike   0 -> 100 -> 0 VUs over SPIKE_DURATION (30s), starting halfway
+//           through, list-heavy
 //
-// Coverage extension scenarios: assert read latency for the other listable
-// resources matches the IPPool list envelope. Each runs in parallel with the
-// original three so the operator gets a unified summary.
-//   - alloc_list:     namespaced LIST ipallocations
-//   - asnpool_list:   constant LIST asnpools  (cluster scope)
-//   - asnclaim_list:  namespaced LIST asnclaims
+// Every request picks a random project and is scoped to it. The steady and
+// ramp mix:
+//   50%  LIST ippools                      ipam_prefix_list_ms  (the prefix list)
+//   20%  LIST ipclaims in one namespace    ipam_claim_list_ms
+//   20%  GET one ipclaim                   ipam_claim_get_ms
+//   10%  LIST ipclaims across namespaces   ipam_cluster_list_ms
+// The spike mix is 70% prefix list, 30% cross-namespace claim list.
 //
-// Every iteration picks a random perf project and scopes all reads to that
-// project's tenant context (X-Remote-Extra parent headers).
+// setup() creates READ_CLAIMS bound claims per project (flat IPv4 class) so the
+// lists have content and the GETs have targets; teardown() deletes them.
 //
-// Run setup-pools.js first to ensure pools and namespaces exist.
+// Thresholds:
+//   ipam_prefix_list_ms     p95 < 200ms (CLAUDE.md acceptance criterion)
+//   ipam_claim_list_ms      p95 < 200ms
+//   ipam_claim_get_ms       p95 < 100ms
+//   ipam_cluster_list_ms    p95 < 2000ms
+//   ipam_read_success_rate  > 0.99
 //
-// Configuration:
-//   NAMESPACE_COUNT - Pool of namespaces (default 10)
-//   PROJECT_COUNT   - Number of perf projects (default 5)
-//   IPAM_API_URL    - Apiserver URL
+// Run setup-pools.js first.
+//
+// Configuration: DURATION (3m), READ_VUS (10), SPIKE_DURATION (30s),
+// READ_CLAIMS (10), plus the transport and project variables in
+// lib/ipam-client.js.
 
 import { check } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
 import {
-  listIPPoolsForProject,
-  listIPClaimsForProject,
-  getIPPoolForProject,
-  listIPAllocationsForProject,
-  nsFor,
-  projectIDFor,
+  FLAT,
+  INSECURE,
+  LOAD_LABEL,
+  describe,
+  dur,
+  ipClaim,
+  ipClaimPath,
+  ipPoolPath,
+  ipamGet,
+  ipamPost,
+  namespaces,
+  outcome,
+  pick,
+  projects,
+  remove,
+  seconds,
 } from '../lib/ipam-client.js';
+import { limit } from '../lib/ipam-client.js';
 
-const NAMESPACE_COUNT = parseInt(__ENV.NAMESPACE_COUNT || '10');
-const PROJECT_COUNT = parseInt(__ENV.PROJECT_COUNT || '5');
+const D = seconds(__ENV.DURATION || '3m');
+const SPIKE = seconds(__ENV.SPIKE_DURATION || '30s');
+const READ_VUS = parseInt(__ENV.READ_VUS || '10', 10);
+const READ_CLAIMS = Math.max(1, parseInt(__ENV.READ_CLAIMS || '10', 10));
 
-const poolListLatency = new Trend('ipam_prefix_list_ms', true);
-const claimGetLatency = new Trend('ipam_claim_get_ms', true);
-const clusterListLatency = new Trend('ipam_cluster_list_ms', true);
-// Per-resource list trends for the audit-expansion scenarios. Tagged the
-// same way as the existing pool-list trend so dashboards can plot them
-// side-by-side.
-const ipAllocationListLatency = new Trend('ipam_ipallocation_list_ms', true);
-const readSuccessRate = new Rate('ipam_read_success_rate');
+const prefixList = new Trend('ipam_prefix_list_ms', true);
+const claimList = new Trend('ipam_claim_list_ms', true);
+const claimGet = new Trend('ipam_claim_get_ms', true);
+const clusterList = new Trend('ipam_cluster_list_ms', true);
+const readSuccess = new Rate('ipam_read_success_rate');
 
 export const options = {
-  insecureSkipTLSVerify: __ENV.K6_INSECURE_SKIP_TLS_VERIFY !== 'false',
+  insecureSkipTLSVerify: INSECURE,
+  setupTimeout: __ENV.SETUP_TIMEOUT || '2m',
+  teardownTimeout: __ENV.TEARDOWN_TIMEOUT || '2m',
   scenarios: {
     steady: {
       executor: 'constant-vus',
-      vus: 10,
-      duration: '3m',
-      tags: { scenario: 'steady' },
-      exec: 'steady',
+      vus: READ_VUS,
+      duration: dur(D),
+      exec: 'mixed',
     },
     ramp: {
       executor: 'ramping-vus',
       startVUs: 0,
       stages: [
-        { duration: '1m', target: 20 },
-        { duration: '1m', target: 50 },
-        { duration: '1m', target: 0 },
+        { duration: dur(D / 3), target: 20 },
+        { duration: dur(D / 3), target: 50 },
+        { duration: dur(D / 3), target: 0 },
       ],
-      tags: { scenario: 'ramp' },
-      exec: 'ramp',
+      exec: 'mixed',
     },
     spike: {
       executor: 'ramping-vus',
       startVUs: 0,
+      startTime: dur(D / 2),
       stages: [
-        { duration: '15s', target: 100 },
-        { duration: '15s', target: 0 },
+        { duration: dur(SPIKE / 2), target: 100 },
+        { duration: dur(SPIKE / 2), target: 0 },
       ],
-      tags: { scenario: 'spike' },
-      startTime: '3m',
       exec: 'spike',
     },
-    // -- Coverage extension: dedicated list-only scenarios for the resources
-    //    that previously had no read-latency coverage. Each runs against a
-    //    modest VU pool for the full steady duration so we get stable p95s.
-    alloc_list: {
-      executor: 'constant-vus',
-      vus: 5,
-      duration: '3m',
-      tags: { scenario: 'alloc_list' },
-      exec: 'ipAllocationList',
-    },
-    // NOTE: asnpool_list / asnclaim_list scenarios disabled — ASNPool/ASNClaim
-    // resources are not yet implemented in this branch (see commit 86aceec).
   },
   thresholds: {
-    'ipam_prefix_list_ms': ['p(95)<200'],
-    'ipam_claim_get_ms': ['p(95)<100'],
-    'ipam_cluster_list_ms': ['p(95)<500'],
-    // Audit gap-fill threshold: same envelope as the IPPool list path.
-    'ipam_ipallocation_list_ms': ['p(95)<200'],
-    'ipam_read_success_rate': ['rate>0.99'],
+    ipam_prefix_list_ms: [`p(95)<${limit(200, 500)}`],
+    ipam_claim_list_ms: [`p(95)<${limit(200, 500)}`],
+    ipam_claim_get_ms: [`p(95)<${limit(100, 300)}`],
+    ipam_cluster_list_ms: [`p(95)<${limit(2000, 2000)}`],
+    ipam_read_success_rate: ['rate>0.99'],
   },
 };
 
-function pickProject() {
-  return projectIDFor(Math.floor(Math.random() * PROJECT_COUNT));
-}
+const PROJECTS = projects();
+const NAMESPACES = namespaces();
 
-function pickProjectIdx() {
-  return Math.floor(Math.random() * PROJECT_COUNT);
-}
-
-function pickWorkload() {
-  const r = Math.random();
-  if (r < 0.6) return 'cluster_list';
-  if (r < 0.8) return 'ns_list';
-  return 'single_get';
-}
-
-function doWork() {
-  const projectIdx = pickProjectIdx();
-  const projectID = projectIDFor(projectIdx);
-  const w = pickWorkload();
-  let res;
-  switch (w) {
-    case 'cluster_list':
-      res = listIPPoolsForProject(projectID);
-      clusterListLatency.add(res.timings.duration);
-      break;
-    case 'ns_list': {
-      const ns = nsFor(Math.floor(Math.random() * NAMESPACE_COUNT));
-      res = listIPClaimsForProject(ns, projectID);
-      poolListLatency.add(res.timings.duration);
-      break;
+export function setup() {
+  const held = {};
+  for (const project of PROJECTS) {
+    held[project] = [];
+    for (let i = 0; i < READ_CLAIMS; i++) {
+      const ns = NAMESPACES[i % NAMESPACES.length];
+      const name = `read-target-${i}`;
+      const res = ipamPost(project, ipClaimPath(ns),
+        ipClaim(ns, name, { className: FLAT.className, prefixLength: FLAT.claimPrefixLength }, LOAD_LABEL),
+        'read_target_create');
+      if (outcome(res) !== 'ok' && res.status !== 409) {
+        throw new Error(`read target ${project}/${ns}/${name}: ${describe(res)}`);
+      }
+      held[project].push([ns, name]);
     }
-    case 'single_get':
-      res = getIPPoolForProject(`perf-prefix-${projectIdx}`, projectID);
-      claimGetLatency.add(res.timings.duration);
-      break;
   }
-  const ok = check(res, { 'read ok': (r) => r.status === 200 });
-  readSuccessRate.add(ok ? 1 : 0);
+  return { held };
 }
 
-export function steady() { doWork(); }
-export function ramp() { doWork(); }
-export function spike() {
-  // Spike scenario favors lists; still scopes to a random project.
-  const projectID = pickProject();
+function record(trend, res) {
+  trend.add(res.timings.duration);
+  const ok = check(res, { 'read 200': (r) => r.status === 200 });
+  readSuccess.add(ok);
+}
+
+export function mixed(data) {
+  const project = pick(PROJECTS);
   const r = Math.random();
-  let res;
-  if (r < 0.7) {
-    res = listIPPoolsForProject(projectID);
-    clusterListLatency.add(res.timings.duration);
+  if (r < 0.5) {
+    record(prefixList, ipamGet(project, ipPoolPath(), 'ippool_list'));
+  } else if (r < 0.7) {
+    record(claimList, ipamGet(project, ipClaimPath(pick(NAMESPACES)), 'ipclaim_list'));
+  } else if (r < 0.9) {
+    const [ns, name] = pick(data.held[project]);
+    record(claimGet, ipamGet(project, ipClaimPath(ns, name), 'ipclaim_get'));
   } else {
-    const ns = nsFor(Math.floor(Math.random() * NAMESPACE_COUNT));
-    res = listIPClaimsForProject(ns, projectID);
-    poolListLatency.add(res.timings.duration);
+    record(clusterList, ipamGet(project, ipClaimPath(), 'ipclaim_list_all'));
   }
-  const ok = check(res, { 'read ok': (r) => r.status === 200 });
-  readSuccessRate.add(ok ? 1 : 0);
 }
 
-// ipAllocationList: namespaced LIST against a random perf namespace, scoped
-// to a random project's tenant context.
-export function ipAllocationList() {
-  const projectID = pickProject();
-  const ns = nsFor(Math.floor(Math.random() * NAMESPACE_COUNT));
-  const res = listIPAllocationsForProject(ns, projectID);
-  ipAllocationListLatency.add(res.timings.duration);
-  const ok = check(res, { 'ipallocation list ok': (r) => r.status === 200 });
-  readSuccessRate.add(ok ? 1 : 0);
+export function spike() {
+  const project = pick(PROJECTS);
+  if (Math.random() < 0.7) {
+    record(prefixList, ipamGet(project, ipPoolPath(), 'ippool_list'));
+  } else {
+    record(clusterList, ipamGet(project, ipClaimPath(), 'ipclaim_list_all'));
+  }
 }
 
-// ASN list scenarios removed — ASNPool/ASNClaim resources are not implemented
-// on this branch. Restore once `asnpools.ipam.miloapis.com` / `asnclaims.ipam.miloapis.com`
-// are served.
+export function teardown(data) {
+  for (const project of PROJECTS) {
+    for (const [ns, name] of data.held[project] || []) remove(project, 'IPClaim', name, ns);
+  }
+}

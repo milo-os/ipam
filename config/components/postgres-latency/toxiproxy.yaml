@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: toxiproxy-postgres-config
+  namespace: ipam-system
+data:
+  toxiproxy.json: |
+    [
+      {
+        "name": "postgres",
+        "listen": "0.0.0.0:5432",
+        "upstream": "postgres-postgresql.ipam-system.svc.cluster.local:5432",
+        "enabled": true
+      }
+    ]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: toxiproxy-postgres
+  namespace: ipam-system
+  labels:
+    app.kubernetes.io/name: toxiproxy-postgres
+    app.kubernetes.io/part-of: ipam.miloapis.com
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: toxiproxy-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: toxiproxy-postgres
+        app.kubernetes.io/part-of: ipam.miloapis.com
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: toxiproxy
+          image: ghcr.io/shopify/toxiproxy:2.12.0
+          args:
+            - -host=0.0.0.0
+            - -port=8474
+            - -config=/etc/toxiproxy/toxiproxy.json
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: postgres
+              containerPort: 5432
+            - name: api
+              containerPort: 8474
+          readinessProbe:
+            tcpSocket:
+              port: postgres
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 250m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/toxiproxy
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: toxiproxy-postgres-config
+---
+# Named differently from the Bitnami chart's `postgres-postgresql` Service so the
+# two can coexist and the DSN patch is the only thing that selects the proxy.
+apiVersion: v1
+kind: Service
+metadata:
+  name: toxiproxy-postgres
+  namespace: ipam-system
+spec:
+  selector:
+    app.kubernetes.io/name: toxiproxy-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

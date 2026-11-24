@@ -1,0 +1,25 @@
+apiVersion: quota.miloapis.com/v1alpha1
+kind: ClaimCreationPolicy
+metadata:
+  name: ipam-load-test-ipclaim
+  labels:
+    ipam.miloapis.com/load-test: "true"
+spec:
+  disabled: false
+  trigger:
+    resource:
+      apiVersion: ipam.miloapis.com/v1alpha1
+      kind: IPClaim
+  target:
+    resourceClaimTemplate:
+      metadata:
+        # The claim lives next to the IPClaim, in the project control plane.
+        namespace: "{{requestInfo.namespace}}"
+        labels:
+          ipam.miloapis.com/load-test: "true"
+      spec:
+        # consumerRef is filled in by the admission plugin from the request's
+        # project context, as for any other claiming resource.
+        requests:
+          - resourceType: ipam.miloapis.com/ipclaims
+            amount: 1

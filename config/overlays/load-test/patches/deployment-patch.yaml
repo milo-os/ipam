@@ -1,0 +1,33 @@
+---
+# Quota ON. The only behavioural difference from test-infra, plus the wiring
+# quota needs: a kubeconfig for milo-apiserver and the CA Milo's aggregator
+# signs its proxy-client certificate with.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ipam-apiserver
+spec:
+  # One replica keeps the benchmark attributable to a single process and halves
+  # the pgx connections hitting a single-node Postgres. The production base runs
+  # two; this is a throughput benchmark, not an availability test.
+  replicas: 1
+  template:
+    spec:
+      initContainers:
+        - name: migrate
+          imagePullPolicy: Never
+      containers:
+        - name: apiserver
+          imagePullPolicy: Never
+          env:
+            - name: ENABLE_QUOTA
+              value: "true"
+            - name: KUBECONFIG
+              value: /etc/kubernetes/milo/kubeconfig
+            - name: AUTHENTICATION_KUBECONFIG
+              value: /etc/kubernetes/milo/kubeconfig
+            - name: AUTHORIZATION_KUBECONFIG
+              value: /etc/kubernetes/milo/kubeconfig
+            # Same as production: /metrics is served without authn.
+            - name: AUTHORIZATION_ALWAYS_ALLOW_PATHS
+              value: "/healthz,/readyz,/livez,/metrics"

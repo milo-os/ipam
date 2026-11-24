@@ -26,10 +26,9 @@ Degrade reliability, observability, or SLO accuracy but do not cause immediate d
 
 ### Tests & load
 
-- **`pool-scale.js` missing the O(1) ratio assertion.** Flat `p(95) < 2000` does not catch an O(N) regression — the `handleSummary` trend log alone will not fail the run.
-- **`concurrent-claims.js` uses heuristic overlap detection** (507-free success rate as a proxy) instead of a hard CIDR-uniqueness check. ASN and IPAddress concurrent tests already do the strict check; prefix should match.
-- **No in-cluster TestRun** wired for `concurrent-claims.js` or `cross-project-claim-throughput.js` — CI skips both.
-- **No `watch-latency.js`.** The LISTEN/NOTIFY path has zero perf coverage; an event fan-out regression is undetectable from CI.
+- **`pool-scale.js` asserts a depth ratio, not a bound on one claim.** It fails when p95 at /28 is more than 3x p95 at /20, which catches an O(N) regression across depths. Its per-depth p95 limit is flat.
+- **Concurrent allocation uniqueness is not a k6 test.** The k6 version used `http.batch`, which k6 throttles per host, so it never produced the contention it claimed to. `test/e2e/class-cascade-concurrency` covers it with separate processes.
+- **No watch-latency test.** The LISTEN/NOTIFY path has no k6 coverage because k6 buffers whole responses and cannot time an event as it arrives. The server exports `ipam_watch_lag_seconds`; alert on that.
 - **Five Chainsaw suites missing `finally:` cleanup** (`asn-allocation`, `prefix-exhaustion`, `prefix-overlap`, `prefix-validation`) — cluster-scoped objects leak between runs, causing flaky reruns.
 - **No global Chainsaw `Configuration`** with retry/backoff. Per-suite timeout drift; 30s waits will flake under cold start.
 - **`prefix-allocation` weak assertions** — does not verify `child.spec.cidr == parent.status.allocatedCIDR` membership, does not observe `Releasing` phase, no capacity-decremented assertion.
@@ -100,10 +99,6 @@ What's already production-quality and should not be regressed:
 - [ ] **observability:** Replace `github.com/milo-os/ipam/...` runbook URLs with the canonical `go.miloapis.com/ipam` mapping (or set up the redirect).
 
 ### P1 — Important
-- [ ] **load:** Add an O(1) ratio assertion to `pool-scale.js` that fails the run on regression (don't rely on `handleSummary` logging).
-- [ ] **load:** Replace `concurrent-claims.js` heuristic with hard CIDR-uniqueness assertion (mirror ASN/IPAddress tests).
-- [ ] **load:** Add in-cluster TestRun YAMLs for `concurrent-claims.js` and `cross-project-claim-throughput.js`.
-- [ ] **load:** Add `watch-latency.js` covering LISTEN/NOTIFY event fan-out under load.
 - [ ] **e2e:** Add `finally:` cleanup blocks to `asn-allocation`, `prefix-exhaustion`, `prefix-overlap`, `prefix-validation`.
 - [ ] **e2e:** Add a global Chainsaw `Configuration` with retry/backoff and standardized timeouts.
 - [ ] **e2e:** Strengthen `prefix-allocation` — assert child CIDR within parent, child `spec.cidr == claim.status.allocatedCIDR`, observe `Releasing` phase, assert capacity decrement.
@@ -162,8 +157,6 @@ A second specialist sweep was performed across allocation/security/migration/wat
 
 #### k6 load — operator-facing infrastructure gaps
 
-- **G1 — Taskfile missing entries for 3 new scripts** (`concurrent`, `cross-project-throughput`, `watch-latency`). Operators can't trigger them via `task k6:run TEST=...`.
-- **G2 — `cleanup` task leaks shared/exhaust resources.** `perf-shared-prefix` IPPrefix, `perf-shared` IPPrefixClass, per-project `perf-prefix-N` pools, and ClusterRoles/Bindings for shared access are not deleted by `task cleanup`.
 
 #### Observability — dashboard-join breakage from label inconsistency
 
@@ -186,8 +179,6 @@ A second specialist sweep was performed across allocation/security/migration/wat
 #### k6 load
 
 - **G3 — `PROJECT_COUNT` not pinned in 9 of 11 cluster TestRun YAMLs.** If `setup.yaml` is patched with a different `PROJECT_COUNT`, consumer tests 404 on missing per-project pools.
-- **G6 — `watch-latency.js` `ipam_watch_empty_responses < 3` is a fragile absolute count.** A single transient blip fails the run. Make it rate-based.
-- **G8 — `pool-exhaustion.js` deny rate has no threshold.** `ipam_deny_rate` is recorded but not gated, so a partially-filled pool (deny rate < 1.0) passes silently. Add `rate>0.95`.
 - **G9 — `ipam_success_latency_ms` not split by mode in exhaustion.** Cross-project vs same-project success latency are mixed; minor but limits diagnosability.
 
 #### Forward-compat
@@ -199,8 +190,7 @@ A second specialist sweep was performed across allocation/security/migration/wat
 - [ ] **observability (P0):** Replace `IPAMPgxpoolMetricsStale` expression — add `ipam_pgxpool_sampler_last_run_seconds` gauge written by the sampler each tick, alert on `time() - ipam_pgxpool_sampler_last_run_seconds > 90`.
 - [ ] **e2e (P1):** Extend `test/e2e/multi-tenant/chainsaw-test.yaml` `finally:` to delete the 7 leaked cluster-scoped resources (2 IPPrefixClasses, 3 IPPrefixes, ClusterRole, ClusterRoleBinding).
 - [ ] **e2e (P1):** Extend `test/e2e/prefix-hierarchy/chainsaw-test.yaml` `finally:` to delete `IPPrefix/hier-env` and `IPPrefixClass/platform-shared`.
-- [ ] **k6 (P1):** Add Taskfile entries for `concurrent`, `cross-project-throughput`, and `watch-latency` scripts so operators can run `task k6:run TEST=…`.
-- [ ] **k6 (P1):** Extend the k6 `cleanup` task to delete `perf-shared-prefix`, `perf-shared` IPPrefixClass, per-project `perf-prefix-N` pools, and shared-access ClusterRoles/Bindings.
+- [x] **k6 (P1):** Taskfile entries cover the current suite: `test/load:setup`, `throughput`, `class-chain`, `exhaustion`, `reads`, `scale`, `cleanup` and `ci`. Concurrent allocation uniqueness is covered by `test/e2e/class-cascade-concurrency`, not k6.
 - [ ] **observability (P1):** Add `resource` label to `ipam_pool_utilization_ratio` metric definition and every call site.
 - [ ] **observability (P1):** Add `ip_family` label to `ipam_allocation_attempts_total` and `ipam_allocation_failures_total` and every call site.
 - [ ] **k6 (P1):** Add IPv6 coverage — duplicate at least one throughput/exhaustion script with `ipFamily: 'IPv6'`.
@@ -209,8 +199,6 @@ A second specialist sweep was performed across allocation/security/migration/wat
 - [ ] **e2e (P2):** Add `subnet_of` shell assertion to `prefix-hierarchy` leaf step.
 - [ ] **e2e (P2):** Add `check: ($error == null): true` to `prefix-hierarchy` and `prefix-selector` `finally:` scripts.
 - [ ] **k6 (P2):** Pin `PROJECT_COUNT` in the 9 cluster TestRun YAMLs that omit it.
-- [ ] **k6 (P2):** Convert `watch-latency.js` `ipam_watch_empty_responses < 3` to a rate-based threshold.
-- [ ] **k6 (P2):** Add `rate>0.95` threshold on `ipam_deny_rate` in `pool-exhaustion.js`.
 - [ ] **k6 (P2):** Split `ipam_success_latency_ms` by `mode` (same-project vs cross-project) in `pool-exhaustion.js`.
 - [ ] **e2e (P2):** Resolve ASN range overlap between `asn-allocation` and `asn-selector` (preempts future overlap-validation work).
 

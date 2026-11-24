@@ -1,0 +1,31 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Opt-in: route IPAM's Postgres traffic through Toxiproxy so a latency toxic can
+# add a few milliseconds to every database round trip. kind runs the apiserver
+# and Postgres on one node, where a round trip costs ~0.1ms; in a real
+# deployment it costs 1-5ms, which is what makes "fewer round trips per claim"
+# (milo-os/ipam#195) visible in a benchmark. Without this the load test measures
+# CPU cost of the query path and understates the win.
+#
+# This component only installs the proxy and repoints the DSN. The latency is
+# applied afterwards, at runtime, by `task load-test:postgres-latency`
+# (Toxiproxy toxics are API state, not config), so the amount is a run-time
+# parameter and an unconfigured proxy is a transparent pass-through.
+#
+# Toxiproxy rather than `tc netem`: netem needs NET_ADMIN (or a privileged
+# sidecar) on the Postgres pod, which the Bitnami chart does not expose and
+# which the security baseline forbids; Toxiproxy is an unprivileged userland
+# proxy that runs under the same nonroot/readonly/drop-all context as IPAM.
+
+resources:
+  - toxiproxy.yaml
+
+patches:
+  - target:
+      kind: Secret
+      name: postgres-credentials
+    patch: |-
+      - op: replace
+        path: /stringData/dsn
+        value: "postgres://ipam:devpassword@toxiproxy-postgres.ipam-system.svc.cluster.local:5432/ipam?sslmode=disable"

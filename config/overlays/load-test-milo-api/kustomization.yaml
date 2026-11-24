@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Objects applied THROUGH Milo's apiserver (kubeconfig pointing at milo-apiserver,
+# not at the kind host cluster) once IPAM is running:
+#
+#   - the IPAM APIService, which is what puts IPAM behind Milo's aggregator;
+#   - the quota fixtures that make IPAM's quota admission actually evaluate and
+#     grant a claim for every IPClaim create.
+#
+# The Organization and Projects are created afterwards by `hack/load-test.sh
+# seed`, not here. Milo's Organization webhook is what creates the
+# organization-<name> namespace, so an Organization applied in the same pass as
+# the webhook configurations can be admitted before the webhooks exist and is
+# then left without its namespace for good. Projects also live in the
+# organization's control plane (a different endpoint) and their count is a
+# parameter.
+#
+# Quota here mirrors what the service catalog configures for IPAM in production
+# (config/components/service-catalog: the ipam.miloapis.com/ipclaims metric,
+# a per-Project consumer, IPClaim as the claiming resource), written directly as
+# quota.miloapis.com objects because the service-catalog controller is not part
+# of this environment. The grant is far above anything the load can reach: the
+# point is to benchmark the admit path, not the deny path.
+
+resources:
+  # Milo's webhook configurations (defaulting/validation for Organization,
+  # Project, ...), served by milo-controller-manager. `task dev:deploy` in the
+  # milo repo installs them the same way. Same pin as ../load-test-milo.
+  - github.com/milo-os/milo/config/webhook?ref=v0.36.26
+  - users.yaml
+  - resource-registration.yaml
+  - grant-creation-policy.yaml
+  - claim-creation-policy.yaml
+
+components:
+  - ../../components/api-registration
+
+patches:
+  # Milo's aggregator reaches IPAM over a self-signed serving cert; same choice
+  # as the dev and test-infra overlays.
+  - path: apiservice-patch.yaml

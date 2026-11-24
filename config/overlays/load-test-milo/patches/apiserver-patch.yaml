@@ -1,0 +1,50 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: milo-apiserver
+spec:
+  template:
+    spec:
+      containers:
+        - name: milo-apiserver
+          env:
+            # Aggregation. The proxy-client certificate is what lets
+            # milo-apiserver forward authenticated identity (X-Remote-User and
+            # the iam.miloapis.com/parent-* extras, via --forward-extras) to
+            # ipam-apiserver, which trusts the CA that signed it through
+            # --requestheader-client-ca-file. Milo's test-infra overlay leaves
+            # these empty, so without them an aggregated IPAM sees every request
+            # as anonymous and no tenant context reaches quota admission.
+            - name: PROXY_CLIENT_CERT_FILE
+              value: /etc/kubernetes/pki/proxy-client/tls.crt
+            - name: PROXY_CLIENT_KEY_FILE
+              value: /etc/kubernetes/pki/proxy-client/tls.key
+            # No audit sink or trace collector exists in this cluster. Disabling
+            # them removes retry noise and a source of variance from the
+            # numbers; it does not change request handling. Only the policy and
+            # webhook config are blanked: the apiserver rejects an empty
+            # --audit-webhook-initial-backoff, so the overlay's mode and backoff
+            # stay as Milo's test-infra sets them (inert without a config file).
+            - name: AUDIT_POLICY_FILE
+              value: ""
+            - name: AUDIT_WEBHOOK_CONFIG_FILE
+              value: ""
+            - name: TRACING_CONFIG_FILE
+              value: ""
+          volumeMounts:
+            - name: proxy-client-cert
+              mountPath: /etc/kubernetes/pki/proxy-client
+              readOnly: true
+      volumes:
+        - name: proxy-client-cert
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-name: milo-ca-issuer
+              csi.cert-manager.io/issuer-kind: Issuer
+              csi.cert-manager.io/common-name: system:apiserver@platform.miloapis.com
+              csi.cert-manager.io/organizations: system:masters
+              csi.cert-manager.io/key-usages: client auth
+              csi.cert-manager.io/fs-group: "65534"
