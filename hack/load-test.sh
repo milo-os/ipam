@@ -25,6 +25,10 @@
 #   POSTGRES_LATENCY_MS  added per Postgres round trip, 0=off (0)
 #   POSTGRES_LATENCY_JITTER_MS                               (0)
 #   LOAD_TESTS           space-separated `task test/load:<name>` targets
+#   VUS, DURATION, CASES, STEADY_NETWORKS, LOCATIONS, ...
+#                        k6 knobs; `run` leaves them in the environment, and
+#                        test/load/Taskfile.yaml hands them to k6 (unset = the
+#                        script's default; see test/load/README.md)
 #   DIAG_DIR             diagnostics output dir              (test/load/diagnostics)
 set -euo pipefail
 
