@@ -153,13 +153,57 @@ type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// lockSearchFloorSQL locks a floor row and reads it. Every caller holds the
+// pool row's lock first, so every caller acquires (pool_A, floor_A),
+// (pool_B, floor_B) and two transactions can only deadlock by taking pools in
+// different orders.
+const lockSearchFloorSQL = `SELECT host(floor) FROM ipam_pool_search_floor
+	  WHERE pool_key = $1 AND scope_digest = $2
+	  FOR UPDATE`
+
+// floorRead is what lockSearchFloorSQL returned: the floor, or that there is
+// no row yet.
+type floorRead struct {
+	found bool
+	floor net.IP
+}
+
+// scanSearchFloor reads lockSearchFloorSQL's row, however it was sent.
+func scanSearchFloor(row pgx.Row, poolKey string) (floorRead, error) {
+	var text string
+	if err := row.Scan(&text); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return floorRead{}, nil
+		}
+		return floorRead{}, fmt.Errorf("lock search floor for %q: %w", poolKey, err)
+	}
+	// A value that does not parse leaves the floor nil: search from the base.
+	return floorRead{found: true, floor: net.ParseIP(text)}, nil
+}
+
 // lockSearchFloor takes the floor row's lock and returns its value. Call it
-// immediately after locking the pool row, so every caller acquires
-// (pool_A, floor_A), (pool_B, floor_B) and two transactions can only deadlock
-// by taking pools in different orders.
+// immediately after locking the pool row (see lockSearchFloorSQL).
 //
-// The row is created if absent so there is always something to lock.
+// The row is created if absent so there is always something to lock. It is
+// read first, because it is absent only on a space's first search, and seeding
+// it on every search was a round trip spent under the pool's lock for nothing.
 func lockSearchFloor(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, base net.IP) (net.IP, error) {
+	read, err := scanSearchFloor(tx.QueryRow(ctx, lockSearchFloorSQL, poolKey, scopeDigest), poolKey)
+	if err != nil {
+		return nil, err
+	}
+	return seededSearchFloor(ctx, tx, poolKey, scopeDigest, base, read)
+}
+
+// seededSearchFloor returns the floor read found, or seeds the row at base and
+// locks it when read found none.
+//
+// Seeding needs no lock of its own: every writer of a pool's floors holds the
+// pool's lock, which this transaction does, so nothing can seed it in between.
+func seededSearchFloor(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, base net.IP, read floorRead) (net.IP, error) {
+	if read.found {
+		return read.floor, nil
+	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO ipam_pool_search_floor (pool_key, scope_digest, floor)
 		 VALUES ($1, $2, $3::inet)
@@ -167,25 +211,13 @@ func lockSearchFloor(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string
 		poolKey, scopeDigest, base.String()); err != nil {
 		return nil, fmt.Errorf("seed search floor for %q: %w", poolKey, err)
 	}
-	var text string
-	err := tx.QueryRow(ctx,
-		`SELECT host(floor) FROM ipam_pool_search_floor
-		  WHERE pool_key = $1 AND scope_digest = $2
-		  FOR UPDATE`,
-		poolKey, scopeDigest).Scan(&text)
+	read, err := scanSearchFloor(tx.QueryRow(ctx, lockSearchFloorSQL, poolKey, scopeDigest), poolKey)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Only reachable if the pool row vanished under us and the FK
-			// cascaded the floor away. Searching from the base is correct.
-			return nil, nil
-		}
-		return nil, fmt.Errorf("lock search floor for %q: %w", poolKey, err)
+		return nil, err
 	}
-	ip := net.ParseIP(text)
-	if ip == nil {
-		return nil, nil
-	}
-	return ip, nil
+	// Not found only if the pool row vanished under us and the FK cascaded
+	// the floor away. Searching from the base is correct.
+	return read.floor, nil
 }
 
 // readSearchFloor returns the floor without locking it, for tests and
@@ -223,33 +255,51 @@ func readSearchFloor(ctx context.Context, q rowQuerier, poolKey, scopeDigest str
 // it meanwhile, overwriting would put the freed address below the floor where
 // no later search looks. Losing that race costs one slower scan.
 func raiseSearchFloor(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, observed, next net.IP) error {
-	if next == nil {
-		// No free address found, so nothing was learned. Raising the floor here
-		// would make an exhausted pool exhausted even after a release.
+	raise := floorRaise{poolKey: poolKey, scopeDigest: scopeDigest, observed: observed, next: next}
+	sql, args, ok := raise.statement()
+	if !ok {
 		return nil
 	}
-	if observed == nil {
+	_, err := tx.Exec(ctx, sql, args...)
+	return raise.wrap(err)
+}
+
+// floorRaise is a raiseSearchFloor not yet sent, so it can ride in a batch.
+type floorRaise struct {
+	poolKey, scopeDigest string
+	observed, next       net.IP
+}
+
+// statement is the SQL the raise sends, or ok false when there is nothing to
+// write.
+func (r floorRaise) statement() (sql string, args []any, ok bool) {
+	if r.next == nil {
+		// No free address found, so nothing was learned. Raising the floor here
+		// would make an exhausted pool exhausted even after a release.
+		return "", nil, false
+	}
+	if r.observed == nil {
 		// First search for this space. ON CONFLICT DO NOTHING rather than DO
 		// UPDATE: if a row appeared while this search ran, it was written by
 		// something with a fresher view than ours.
-		_, err := tx.Exec(ctx,
-			`INSERT INTO ipam_pool_search_floor (pool_key, scope_digest, floor)
+		return `INSERT INTO ipam_pool_search_floor (pool_key, scope_digest, floor)
 			 VALUES ($1, $2, $3::inet)
 			 ON CONFLICT (pool_key, scope_digest) DO NOTHING`,
-			poolKey, scopeDigest, next.String())
-		if err != nil {
-			return fmt.Errorf("seed search floor for %q: %w", poolKey, err)
-		}
-		return nil
+			[]any{r.poolKey, r.scopeDigest, r.next.String()}, true
 	}
-	_, err := tx.Exec(ctx,
-		`UPDATE ipam_pool_search_floor
+	return `UPDATE ipam_pool_search_floor
 		    SET floor = $3::inet, updated_at = NOW()
 		  WHERE pool_key = $1 AND scope_digest = $2
 		    AND floor = $4::inet`,
-		poolKey, scopeDigest, next.String(), observed.String())
-	if err != nil {
-		return fmt.Errorf("raise search floor for %q: %w", poolKey, err)
+		[]any{r.poolKey, r.scopeDigest, r.next.String(), r.observed.String()}, true
+}
+
+func (r floorRaise) wrap(err error) error {
+	if err == nil {
+		return nil
 	}
-	return nil
+	if r.observed == nil {
+		return fmt.Errorf("seed search floor for %q: %w", r.poolKey, err)
+	}
+	return fmt.Errorf("raise search floor for %q: %w", r.poolKey, err)
 }

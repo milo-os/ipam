@@ -18,11 +18,14 @@ import (
 // been established yet.
 func readConsumed(ctx context.Context, tx pgx.Tx, poolKey string) (*big.Int, bool, error) {
 	defer metrics.ObserveQuery("read_consumption", time.Now())
+	return scanConsumed(tx.QueryRow(ctx, readConsumedSQL, poolKey), poolKey)
+}
+
+const readConsumedSQL = `SELECT consumed::text FROM ipam_pool_consumption WHERE pool_key = $1`
+
+func scanConsumed(row pgx.Row, poolKey string) (*big.Int, bool, error) {
 	var s string
-	err := tx.QueryRow(ctx,
-		`SELECT consumed::text FROM ipam_pool_consumption WHERE pool_key = $1`,
-		poolKey,
-	).Scan(&s)
+	err := row.Scan(&s)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -38,13 +41,16 @@ func readConsumed(ctx context.Context, tx pgx.Tx, poolKey string) (*big.Int, boo
 
 func writeConsumed(ctx context.Context, tx pgx.Tx, poolKey string, consumed *big.Int) error {
 	defer metrics.ObserveQuery("write_consumption", time.Now())
-	_, err := tx.Exec(ctx,
-		`INSERT INTO ipam_pool_consumption (pool_key, consumed, updated_at)
-		 VALUES ($1, $2::numeric, NOW())
-		 ON CONFLICT (pool_key) DO UPDATE
-		    SET consumed = EXCLUDED.consumed, updated_at = NOW()`,
-		poolKey, consumed.String(),
-	)
+	_, err := tx.Exec(ctx, writeConsumedSQL, poolKey, consumed.String())
+	return wrapWriteConsumed(err, poolKey)
+}
+
+const writeConsumedSQL = `INSERT INTO ipam_pool_consumption (pool_key, consumed, updated_at)
+	 VALUES ($1, $2::numeric, NOW())
+	 ON CONFLICT (pool_key) DO UPDATE
+	    SET consumed = EXCLUDED.consumed, updated_at = NOW()`
+
+func wrapWriteConsumed(err error, poolKey string) error {
 	if err != nil {
 		return fmt.Errorf("write consumption for %q: %w", poolKey, err)
 	}
@@ -62,17 +68,23 @@ func writeConsumed(ctx context.Context, tx pgx.Tx, poolKey string, consumed *big
 // once, so the query must not filter by scope digest.
 func loadOverlapping(ctx context.Context, tx pgx.Tx, poolKey string, block net.IPNet, excludeKey string) ([]net.IPNet, error) {
 	defer metrics.ObserveQuery("load_overlapping", time.Now())
-	return queryAllocationCIDRs(ctx, tx,
-		`SELECT host(allocated_cidr) || '/' || masklen(allocated_cidr)
-		   FROM ipam_cidr_allocations
-		  WHERE pool_key = $1
-		    AND allocated_cidr && $2::cidr
-		    AND ($3 = '' OR claim_key <> $3)`,
-		poolKey, block.String(), excludeKey)
+	return queryAllocationCIDRs(ctx, tx, loadOverlappingSQL, poolKey, block.String(), excludeKey)
 }
+
+const loadOverlappingSQL = `SELECT host(allocated_cidr) || '/' || masklen(allocated_cidr)
+	   FROM ipam_cidr_allocations
+	  WHERE pool_key = $1
+	    AND allocated_cidr && $2::cidr
+	    AND ($3 = '' OR claim_key <> $3)`
 
 func queryAllocationCIDRs(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]net.IPNet, error) {
 	rows, err := tx.Query(ctx, sql, args...)
+	return scanAllocationCIDRs(rows, err)
+}
+
+// scanAllocationCIDRs reads a query of allocated CIDRs, however it was sent;
+// err is the error sending it returned.
+func scanAllocationCIDRs(rows pgx.Rows, err error) ([]net.IPNet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load allocations: %w", err)
 	}
@@ -101,13 +113,13 @@ func queryAllocationCIDRs(ctx context.Context, tx pgx.Tx, sql string, args ...an
 // A pool with no total yet gets one from the full set, once. Every later write
 // applies a delta, so the walk happens on a pool's first write rather than on
 // each of them.
+//
+// The two reads it starts with go in one round trip, in the order they ran as
+// two: the overlap read, then the total. Both run after everything that can
+// write the total in this transaction (materialiseReservations), so the total
+// read is current.
 func consumptionAfterAllocate(ctx context.Context, tx pgx.Tx, poolKey string, parents []net.IPNet, block net.IPNet) (*big.Int, error) {
-	overlapping, err := loadOverlapping(ctx, tx, poolKey, block, "")
-	if err != nil {
-		return nil, err
-	}
-
-	base, ok, err := readConsumed(ctx, tx, poolKey)
+	overlapping, base, ok, err := readBeforeAllocate(ctx, tx, poolKey, block)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +134,34 @@ func consumptionAfterAllocate(ctx context.Context, tx pgx.Tx, poolKey string, pa
 		return nil, fmt.Errorf("consumption delta for %v: %w", block, err)
 	}
 	return new(big.Int).Add(base, delta), nil
+}
+
+// readBeforeAllocate is loadOverlapping and readConsumed for block, in one
+// batch.
+func readBeforeAllocate(ctx context.Context, tx pgx.Tx, poolKey string, block net.IPNet) ([]net.IPNet, *big.Int, bool, error) {
+	defer metrics.ObserveQuery("allocate_read_batch", time.Now())
+	b := &pgx.Batch{}
+	b.Queue(loadOverlappingSQL, poolKey, block.String(), "")
+	b.Queue(readConsumedSQL, poolKey)
+	br := tx.SendBatch(ctx, b)
+	// Close first on every path, so a failed batch leaves the connection usable
+	// for the rollback. A failure repeats on every later result, so the first
+	// error read is the one reported.
+	defer func() { _ = br.Close() }()
+
+	rows, err := br.Query()
+	overlapping, err := scanAllocationCIDRs(rows, err)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	base, ok, err := scanConsumed(br.QueryRow(), poolKey)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if err := br.Close(); err != nil {
+		return nil, nil, false, fmt.Errorf("read consumption for %q: %w", poolKey, err)
+	}
+	return overlapping, base, ok, nil
 }
 
 // consumptionAfterRelease returns the pool's total once block is released.

@@ -34,7 +34,12 @@ the alert and the panel always agree.
    saturation point at different mitigations.
 2. **Cross-reference query latency.** "DB query p95 by query_name" on the
    same row. Saturation usually shows up first as a climb in
-   `select_pool_for_update` p95 — that's the FOR UPDATE wait stacking up.
+   `select_pool_for_update` or `lock_pool_batch` p95 — that's the FOR UPDATE
+   wait stacking up. A claim that searches for its block takes the pool lock
+   in `lock_pool_batch`, together with its search floor's lock; a claim naming
+   its address, and a pool carve, take it alone in `select_pool_for_update`.
+   A label ending in `_batch` times one round trip holding several
+   statements.
 3. **Check active connections from the apiserver to postgres.**
    ```sql
    SELECT application_name,
