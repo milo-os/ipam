@@ -151,6 +151,7 @@ jobs:
 
       - name: Install Chainsaw
         run: |
+          # renovate: datasource=github-releases depName=kyverno/chainsaw
           CHAINSAW_VERSION="v0.2.15"
           curl -fsSL -o /tmp/chainsaw.tgz \
             "https://github.com/kyverno/chainsaw/releases/download/${CHAINSAW_VERSION}/chainsaw_linux_amd64.tar.gz"
