@@ -140,9 +140,7 @@ var (
 	// Suggested query_name values:
 	//   "select_pool_for_update" — SELECT data FROM ipam_objects ... FOR UPDATE
 	//   "load_existing_allocations" — SELECT existing CIDRs/ASNs for the pool
-	//   "insert_allocation" — INSERT INTO ipam_cidr_allocations / ipam_asn_allocations
 	//   "insert_object" — INSERT INTO ipam_objects (claim row + child prefix)
-	//   "update_pool_status" — UPDATE ipam_objects ... when the pool status row is rewritten
 	//
 	// A name ending in _batch times one pipelined round trip holding several
 	// statements, from send to the last result read:
@@ -150,6 +148,18 @@ var (
 	//                          of the claim's class chain
 	//   "resolve_chain_batch" — the root's offering pools and every chain
 	//                           level's identity row
+	//   "lock_pool_batch" — a searching claim's pool row lock and search floor
+	//                       lock; its wait for the pool lock is in here, where
+	//                       select_pool_for_update times it for everything else
+	//   "allocate_read_batch" — the overlap read and the consumption total
+	//                           before an allocation is written
+	//   "allocate_tail_batch" — a claim's allocation row, consumption total,
+	//                           pool capacity and search floor
+	//   "claim_objects_batch" — a claim's IPAllocation and claim rows
+	//
+	// "claim_pool_identity" includes the level transaction's BEGIN when the
+	// level was resolved from the connection pool, which sends the two in one
+	// round trip.
 	PostgresQueryDuration = metrics.NewHistogramVec(
 		&metrics.HistogramOpts{
 			Namespace:      "ipam",

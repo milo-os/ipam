@@ -69,27 +69,29 @@ type rtBudget struct {
 //
 // The check for a retained allocation shares a round trip with the first read
 // of the class chain, which a reclaim (H) or a refusal (M) then has no use
-// for: one statement more, one round trip fewer.
+// for: one statement more, one round trip fewer. Likewise a claim's pool lock
+// takes its search floor's lock in the same round trip, which a claim refused
+// under the pool lock (I) then has no use for.
 var claimRoundTripBudgets = map[string]rtBudget{
-	"A": {Statements: 55, RoundTrips: 53, Transactions: 3, Acquires: 7, LockRTs: 18},
-	"B": {Statements: 25, RoundTrips: 23, Transactions: 1, Acquires: 5, LockRTs: 18},
-	"C": {Statements: 41, RoundTrips: 39, Transactions: 2, Acquires: 6, LockRTs: 18},
-	"D": {Statements: 21, RoundTrips: 19, Transactions: 1, Acquires: 3, LockRTs: 14},
-	"E": {Statements: 22, RoundTrips: 21, Transactions: 1, Acquires: 3, LockRTs: 18},
-	"F": {Statements: 20, RoundTrips: 18, Transactions: 1, Acquires: 5, LockRTs: 13},
-	"G": {Statements: 25, RoundTrips: 23, Transactions: 1, Acquires: 5, LockRTs: 18},
-	"H": {Statements: 17, RoundTrips: 16, Transactions: 1, Acquires: 3, LockRTs: 12},
-	"I": {Statements: 9, RoundTrips: 7, Transactions: 1, Acquires: 5, LockRTs: 2},
-	"J": {Statements: 26, RoundTrips: 24, Transactions: 1, Acquires: 6, LockRTs: 18},
-	"K": {Statements: 23, RoundTrips: 22, Transactions: 1, Acquires: 3, LockRTs: 19},
-	"L": {Statements: 37, RoundTrips: 36, Transactions: 1, Acquires: 3, LockRTs: 33},
+	"A": {Statements: 49, RoundTrips: 37, Transactions: 3, Acquires: 7, LockRTs: 10},
+	"B": {Statements: 21, RoundTrips: 13, Transactions: 1, Acquires: 5, LockRTs: 8},
+	"C": {Statements: 37, RoundTrips: 27, Transactions: 2, Acquires: 6, LockRTs: 11},
+	"D": {Statements: 19, RoundTrips: 12, Transactions: 1, Acquires: 3, LockRTs: 7},
+	"E": {Statements: 18, RoundTrips: 11, Transactions: 1, Acquires: 3, LockRTs: 8},
+	"F": {Statements: 17, RoundTrips: 11, Transactions: 1, Acquires: 5, LockRTs: 6},
+	"G": {Statements: 21, RoundTrips: 13, Transactions: 1, Acquires: 5, LockRTs: 8},
+	"H": {Statements: 15, RoundTrips: 14, Transactions: 1, Acquires: 3, LockRTs: 10},
+	"I": {Statements: 10, RoundTrips: 7, Transactions: 1, Acquires: 5, LockRTs: 2},
+	"J": {Statements: 22, RoundTrips: 14, Transactions: 1, Acquires: 6, LockRTs: 8},
+	"K": {Statements: 19, RoundTrips: 12, Transactions: 1, Acquires: 3, LockRTs: 9},
+	"L": {Statements: 33, RoundTrips: 26, Transactions: 1, Acquires: 3, LockRTs: 23},
 	"M": {Statements: 6, RoundTrips: 4, Transactions: 0, Acquires: 4, LockRTs: 0},
 }
 
 // coldPrepareBudget bounds the extra round trips a steady-state create (B)
 // spends preparing statements on a connection that has prepared none: one per
 // new statement sent alone, one per batch holding any new statement.
-const coldPrepareBudget = 16
+const coldPrepareBudget = 8
 
 // rtStats is what one create cost.
 type rtStats struct {

@@ -24,9 +24,9 @@ import (
 
 // The tenant IPv6 plan, as three classes: a /48 per network, a /64 per network
 // and location, a /96 per endpoint, all carved out of one operator /36.
-func newTenantREST(t *testing.T) (*AllocatingREST, *pgxpool.Pool) {
+func newTenantREST(t *testing.T, opts ...testdb.Option) (*AllocatingREST, *pgxpool.Pool) {
 	t.Helper()
-	db := testdb.Pool(t)
+	db := testdb.Pool(t, opts...)
 	ctx := context.Background()
 
 	seedObject := func(kind, name string, obj any) {

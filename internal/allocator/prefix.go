@@ -57,7 +57,11 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		req.ScopeDigest = scope.EmptyAddressSpaceDigest()
 	}
 
-	pool, err := lockAndDecodeIPPool(ctx, tx, poolKey)
+	// A claim that searches takes the pool's lock and its search floor's in one
+	// round trip, in that order. One naming its address searches nothing and
+	// needs no floor.
+	searching := req.Address == ""
+	pool, floor, err := lockPoolAndFloor(ctx, tx, poolKey, req.ScopeDigest, searching)
 	if err != nil {
 		return "", err
 	}
@@ -75,7 +79,8 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 	}
 
 	var cidr *net.IPNet
-	if req.Address != "" {
+	var raise *floorRaise
+	if !searching {
 		// A named block replaces the search, and only the search: the pool row
 		// is already locked and its reservations materialised above, so the
 		// overlap check below sees every row a search would have, and
@@ -90,7 +95,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		ctx, fbSpan = tracing.Tracer().Start(ctx, tracing.SpanFindBlock)
 		fbSpan.SetAttributes(attribute.String(tracing.AttrStrategy, string(strategy)))
 
-		cidr, err = findBlock(ctx, tx, poolKey, req.ScopeDigest, parents, prefixLen, strategy)
+		cidr, raise, err = findClaimBlock(ctx, tx, poolKey, req.ScopeDigest, parents, prefixLen, strategy, floor)
 		if err != nil {
 			if errors.Is(err, allocation.ErrPoolExhausted) {
 				fbSpan.SetAttributes(attribute.Bool(tracing.AttrExhausted, true))
@@ -112,19 +117,128 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	if err := insertPrefixAllocation(ctx, tx, req, cidr.String()); err != nil {
+	if err := writeAllocation(ctx, tx, req, pool, parents, cidr.String(), consumed, raise); err != nil {
 		return "", err
-	}
-
-	if err := writeConsumed(ctx, tx, poolKey, consumed); err != nil {
-		return "", err
-	}
-	if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, consumed); err != nil {
-		return "", fmt.Errorf("update pool capacity after allocation: %w", err)
 	}
 
 	klog.V(2).InfoS("Allocated prefix", "pool", poolKey, "cidr", cidr.String(), "claim", req.ClaimKey, "ownerProject", req.OwnerProject, "requested", req.Address != "")
 	return cidr.String(), nil
+}
+
+// lockPoolAndFloor locks the pool row and returns it decoded, as
+// lockAndDecodeIPPool does. With withFloor it also locks and reads the search
+// floor of scopeDigest in the same round trip, queued after the pool so the
+// locks are taken in the order every caller takes them (see findBlock).
+//
+// The floor is locked before the pool's strategy is known. A pool whose
+// strategy does not use it holds a lock nothing else contends for: every
+// writer of a pool's floors, and every delete that lowers one, holds the
+// pool's lock first.
+func lockPoolAndFloor(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, withFloor bool) (*ipamv1alpha1.IPPool, floorRead, error) {
+	if !withFloor || scopeDigest == spaceAll {
+		pool, err := lockAndDecodeIPPool(ctx, tx, poolKey)
+		return pool, floorRead{}, err
+	}
+	defer metrics.ObserveQuery("lock_pool_batch", time.Now())
+	b := &pgx.Batch{}
+	b.Queue(lockPoolSQL, poolKey)
+	b.Queue(lockSearchFloorSQL, poolKey, scopeDigest)
+	br := tx.SendBatch(ctx, b)
+	defer func() { _ = br.Close() }()
+
+	pool, err := scanPool(br.QueryRow())
+	if err != nil {
+		return nil, floorRead{}, err
+	}
+	floor, err := scanSearchFloor(br.QueryRow(), poolKey)
+	if err != nil {
+		return nil, floorRead{}, err
+	}
+	if err := br.Close(); err != nil {
+		return nil, floorRead{}, fmt.Errorf("lock pool row: %w", err)
+	}
+	return pool, floor, nil
+}
+
+// findClaimBlock is findBlock for a claim, whose floor lockPoolAndFloor has
+// already locked and read. The floor raise the search earns is returned
+// rather than written, for writeAllocation to send with the other writes.
+func findClaimBlock(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string, parents []net.IPNet, prefixLen int, strategy allocation.Strategy, floor floorRead) (*net.IPNet, *floorRaise, error) {
+	if (strategy != "" && strategy != allocation.FirstFit) || scopeDigest == spaceAll {
+		cidr, err := findBlock(ctx, tx, poolKey, scopeDigest, parents, prefixLen, strategy)
+		return cidr, nil, err
+	}
+	observed, err := seededSearchFloor(ctx, tx, poolKey, scopeDigest, parents[0].IP, floor)
+	if err != nil {
+		return nil, nil, err
+	}
+	cidr, next, err := boundedFirstFit(ctx, tx, poolKey, scopeDigest, parents, prefixLen, observed)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cidr, &floorRaise{poolKey: poolKey, scopeDigest: scopeDigest, observed: observed, next: next}, nil
+}
+
+// writeAllocation records an allocation's writes in one round trip: the
+// allocation row, the pool's consumption total, the pool object with its
+// capacity (and its MODIFIED changelog row), and the search floor's raise.
+//
+// They keep the order they had as separate statements, except the floor
+// raise, which used to precede the reads before the insert. Moving it last
+// changes nothing another statement sees: this transaction holds the floor
+// row's lock, and the only trigger that writes floors fires on deleting an
+// allocation, which nothing here does.
+func writeAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, pool *ipamv1alpha1.IPPool, parents []net.IPNet, cidr string, consumed *big.Int, raise *floorRaise) error {
+	defer metrics.ObserveQuery("allocate_tail_batch", time.Now())
+	setPoolCapacityStatus(pool, parents, consumed)
+	poolData, err := json.Marshal(pool)
+	if err != nil {
+		return fmt.Errorf("update pool capacity after allocation: marshal pool: %w", err)
+	}
+
+	b := &pgx.Batch{}
+	b.Queue(insertAllocationSQL, insertAllocationArgs(req, cidr)...)
+	b.Queue(writeConsumedSQL, req.PoolKey, consumed.String())
+	b.Queue(updateObjectSQL, updateObjectArgs(req.PoolKey, poolData)...)
+	var raiseSQL string
+	var raiseArgs []any
+	raising := false
+	if raise != nil {
+		raiseSQL, raiseArgs, raising = raise.statement()
+		if raising {
+			b.Queue(raiseSQL, raiseArgs...)
+		}
+	}
+	br := tx.SendBatch(ctx, b)
+	// Close on every path before the caller rolls back, which is the only
+	// statement a failed batch leaves valid; its repeated error is discarded.
+	defer func() { _ = br.Close() }()
+	return readAllocationWrites(br, req, cidr, raise, raising)
+}
+
+// readAllocationWrites reads writeAllocation's results in order and stops at
+// the first error. A failed batch repeats its first error on every later
+// result, with the same SQLSTATE and constraint, so only the first is
+// classified, by its position, the way the statement sent alone was.
+func readAllocationWrites(br pgx.BatchResults, req PrefixRequest, cidr string, raise *floorRaise, raising bool) error {
+	if _, err := br.Exec(); err != nil {
+		return insertAllocationError(req, cidr, err)
+	}
+	if _, err := br.Exec(); err != nil {
+		return wrapWriteConsumed(err, req.PoolKey)
+	}
+	if _, err := scanUpdateObject(br.QueryRow(), req.PoolKey); err != nil {
+		return fmt.Errorf("update pool capacity after allocation: write pool: %w", err)
+	}
+	if raising {
+		if _, err := br.Exec(); err != nil {
+			return raise.wrap(err)
+		}
+	}
+	if err := br.Close(); err != nil {
+		return fmt.Errorf("record allocation in %q: %w", req.PoolKey, err)
+	}
+	return nil
 }
 
 // InsertObject implements PrefixAllocator.InsertObject.
@@ -136,31 +250,55 @@ func (a *PostgresPrefixAllocator) InsertObject(ctx context.Context, tx pgx.Tx, k
 // ASNAllocator implementations. The RETURNING clause hands back the rv that
 // the sequence default assigned, so the caller can stamp it on the in-memory
 // object before responding to the API client. The changelog row is inserted
-// in the same tx so the watcher sees the new object on the next poll.
+// by the same statement so the watcher sees the new object on the next poll.
 func insertObject(ctx context.Context, tx pgx.Tx, key, kind, namespace, name string, data []byte) (int64, error) {
 	defer metrics.ObserveQuery("insert_object", time.Now())
-	labels := labelsFromData(data)
+	return scanInsertObject(tx.QueryRow(ctx, insertObjectSQL, insertObjectArgs(key, kind, namespace, name, data)...), key)
+}
+
+// insertObjectSQL writes an object row and its ADDED changelog row in one
+// statement, one round trip. The changelog row is still a row of its own: its
+// AFTER INSERT trigger fires, commit_xid is stamped by its default, and its id
+// orders it after every changelog row the transaction wrote before.
+//
+// A key already taken fails the whole statement on ipam_objects_pkey, as the
+// object insert alone did.
+const insertObjectSQL = `WITH o AS (
+	     INSERT INTO ipam_objects (key, kind, namespace, name, data, labels)
+	     VALUES ($1, $2, $3, $4, $5, $6)
+	     RETURNING resource_version
+	 )
+	 INSERT INTO ipam_changelog (key, resource_version, event_type, data)
+	 SELECT $1, resource_version, 'ADDED', $5 FROM o
+	 RETURNING resource_version`
+
+func insertObjectArgs(key, kind, namespace, name string, data []byte) []any {
 	if k := kindFromData(data); k != "" {
 		kind = k
 	}
+	return []any{key, kind, namespace, name, data, labelsFromData(data)}
+}
+
+func scanInsertObject(row pgx.Row, key string) (int64, error) {
 	var rv int64
-	err := tx.QueryRow(ctx,
-		`INSERT INTO ipam_objects (key, kind, namespace, name, data, labels)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING resource_version`,
-		key, kind, namespace, name, data, labels,
-	).Scan(&rv)
-	if err != nil {
+	if err := row.Scan(&rv); err != nil {
 		return 0, fmt.Errorf("insert object %q: %w", key, err)
 	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO ipam_changelog (key, resource_version, event_type, data)
-		 VALUES ($1, $2, 'ADDED', $3)`,
-		key, rv, data,
-	); err != nil {
-		return 0, fmt.Errorf("insert changelog for %q: %w", key, err)
-	}
 	return rv, nil
+}
+
+// QueueInsertObject queues insertObject's statement on b, for a caller that
+// writes several objects in one round trip. ReadInsertObject reads its result.
+func QueueInsertObject(b *pgx.Batch, key, kind, namespace, name string, data []byte) {
+	b.Queue(insertObjectSQL, insertObjectArgs(key, kind, namespace, name, data)...)
+}
+
+// ReadInsertObject reads the next result of br as the insert QueueInsertObject
+// queued for key, returning the object's resource version. A failed batch
+// repeats its first error on every later result, so a caller must stop at the
+// first error it reads and attribute it to that result alone.
+func ReadInsertObject(br pgx.BatchResults, key string) (int64, error) {
+	return scanInsertObject(br.QueryRow(), key)
 }
 
 // kindFromData reads the kind out of a JSON-encoded API object. The document is
@@ -672,30 +810,36 @@ func (a *PostgresPrefixAllocator) UpdateObject(ctx context.Context, tx pgx.Tx, k
 // this branch indicates a concurrent delete the caller must surface.
 func updateObject(ctx context.Context, tx pgx.Tx, key string, data []byte) (int64, error) {
 	defer metrics.ObserveQuery("update_object", time.Now())
-	labels := labelsFromData(data)
+	return scanUpdateObject(tx.QueryRow(ctx, updateObjectSQL, updateObjectArgs(key, data)...), key)
+}
+
+// updateObjectSQL rewrites an object row and writes its MODIFIED changelog row
+// in one statement (see insertObjectSQL). A missing key updates nothing, so
+// nothing is logged and no row comes back.
+const updateObjectSQL = `WITH o AS (
+	     UPDATE ipam_objects
+	        SET resource_version = nextval('ipam_resource_version_seq'),
+	            data = $1,
+	            labels = $2,
+	            updated_at = NOW()
+	      WHERE key = $3
+	      RETURNING resource_version
+	 )
+	 INSERT INTO ipam_changelog (key, resource_version, event_type, data)
+	 SELECT $3, resource_version, 'MODIFIED', $1 FROM o
+	 RETURNING resource_version`
+
+func updateObjectArgs(key string, data []byte) []any {
+	return []any{data, labelsFromData(data), key}
+}
+
+func scanUpdateObject(row pgx.Row, key string) (int64, error) {
 	var rv int64
-	err := tx.QueryRow(ctx,
-		`UPDATE ipam_objects
-		    SET resource_version = nextval('ipam_resource_version_seq'),
-		        data = $1,
-		        labels = $2,
-		        updated_at = NOW()
-		  WHERE key = $3
-		  RETURNING resource_version`,
-		data, labels, key,
-	).Scan(&rv)
-	if err != nil {
+	if err := row.Scan(&rv); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, fmt.Errorf("update object %q: not found", key)
 		}
 		return 0, fmt.Errorf("update object %q: %w", key, err)
-	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO ipam_changelog (key, resource_version, event_type, data)
-		 VALUES ($1, $2, 'MODIFIED', $3)`,
-		key, rv, data,
-	); err != nil {
-		return 0, fmt.Errorf("insert changelog for %q: %w", key, err)
 	}
 	return rv, nil
 }
@@ -739,11 +883,15 @@ func deleteObject(ctx context.Context, tx pgx.Tx, key string) (int64, error) {
 // the fallback used by root pools whose CIDR is operator-supplied.
 func lockAndDecodeIPPool(ctx context.Context, tx pgx.Tx, poolKey string) (*ipamv1alpha1.IPPool, error) {
 	defer metrics.ObserveQuery("select_pool_for_update", time.Now())
+	return scanPool(tx.QueryRow(ctx, lockPoolSQL, poolKey))
+}
+
+const lockPoolSQL = `SELECT data FROM ipam_objects WHERE key = $1 FOR UPDATE`
+
+// scanPool decodes the row lockPoolSQL returns, however it was sent.
+func scanPool(row pgx.Row) (*ipamv1alpha1.IPPool, error) {
 	var data []byte
-	err := tx.QueryRow(ctx,
-		`SELECT data FROM ipam_objects WHERE key = $1 FOR UPDATE`,
-		poolKey,
-	).Scan(&data)
+	err := row.Scan(&data)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrPoolNotFound
@@ -800,7 +948,7 @@ func loadExistingAllocations(ctx context.Context, tx pgx.Tx, poolKey string) ([]
 		poolKey)
 }
 
-// insertPrefixAllocation records a new allocation row.
+// insertAllocationSQL records a new allocation row.
 //
 // class_name and reclaim_policy are written from the request, not left to the
 // column defaults: a retained row is read after its claim is gone, and what it
@@ -808,8 +956,13 @@ func loadExistingAllocations(ctx context.Context, tx pgx.Tx, poolKey string) ([]
 //
 // scope_digest is the digest findBlock searched under, so the row lands in the
 // address space the search proved free.
-func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, cidr string) error {
-	defer metrics.ObserveQuery("insert_allocation", time.Now())
+const insertAllocationSQL = `INSERT INTO ipam_cidr_allocations
+	    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family,
+	     purpose, class_name, scope_digest, reclaim_policy, owner_project,
+	     class_project, address_scope)
+	 VALUES ($1, $2, $3, $4, $5, 'Claim', $6, $7, $8, $9, $10, $11)`
+
+func insertAllocationArgs(req PrefixRequest, cidr string) []any {
 	allocationKey := req.AllocationKey
 	if allocationKey == "" {
 		allocationKey = req.ClaimKey
@@ -826,26 +979,22 @@ func insertPrefixAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, c
 		s := string(req.AddressScope)
 		addressScope = &s
 	}
-	_, err := tx.Exec(ctx,
-		`INSERT INTO ipam_cidr_allocations
-		    (pool_key, allocated_cidr, claim_key, allocation_key, ip_family,
-		     purpose, class_name, scope_digest, reclaim_policy, owner_project,
-		     class_project, address_scope)
-		 VALUES ($1, $2, $3, $4, $5, 'Claim', $6, $7, $8, $9, $10, $11)`,
+	return []any{
 		req.PoolKey, cidr, req.ClaimKey, allocationKey, req.IPFamily,
 		req.ClassName, req.ScopeDigest, string(policy), req.OwnerProject,
 		classProject, addressScope,
-	)
-	if err != nil {
-		// A named block was checked free under the pool's lock, so this
-		// means a writer the lock does not exclude got there first. It is
-		// the same refusal the check would have given, not a server fault.
-		if req.Address != "" && isOverlapViolation(err) {
-			return &AddressInUseError{Address: cidr}
-		}
-		return fmt.Errorf("insert allocation: %w", err)
 	}
-	return nil
+}
+
+// insertAllocationError classifies a failed insertAllocationSQL.
+func insertAllocationError(req PrefixRequest, cidr string, err error) error {
+	// A named block was checked free under the pool's lock, so this means a
+	// writer the lock does not exclude got there first. It is the same refusal
+	// the check would have given, not a server fault.
+	if req.Address != "" && isOverlapViolation(err) {
+		return &AddressInUseError{Address: cidr}
+	}
+	return fmt.Errorf("insert allocation: %w", err)
 }
 
 // overlapConstraint is the exclusion constraint that keeps two allocations of

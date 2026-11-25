@@ -302,18 +302,16 @@ func provisionLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sour
 	outcome := levelError
 	defer func() { metrics.RecordCascadeLevel(ctx, level.Class.Name, outcome) }()
 
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("begin level transaction: %w", err)
-	}
+	tx, poolKey, won, err := beginAndClaimIdentity(ctx, db, level)
 	committed := false
 	defer func() {
-		if !committed {
+		// Every path that does not commit rolls back, a failed BEGIN and a
+		// cancelled request included: a transaction begun from a pool holds
+		// its connection until it ends.
+		if !committed && tx != nil {
 			_ = tx.Rollback(ctx)
 		}
 	}()
-
-	poolKey, won, err := claimPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest, level.PoolKey)
 	if err != nil {
 		return "", false, err
 	}
@@ -378,17 +376,63 @@ func lookupPoolIdentity(ctx context.Context, tx Querier, className, scopeDigest 
 // transaction stays usable without a savepoint.
 func claimPoolIdentity(ctx context.Context, tx pgx.Tx, className, scopeDigest, proposedKey string) (string, bool, error) {
 	defer metrics.ObserveQuery("claim_pool_identity", time.Now())
+	var claimed string
+	err := tx.QueryRow(ctx, claimPoolIdentitySQL, className, scopeDigest, proposedKey).Scan(&claimed)
+	return finishClaimPoolIdentity(ctx, tx, claimed, err, className, scopeDigest)
+}
 
-	var poolKey string
-	err := tx.QueryRow(ctx,
-		`INSERT INTO ipam_pool_identity (class_name, scope_digest, pool_key)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (class_name, scope_digest) DO NOTHING
-		 RETURNING pool_key`,
-		className, scopeDigest, proposedKey,
-	).Scan(&poolKey)
+const claimPoolIdentitySQL = `INSERT INTO ipam_pool_identity (class_name, scope_digest, pool_key)
+	 VALUES ($1, $2, $3)
+	 ON CONFLICT (class_name, scope_digest) DO NOTHING
+	 RETURNING pool_key`
+
+// beginAndClaimIdentity opens a level's transaction and claims its identity
+// row (claimPoolIdentity). Given a pool, it sends the BEGIN and the claim in
+// one round trip. Given a transaction (a dry run), it opens a savepoint
+// first, as a BEGIN cannot be queued inside a transaction.
+//
+// tx is returned whenever a transaction may have been opened, error or not,
+// and the caller must roll it back unless it commits.
+func beginAndClaimIdentity(ctx context.Context, db TxBeginner, level CascadeLevel) (tx pgx.Tx, poolKey string, won bool, err error) {
+	if _, inTx := db.(pgx.Tx); inTx {
+		tx, err = db.Begin(ctx)
+		if err != nil {
+			return nil, "", false, fmt.Errorf("begin level transaction: %w", err)
+		}
+		poolKey, won, err = claimPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest, level.PoolKey)
+		return tx, poolKey, won, err
+	}
+
+	defer metrics.ObserveQuery("claim_pool_identity", time.Now())
+	b := &pgx.Batch{}
+	b.BeginTx(pgx.TxOptions{})
+	b.Queue(claimPoolIdentitySQL, level.Class.Name, level.ScopeDigest, level.PoolKey)
+	br := db.SendBatch(ctx, b)
+	// Tx is set even when sending failed; closing br does not end it.
+	tx = br.Tx()
+	// The BEGIN's result is read first, and the batch's first failure repeats
+	// on every later result, so a failure here may be the claim's: one
+	// cancelled while it waits on another provisioner reads as the BEGIN's.
+	if _, err := br.Exec(); err != nil {
+		_ = br.Close()
+		return tx, "", false, fmt.Errorf("begin level transaction and claim pool identity for %q: %w", level.Class.Name, err)
+	}
+	var claimed string
+	scanErr := br.QueryRow().Scan(&claimed)
+	if err := br.Close(); err != nil && scanErr == nil {
+		scanErr = err
+	}
+	// The claim's result has been read and the batch closed, so the
+	// transaction is free for the loser's lookup.
+	poolKey, won, err = finishClaimPoolIdentity(ctx, tx, claimed, scanErr, level.Class.Name, level.ScopeDigest)
+	return tx, poolKey, won, err
+}
+
+// finishClaimPoolIdentity is claimPoolIdentity once the claim's row has been
+// scanned into claimed, with err the scan's error.
+func finishClaimPoolIdentity(ctx context.Context, tx pgx.Tx, claimed string, err error, className, scopeDigest string) (string, bool, error) {
 	if err == nil {
-		return poolKey, true, nil
+		return claimed, true, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return "", false, fmt.Errorf("claim pool identity for %q: %w", className, err)

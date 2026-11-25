@@ -623,13 +623,6 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		_ = tx.Rollback(ctx)
 		return nil, fail(fmt.Errorf("encode IPAllocation: %w", err), reasonInternal)
 	}
-	if _, err := r.allocator.InsertObject(ctx, tx, allocationKey, "IPAllocation", claim.Namespace, allocationName, allocData); err != nil {
-		_ = tx.Rollback(ctx)
-		if isIdentityCollision(err) {
-			return nil, fail(retainedAllocationConflict(claim.Name, allocationName), reasonConflict)
-		}
-		return nil, fail(fmt.Errorf("persist IPAllocation: %w", err), reasonTxError)
-	}
 
 	// Claim status was populated above (before the dry-run branch); the
 	// persisted record carries the allocated CIDR + reference back to the
@@ -640,15 +633,20 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		_ = tx.Rollback(ctx)
 		return nil, fail(fmt.Errorf("encode claim: %w", err), reasonInternal)
 	}
-	rv, err := r.writeClaimRow(ctx, tx, claimKey, claim, claimData)
+	rv, err := r.writeObjects(ctx, tx, allocationKey, allocationName, allocData, claimKey, claim, claimData)
 	if err != nil {
 		_ = tx.Rollback(ctx)
-		// The claim row is the last write, so a collision here means the name
-		// is taken by a claim holding no live allocation row of its own.
-		if isIdentityCollision(err) {
-			return nil, fail(duplicateClaimConflict(claim.Name), reasonConflict)
+		var refused *objectWriteError
+		if errors.As(err, &refused) && isIdentityCollision(err) {
+			if refused.claim {
+				// The claim row is the last write, so a collision here means
+				// the name is taken by a claim holding no live allocation row
+				// of its own.
+				return nil, fail(duplicateClaimConflict(claim.Name), reasonConflict)
+			}
+			return nil, fail(retainedAllocationConflict(claim.Name, allocationName), reasonConflict)
 		}
-		return nil, fail(fmt.Errorf("persist claim: %w", err), reasonTxError)
+		return nil, fail(err, reasonTxError)
 	}
 	versioner := storage.APIObjectVersioner{}
 	if err := versioner.UpdateObject(claim, uint64(rv)); err != nil {
@@ -662,6 +660,66 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 
 	result = "success"
 	return claim, nil
+}
+
+// objectWriteError is a failed write of the IPAllocation (claim false) or the
+// claim row (claim true), so the caller can tell which object a collision is
+// on.
+type objectWriteError struct {
+	claim bool
+	err   error
+}
+
+func (e *objectWriteError) Error() string {
+	if e.claim {
+		return "persist claim: " + e.err.Error()
+	}
+	return "persist IPAllocation: " + e.err.Error()
+}
+
+func (e *objectWriteError) Unwrap() error { return e.err }
+
+// writeObjects writes the IPAllocation and then the claim row in the
+// allocation's transaction, returning the claim's resource version.
+//
+// A create sends both in one round trip, under the pool's lock. A failed batch
+// repeats its first error on every later result, so the results are read in
+// order and the first error is attributed to its own object alone: a
+// collision on the IPAllocation is never reported as one on the claim.
+//
+// A claim bound in place rewrites its stored row instead (writeClaimRow),
+// which has to read the row first, so it keeps its two writes apart.
+func (r *AllocatingREST) writeObjects(ctx context.Context, tx pgx.Tx, allocationKey, allocationName string, allocData []byte, claimKey string, claim *ipam.IPClaim, claimData []byte) (int64, error) {
+	if _, healing := healingFrom(ctx); healing {
+		if _, err := r.allocator.InsertObject(ctx, tx, allocationKey, "IPAllocation", claim.Namespace, allocationName, allocData); err != nil {
+			return 0, &objectWriteError{err: err}
+		}
+		rv, err := r.writeClaimRow(ctx, tx, claimKey, claim, claimData)
+		if err != nil {
+			return 0, &objectWriteError{claim: true, err: err}
+		}
+		return rv, nil
+	}
+
+	defer metrics.ObserveQuery("claim_objects_batch", time.Now())
+	b := &pgx.Batch{}
+	allocator.QueueInsertObject(b, allocationKey, "IPAllocation", claim.Namespace, allocationName, allocData)
+	allocator.QueueInsertObject(b, claimKey, "IPClaim", claim.Namespace, claim.Name, claimData)
+	br := tx.SendBatch(ctx, b)
+	// Closed before the caller's rollback on every path; a failed batch's
+	// repeated error is discarded.
+	defer func() { _ = br.Close() }()
+	if _, err := allocator.ReadInsertObject(br, allocationKey); err != nil {
+		return 0, &objectWriteError{err: err}
+	}
+	rv, err := allocator.ReadInsertObject(br, claimKey)
+	if err != nil {
+		return 0, &objectWriteError{claim: true, err: err}
+	}
+	if err := br.Close(); err != nil {
+		return 0, &objectWriteError{claim: true, err: err}
+	}
+	return rv, nil
 }
 
 // checkNamespaceLiveness refuses a claim whose namespace cannot collect it. Every
