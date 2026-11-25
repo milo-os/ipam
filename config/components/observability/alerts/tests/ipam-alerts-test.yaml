@@ -31,7 +31,7 @@ tests:
       - eval_time: 50m
         alertname: IPAMRetentionReleasesStalled
         exp_alerts:
-          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, slo: retention}
+          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, team: connect, slo: retention}
             exp_annotations:
               summary: "IPAM IPv4 retained allocations are not being released (1h 0m 0s past their deadline)"
               description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"
@@ -58,7 +58,7 @@ tests:
       - eval_time: 120m
         alertname: IPAMRetentionReleasesStalled
         exp_alerts:
-          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, slo: retention}
+          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, team: connect, slo: retention}
             exp_annotations:
               summary: "IPAM IPv4 retained allocations are not being released (2h 10m 0s past their deadline)"
               description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"
@@ -122,7 +122,7 @@ tests:
       - eval_time: 125m
         alertname: IPAMRetentionReleasesStalled
         exp_alerts:
-          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, slo: retention}
+          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, team: connect, slo: retention}
             exp_annotations:
               summary: "IPAM IPv4 retained allocations are not being released (3d 2h 5m 0s past their deadline)"
               description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"
@@ -241,7 +241,7 @@ tests:
       - eval_time: 50m
         alertname: IPAMRetentionReleasesStalled
         exp_alerts:
-          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, slo: retention}
+          - exp_labels: {ip_family: IPv4, severity: warning, service: ipam, team: connect, slo: retention}
             exp_annotations:
               summary: "IPAM IPv4 retained allocations are not being released (1h 0m 0s past their deadline)"
               description: "The retention sweeper is in enforce mode and its passes complete, but retained\nIPv4 allocations have been more than five sweep intervals past\ntheir lease deadline for at least 45 minutes, and their number has not fallen.\nThose addresses stay held instead of returning to their pools.\n"

@@ -622,6 +622,7 @@ spec:
           labels:
             severity: warning
             service: ipam
+            team: connect
             slo: retention
           annotations:
             summary: "IPAM {{ $labels.ip_family }} retained allocations are not being released ({{ $value | humanizeDuration }} past their deadline)"
