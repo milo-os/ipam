@@ -548,8 +548,9 @@ export function dur(secs) {
 //
 // It then compares the p95 at the deepest step with the p95 at the shallowest
 // and fails (ipam_scale_ratio_violation) if the ratio exceeds MAX_DEPTH_RATIO
-// (3). Everything runs in one VU and one iteration so the comparison sees
-// every sample; a fill or sample that cannot allocate aborts the run.
+// (3, or 15 with quota on). Everything runs in one VU and one iteration so
+// the comparison sees every sample; a fill or sample that cannot allocate
+// aborts the run.
 //
 // The class and pool are created by setup() and deleted by teardown(), with
 // any claims left behind by an aborted run.
@@ -565,7 +566,9 @@ export function dur(secs) {
 const STEPS = (__ENV.PREFIX_STEPS || '20,22,24,26,28').split(',').map((s) => parseInt(s, 10));
 const FILL_PCT = parseFloat(__ENV.FILL_PCT || '0.8');
 const SAMPLES = parseInt(__ENV.SAMPLES || '50', 10);
-const MAX_DEPTH_RATIO = parseFloat(__ENV.MAX_DEPTH_RATIO || '3');
+// Quota-on, each create also waits for Milo's ResourceClaim grant, which varies
+// from run to run and swings the ratio far more than IPAM's own work does.
+const MAX_DEPTH_RATIO = parseFloat(__ENV.MAX_DEPTH_RATIO || String(limit(3, 15)));
 const CIDR = __ENV.SCALE_CIDR || '172.16.0.0/16';
 const POOL_LEN = parseInt(CIDR.split('/')[1], 10);
 const FILL_BATCH = parseInt(__ENV.FILL_BATCH || '20', 10);
