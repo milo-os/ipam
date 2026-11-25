@@ -55,7 +55,13 @@ const (
 // the dry-run's transaction.
 type TxBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
+	BatchQuerier
+}
+
+// BatchQuerier is a Querier that can also pipeline: a pool or a transaction.
+type BatchQuerier interface {
 	Querier
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
 // CascadeLevel is one pool the cascade must find or create.
@@ -211,58 +217,8 @@ func ResolvePool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimS
 // its address. A pool placed before adoption, by first-free, is never moved,
 // so an address outside it stays refused.
 func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
-	// Resolution runs outside the allocation transaction, so its cost lands in
-	// end-to-end claim latency without appearing in any query timing.
-	start := time.Now()
-	result, provisioned := "error", false
-	defer func() { metrics.ObserveCascadeResolution(ctx, result, provisioned, start) }()
-
-	// The plan reads classes and nothing else, so it runs on db with no
-	// transaction: one would hold nothing a statement on its own does not, and
-	// would cost a BEGIN and a ROLLBACK.
-	levels, err := PlanCascade(ctx, db, leaf, claimScope)
-	if err != nil {
-		return "", err
-	}
-
-	// A leaf with no ancestry draws straight from whichever operator-authored
-	// pool offers it. There is nothing to cascade.
-	if len(levels) == 0 {
-		poolKey, err := DiscoverPoolFor(ctx, db, leaf, claimScope, want)
-		if err == nil {
-			result = "success"
-		}
-		return poolKey, err
-	}
-
-	// A claim naming its block never provisions. A level placed by first-free
-	// to serve it would land without regard to the address, is never moved,
-	// and would then make the chain refuse the ScopeRange claim that could
-	// have placed it around the address. So the chain must already exist.
-	if want != nil {
-		poolKey, err := existingChainFor(ctx, db, leaf, claimScope, levels, *want)
-		if err == nil {
-			result = "success"
-		}
-		return poolKey, err
-	}
-
-	// The root-most level carves from an operator-authored pool offering its
-	// class; every level below carves from the level above.
-	source, err := DiscoverPoolFor(ctx, db, levels[0].Class, claimScope, nil)
-	if err != nil {
-		return "", err
-	}
-	for i := range levels {
-		poolKey, created, err := ensureLevel(ctx, db, levels[i], source)
-		if err != nil {
-			return "", fmt.Errorf("provision pool for class %q: %w", levels[i].Class.Name, err)
-		}
-		provisioned = provisioned || created
-		source = poolKey
-	}
-	result = "success"
-	return source, nil
+	chain := newChainLookup(leaf, claimScope)
+	return chain.Resolve(ctx, db, want)
 }
 
 // ResolveExistingPool resolves a claim's pool without provisioning anything,
@@ -274,34 +230,9 @@ func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, cla
 //
 // Every read is lock-free and decides nothing a later lock does not decide
 // again, so they run on db without a transaction.
-func ResolveExistingPool(ctx context.Context, db Querier, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, []CascadeLevel, error) {
-	levels, err := PlanCascade(ctx, db, leaf, claimScope)
-	if err != nil {
-		return "", nil, err
-	}
-	if len(levels) == 0 {
-		poolKey, err := DiscoverPool(ctx, db, leaf, claimScope)
-		return poolKey, nil, err
-	}
-
-	// The root must be backed whether or not anything below it exists, so a
-	// class backed by nothing fails here rather than looking satisfiable.
-	if _, err := DiscoverPool(ctx, db, levels[0].Class, claimScope); err != nil {
-		return "", nil, err
-	}
-
-	poolKey := ""
-	for i := range levels {
-		existing, err := lookupPoolIdentity(ctx, db, levels[i].Class.Name, levels[i].ScopeDigest)
-		if err != nil {
-			return "", nil, err
-		}
-		if existing == "" {
-			return "", levels[i:], nil
-		}
-		poolKey = existing
-	}
-	return poolKey, nil, nil
+func ResolveExistingPool(ctx context.Context, db BatchQuerier, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, []CascadeLevel, error) {
+	chain := newChainLookup(leaf, claimScope)
+	return chain.existing(ctx, db)
 }
 
 // ErrRangeUnplaced is returned for a claim naming its block under a class
@@ -310,18 +241,10 @@ func ResolveExistingPool(ctx context.Context, db Querier, leaf *ResolvedClass, c
 // holding the address, by a ScopeRange claim naming that range.
 var ErrRangeUnplaced = errors.New("ipam: the range holding this address has not been placed")
 
-// existingChainFor returns the leaf pool a claim naming want draws from,
-// provisioning nothing: every level of the chain must exist, or the claim is
-// refused with ErrRangeUnplaced naming the ScopeRange claim that would place
-// the missing range around want.
-func existingChainFor(ctx context.Context, db Querier, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, levels []CascadeLevel, want net.IPNet) (string, error) {
-	poolKey, pending, err := ResolveExistingPool(ctx, db, leaf, claimScope)
-	if err != nil {
-		return "", err
-	}
-	if len(pending) == 0 {
-		return poolKey, nil
-	}
+// unplacedChain is the refusal for a claim naming want under a chain with
+// levels pending: it names the ScopeRange claim that would place the missing
+// range around want. levels is the whole chain, root first.
+func unplacedChain(levels, pending []CascadeLevel, want net.IPNet) error {
 	// A missing shared level cannot be placed by an addressed ScopeRange claim
 	// (ErrSharedPoolUnplaced), so pointing at one would send the caller to a
 	// second refusal. Nor is a claim without an address the way out: it would
@@ -329,7 +252,7 @@ func existingChainFor(ctx context.Context, db Querier, leaf *ResolvedClass, clai
 	// and those never move.
 	for _, level := range pending {
 		if level.Tenancy.Consumer == "" {
-			return "", fmt.Errorf("%w: %s", ErrRangeUnplaced, sharedLevelMissing(level.Class.Name))
+			return fmt.Errorf("%w: %s", ErrRangeUnplaced, sharedLevelMissing(level.Class.Name))
 		}
 	}
 	// The pool the claim draws from is the last level's: that is the range
@@ -341,7 +264,7 @@ func existingChainFor(ctx context.Context, db Querier, leaf *ResolvedClass, clai
 			hint += fmt.Sprintf(" with spec.address %s", block.String())
 		}
 	}
-	return "", fmt.Errorf("%w: class %q has no pool for this scope yet, and a claim naming an address never has one placed for it; "+
+	return fmt.Errorf("%w: class %q has no pool for this scope yet, and a claim naming an address never has one placed for it; "+
 		"place the range first with %s and the same scope, then claim %s again",
 		ErrRangeUnplaced, pending[0].Class.Name, hint, want.String())
 }
@@ -359,17 +282,25 @@ func existingChainFor(ctx context.Context, db Querier, leaf *ResolvedClass, clai
 //     nothing; the upsert arbitrates whoever got there first.
 //  3. Only on winning: carve a block from the source and write the pool.
 func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourcePoolKey string) (poolKey string, provisioned bool, err error) {
-	outcome := levelError
-	defer func() { metrics.RecordCascadeLevel(ctx, level.Class.Name, outcome) }()
-
 	existing, err := lookupPoolIdentity(ctx, db, level.Class.Name, level.ScopeDigest)
 	if err != nil {
+		metrics.RecordCascadeLevel(ctx, level.Class.Name, levelError)
 		return "", false, err
 	}
 	if existing != "" {
-		outcome = levelReused
+		metrics.RecordCascadeLevel(ctx, level.Class.Name, levelReused)
 		return existing, false, nil
 	}
+	return provisionLevel(ctx, db, level, sourcePoolKey)
+}
+
+// provisionLevel is ensureLevel for a level whose identity row was missing
+// when it was read: steps 2 and 3. The miss is only a hint, so it claims the
+// identity before anything else, and a claim that loses uses the winner's
+// pool.
+func provisionLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourcePoolKey string) (poolKey string, provisioned bool, err error) {
+	outcome := levelError
+	defer func() { metrics.RecordCascadeLevel(ctx, level.Class.Name, outcome) }()
 
 	tx, err := db.Begin(ctx)
 	if err != nil {

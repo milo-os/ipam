@@ -77,14 +77,19 @@ func likeEscape(s string) string {
 	return r.Replace(s)
 }
 
+// loadClassSQL reads one class by its storage key.
+const loadClassSQL = `SELECT data FROM ipam_objects WHERE key = $1`
+
 // loadClassIn reads one IPClass without following a reference.
 func loadClassIn(ctx context.Context, tx Querier, project, name string) (*ipamv1alpha1.IPClass, error) {
 	defer metrics.ObserveQuery("load_class", time.Now())
+	return scanClass(tx.QueryRow(ctx, loadClassSQL, classStorageKey(project, name)), project, name)
+}
+
+// scanClass decodes the row loadClassSQL returns, however it was sent.
+func scanClass(row pgx.Row, project, name string) (*ipamv1alpha1.IPClass, error) {
 	var data []byte
-	err := tx.QueryRow(ctx,
-		`SELECT data FROM ipam_objects WHERE key = $1`,
-		classStorageKey(project, name),
-	).Scan(&data)
+	err := row.Scan(&data)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("%w: %q in project %q", ErrClassNotFound, name, project)
@@ -106,6 +111,19 @@ func loadClassIn(ctx context.Context, tx Querier, project, name string) (*ipamv1
 // a claim allocates under, and pool identity keys off that class.
 func resolveClassIn(ctx context.Context, tx Querier, project, name string) (*ResolvedClass, error) {
 	class, err := loadClassIn(ctx, tx, project, name)
+	return followSource(ctx, tx, project, name, class, err)
+}
+
+// loadedClass is a class read ahead of the walk that needs it, by a batch, with
+// the error its read returned.
+type loadedClass struct {
+	class *ipamv1alpha1.IPClass
+	err   error
+}
+
+// followSource is resolveClassIn for a class already read: class and err are
+// what loadClassIn returned for (project, name).
+func followSource(ctx context.Context, tx Querier, project, name string, class *ipamv1alpha1.IPClass, err error) (*ResolvedClass, error) {
 	if err != nil {
 		return nil, err
 	}
@@ -216,6 +234,13 @@ func ResolveClass(ctx context.Context, tx Querier, className string, family ipam
 // The leaf is deliberately absent: it binds an allocation directly and
 // provisions nothing. A class with no parent yields an empty ancestry.
 func LoadAncestry(ctx context.Context, tx Querier, leaf *ResolvedClass) ([]*ResolvedClass, error) {
+	return walkAncestry(ctx, tx, leaf, nil)
+}
+
+// walkAncestry is LoadAncestry with the leaf's parent already read, when first
+// is set: a create reads it in the round trip that checks for a retained
+// allocation (see BeginChainLookup).
+func walkAncestry(ctx context.Context, tx Querier, leaf *ResolvedClass, first *loadedClass) ([]*ResolvedClass, error) {
 	var chain []*ResolvedClass
 	// Keyed by project and name: only a repeat of the same object is a cycle.
 	seen := map[string]bool{classStorageKey(leaf.Project, leaf.Name): true}
@@ -227,7 +252,14 @@ func LoadAncestry(ctx context.Context, tx Querier, leaf *ResolvedClass) ([]*Reso
 			return chain, nil
 		}
 
-		parent, err := resolveClassIn(ctx, tx, current.Project, parentName)
+		var parent *ResolvedClass
+		var err error
+		if first != nil {
+			parent, err = followSource(ctx, tx, current.Project, parentName, first.class, first.err)
+			first = nil
+		} else {
+			parent, err = resolveClassIn(ctx, tx, current.Project, parentName)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("resolve parent of %q: %w", current.Name, err)
 		}

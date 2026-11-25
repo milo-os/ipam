@@ -108,8 +108,9 @@ one of which becomes the next winner and repeats.
 ## IPAMCascadeResolutionLatencyHigh
 
 Claims whose pools already existed are spending too long finding them. That path
-is a single indexed read against `ipam_pool_identity` and should be a few
-milliseconds.
+is two pipelined round trips (the first ancestry read, then the root's offering
+pools together with one indexed read of every level's `ipam_pool_identity` row)
+plus one read per further ancestor, and should be a few milliseconds.
 
 1. Confirm the split on the "Pool resolution p95" panel. If only
    `provisioned="true"` is slow, this is first claims building chains and is
@@ -122,8 +123,13 @@ milliseconds.
    SELECT pool_key FROM ipam_pool_identity
     WHERE class_name = '<class>' AND scope_digest = '<digest>';
    ```
-4. Compare against `ipam_postgres_query_duration_seconds{query_name="lookup_pool_identity"}`
-   to separate query time from transaction setup and connection acquisition.
+4. Compare against `ipam_postgres_query_duration_seconds{query_name="resolve_chain_batch"}`
+   to separate query time from connection acquisition. That label times the
+   whole round trip holding the offering-pools read and the identity read for
+   every level, not one statement. `lookup_pool_identity` still times the
+   lookups that run on their own: the read a claim that lost a provisioning
+   race makes for the winner's pool, and the levels a ScopeRange claim
+   resolves.
 
 ## Escalation
 
