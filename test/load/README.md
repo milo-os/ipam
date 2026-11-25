@@ -52,6 +52,7 @@ The quota-on limits are the worst p95 seen across short runs (30s, 10 VUs, with 
 | `reads` claim get p95                                | 100ms   | 300ms    | 137ms              |
 | `reads` cluster list p95                             | 2000ms  | 2000ms   | 219ms              |
 | `scale` p95 per depth                                | 2000ms  | 5000ms   | 479ms (one sequential sweep, so little queueing) |
+| `scale` p95 ratio, /28 against /20                   | 3x      | 15x      | 7.28x (p95 1587ms at /28, of which IPAM's own work was 37ms) |
 
 Reads do not wait on quota; their limits are wider only because the extra hop through Milo and the added Postgres latency pushed them past the strict ones. These numbers come from one shared 4-CPU machine and short runs. Treat them as a regression guard, not as a target to design to, and tighten them once the grant wait is lower.
 
@@ -172,7 +173,7 @@ Per test:
 | `CHAIN_STEADY_P95_MS`, `CHAIN_FIRST_P95_MS` | class-chain   | 500, 1000          |
 | `EXHAUST_CIDR`          | exhaustion                        | `192.168.100.0/28` |
 | `READ_VUS`, `SPIKE_DURATION`, `READ_CLAIMS` | reads         | 10, 30s, 10        |
-| `PREFIX_STEPS`, `FILL_PCT`, `SAMPLES`, `MAX_DEPTH_RATIO` | scale | `20,22,24,26,28`, 0.8, 50, 3 |
+| `PREFIX_STEPS`, `FILL_PCT`, `SAMPLES`, `MAX_DEPTH_RATIO` | scale | `20,22,24,26,28`, 0.8, 50, 3 (15 with quota on) |
 | `SCALE_CIDR`, `SCALE_PROJECT`, `FILL_BATCH` | scale         | `172.16.0.0/16`, first project, 20 |
 | `CI_SUITE`              | ci                                | `throughput class-chain exhaustion reads` |
 | `SETUP_TIMEOUT`, `TEARDOWN_TIMEOUT` | all                   | per script         |

@@ -174,11 +174,15 @@ jobs:
       - name: Run k6 load tests
         run: task --yes load-test:run
 
+      # Server logs and metrics on every run, so a passing run can be compared
+      # with a failing one. The node logs are large and only needed on failure.
       - name: Dump diagnostics
+        if: always()
+        run: task --yes load-test:diagnostics || true
+
+      - name: Export kind node logs
         if: failure()
-        run: |
-          task --yes load-test:diagnostics || true
-          kind export logs "test/load/diagnostics/kind-logs" --name "${CLUSTER_NAME}" || true
+        run: kind export logs "test/load/diagnostics/kind-logs" --name "${CLUSTER_NAME}" || true
 
       - name: Summarise k6 results
         if: always()
