@@ -66,20 +66,24 @@ type rtBudget struct {
 
 // The budgets. Lower a figure when a change removes round trips; raising one
 // needs a reason in the change that raises it.
+//
+// Acquires rose when the read-only work left its transactions: each read on
+// the pool checks a connection out of its own. Pipelining the reads after
+// admission brings them back down.
 var claimRoundTripBudgets = map[string]rtBudget{
-	"A": {Statements: 62, RoundTrips: 62, Transactions: 6, Acquires: 7, LockRTs: 18},
-	"B": {Statements: 36, RoundTrips: 36, Transactions: 6, Acquires: 7, LockRTs: 18},
-	"C": {Statements: 50, RoundTrips: 50, Transactions: 6, Acquires: 7, LockRTs: 18},
-	"D": {Statements: 32, RoundTrips: 32, Transactions: 2, Acquires: 3, LockRTs: 14},
-	"E": {Statements: 28, RoundTrips: 28, Transactions: 4, Acquires: 5, LockRTs: 18},
-	"F": {Statements: 29, RoundTrips: 29, Transactions: 4, Acquires: 5, LockRTs: 13},
-	"G": {Statements: 36, RoundTrips: 36, Transactions: 6, Acquires: 7, LockRTs: 18},
-	"H": {Statements: 18, RoundTrips: 18, Transactions: 2, Acquires: 3, LockRTs: 12},
-	"I": {Statements: 27, RoundTrips: 27, Transactions: 7, Acquires: 8, LockRTs: 2},
-	"J": {Statements: 37, RoundTrips: 37, Transactions: 6, Acquires: 7, LockRTs: 18},
-	"K": {Statements: 29, RoundTrips: 29, Transactions: 4, Acquires: 5, LockRTs: 19},
-	"L": {Statements: 43, RoundTrips: 43, Transactions: 4, Acquires: 5, LockRTs: 33},
-	"M": {Statements: 11, RoundTrips: 11, Transactions: 3, Acquires: 4, LockRTs: 0},
+	"A": {Statements: 56, RoundTrips: 56, Transactions: 3, Acquires: 10, LockRTs: 18},
+	"B": {Statements: 26, RoundTrips: 26, Transactions: 1, Acquires: 8, LockRTs: 18},
+	"C": {Statements: 42, RoundTrips: 42, Transactions: 2, Acquires: 9, LockRTs: 18},
+	"D": {Statements: 22, RoundTrips: 22, Transactions: 1, Acquires: 3, LockRTs: 14},
+	"E": {Statements: 22, RoundTrips: 22, Transactions: 1, Acquires: 4, LockRTs: 18},
+	"F": {Statements: 23, RoundTrips: 23, Transactions: 1, Acquires: 10, LockRTs: 13},
+	"G": {Statements: 26, RoundTrips: 26, Transactions: 1, Acquires: 8, LockRTs: 18},
+	"H": {Statements: 16, RoundTrips: 16, Transactions: 1, Acquires: 3, LockRTs: 12},
+	"I": {Statements: 15, RoundTrips: 15, Transactions: 1, Acquires: 13, LockRTs: 2},
+	"J": {Statements: 27, RoundTrips: 27, Transactions: 1, Acquires: 9, LockRTs: 18},
+	"K": {Statements: 23, RoundTrips: 23, Transactions: 1, Acquires: 4, LockRTs: 19},
+	"L": {Statements: 37, RoundTrips: 37, Transactions: 1, Acquires: 4, LockRTs: 33},
+	"M": {Statements: 5, RoundTrips: 5, Transactions: 0, Acquires: 5, LockRTs: 0},
 }
 
 // coldPrepareBudget bounds the extra round trips a steady-state create (B)

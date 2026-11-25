@@ -78,7 +78,7 @@ func likeEscape(s string) string {
 }
 
 // loadClassIn reads one IPClass without following a reference.
-func loadClassIn(ctx context.Context, tx pgx.Tx, project, name string) (*ipamv1alpha1.IPClass, error) {
+func loadClassIn(ctx context.Context, tx Querier, project, name string) (*ipamv1alpha1.IPClass, error) {
 	defer metrics.ObserveQuery("load_class", time.Now())
 	var data []byte
 	err := tx.QueryRow(ctx,
@@ -104,7 +104,7 @@ func loadClassIn(ctx context.Context, tx pgx.Tx, project, name string) (*ipamv1a
 // A reference resolves in exactly one hop. A target that is itself a reference
 // is an error: a chain would let the project at the far end change which class
 // a claim allocates under, and pool identity keys off that class.
-func resolveClassIn(ctx context.Context, tx pgx.Tx, project, name string) (*ResolvedClass, error) {
+func resolveClassIn(ctx context.Context, tx Querier, project, name string) (*ResolvedClass, error) {
 	class, err := loadClassIn(ctx, tx, project, name)
 	if err != nil {
 		return nil, err
@@ -126,7 +126,7 @@ func resolveClassIn(ctx context.Context, tx pgx.Tx, project, name string) (*Reso
 }
 
 // LoadClass reads the class a caller named, from the caller's own project.
-func LoadClass(ctx context.Context, tx pgx.Tx, name string) (*ResolvedClass, error) {
+func LoadClass(ctx context.Context, tx Querier, name string) (*ResolvedClass, error) {
 	id, err := tenant.RequireTenant(ctx)
 	if err != nil {
 		return nil, err
@@ -139,7 +139,7 @@ func LoadClass(ctx context.Context, tx pgx.Tx, name string) (*ResolvedClass, err
 //
 // Family is matched after resolution, not in the query: a reference states
 // nothing but the class it points at, so the family lives on the definition.
-func LoadDefaultClass(ctx context.Context, tx pgx.Tx, family ipamv1alpha1.IPFamily) (*ResolvedClass, error) {
+func LoadDefaultClass(ctx context.Context, tx Querier, family ipamv1alpha1.IPFamily) (*ResolvedClass, error) {
 	defer metrics.ObserveQuery("load_default_class", time.Now())
 	id, err := tenant.RequireTenant(ctx)
 	if err != nil {
@@ -181,7 +181,8 @@ func LoadDefaultClass(ctx context.Context, tx pgx.Tx, family ipamv1alpha1.IPFami
 		return nil, fmt.Errorf("query default class for %s: %w", family, err)
 	}
 
-	// After the rows are consumed: resolution queries the same transaction.
+	// After the rows are consumed: resolution queries the same connection or
+	// transaction.
 	for _, name := range names {
 		resolved, err := resolveClassIn(ctx, tx, id.Name, name)
 		if err != nil {
@@ -196,7 +197,7 @@ func LoadDefaultClass(ctx context.Context, tx pgx.Tx, family ipamv1alpha1.IPFami
 
 // ResolveClass picks the class a claim allocates under: the one it names, or
 // the default for the family it asked for.
-func ResolveClass(ctx context.Context, tx pgx.Tx, className string, family ipamv1alpha1.IPFamily) (*ResolvedClass, error) {
+func ResolveClass(ctx context.Context, tx Querier, className string, family ipamv1alpha1.IPFamily) (*ResolvedClass, error) {
 	if className != "" {
 		return LoadClass(ctx, tx, className)
 	}
@@ -214,7 +215,7 @@ func ResolveClass(ctx context.Context, tx pgx.Tx, className string, family ipamv
 //
 // The leaf is deliberately absent: it binds an allocation directly and
 // provisions nothing. A class with no parent yields an empty ancestry.
-func LoadAncestry(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass) ([]*ResolvedClass, error) {
+func LoadAncestry(ctx context.Context, tx Querier, leaf *ResolvedClass) ([]*ResolvedClass, error) {
 	var chain []*ResolvedClass
 	// Keyed by project and name: only a repeat of the same object is a cycle.
 	seen := map[string]bool{classStorageKey(leaf.Project, leaf.Name): true}

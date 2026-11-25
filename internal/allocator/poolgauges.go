@@ -12,9 +12,15 @@ import (
 	"go.miloapis.com/ipam/internal/tenant"
 )
 
-// Querier is the read half of a pgx pool or transaction.
+// Querier is the read half of a pgx pool or transaction. A read that needs no
+// lock and no other statement's view takes one, so it can run on the pool
+// without a transaction: under READ COMMITTED a statement on its own sees what
+// the same statement sees inside a short transaction, committed data as of the
+// statement, and BEGIN and ROLLBACK around it are two round trips that buy
+// nothing.
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // LoadPoolGauges reads every IPPool's capacity as committed, for the per-pool

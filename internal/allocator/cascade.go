@@ -47,9 +47,15 @@ const (
 )
 
 // TxBeginner is the subset of a connection pool the cascade needs. Each level
-// commits separately, so it cannot take a transaction.
+// commits separately, so it cannot take a transaction; the reads that decide
+// nothing under a lock run on it directly.
+//
+// A transaction satisfies it too, which is how a dry-run runs the cascade
+// inside its own transaction: Begin opens a savepoint, and the reads run in
+// the dry-run's transaction.
 type TxBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
+	Querier
 }
 
 // CascadeLevel is one pool the cascade must find or create.
@@ -107,7 +113,7 @@ func (l CascadeLevel) OwnerProject() string {
 // space nobody meant to split exhausts an aggregate. A class that must keep
 // tenants in separate address space opts in by naming the role, and cannot
 // change its mind later, because poolPer is immutable.
-func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
+func PlanCascade(ctx context.Context, tx Querier, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
 	ancestry, err := LoadAncestry(ctx, tx, leaf)
 	if err != nil {
 		return nil, err
@@ -124,7 +130,7 @@ func PlanCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope
 // leaf's own pool, so the leaf is a level like any other and every level below
 // the root is provisioned the same way — including the identity row that makes
 // a later Block claim adopt this pool instead of provisioning a second one.
-func PlanScopeRangeCascade(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
+func PlanScopeRangeCascade(ctx context.Context, tx Querier, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) ([]CascadeLevel, error) {
 	ancestry, err := LoadAncestry(ctx, tx, leaf)
 	if err != nil {
 		return nil, err
@@ -211,16 +217,10 @@ func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, cla
 	result, provisioned := "error", false
 	defer func() { metrics.ObserveCascadeResolution(ctx, result, provisioned, start) }()
 
-	planTx, err := db.Begin(ctx)
-	if err != nil {
-		return "", fmt.Errorf("begin cascade planning transaction: %w", err)
-	}
-	levels, err := PlanCascade(ctx, planTx, leaf, claimScope)
-	// The plan reads classes and nothing else. Rolling back keeps it
-	// unambiguously read-only and releases the snapshot, which matters because
-	// everything after this is a separate transaction and a lingering one would
-	// hold the xmin horizon.
-	_ = planTx.Rollback(ctx)
+	// The plan reads classes and nothing else, so it runs on db with no
+	// transaction: one would hold nothing a statement on its own does not, and
+	// would cost a BEGIN and a ROLLBACK.
+	levels, err := PlanCascade(ctx, db, leaf, claimScope)
 	if err != nil {
 		return "", err
 	}
@@ -228,7 +228,7 @@ func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, cla
 	// A leaf with no ancestry draws straight from whichever operator-authored
 	// pool offers it. There is nothing to cascade.
 	if len(levels) == 0 {
-		poolKey, err := discoverInTx(ctx, db, leaf, claimScope, want)
+		poolKey, err := DiscoverPoolFor(ctx, db, leaf, claimScope, want)
 		if err == nil {
 			result = "success"
 		}
@@ -249,7 +249,7 @@ func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, cla
 
 	// The root-most level carves from an operator-authored pool offering its
 	// class; every level below carves from the level above.
-	source, err := discoverInTx(ctx, db, levels[0].Class, claimScope, nil)
+	source, err := DiscoverPoolFor(ctx, db, levels[0].Class, claimScope, nil)
 	if err != nil {
 		return "", err
 	}
@@ -271,31 +271,28 @@ func ResolvePoolFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, cla
 // A claim naming its block resolves through it (existingChainFor): a pool is
 // durable infrastructure that is never renumbered, so one placed by first-free
 // on behalf of a claim that is then refused would stay where it landed.
-func ResolveExistingPool(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, []CascadeLevel, error) {
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return "", nil, fmt.Errorf("begin dry-run resolution transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	levels, err := PlanCascade(ctx, tx, leaf, claimScope)
+//
+// Every read is lock-free and decides nothing a later lock does not decide
+// again, so they run on db without a transaction.
+func ResolveExistingPool(ctx context.Context, db Querier, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, []CascadeLevel, error) {
+	levels, err := PlanCascade(ctx, db, leaf, claimScope)
 	if err != nil {
 		return "", nil, err
 	}
 	if len(levels) == 0 {
-		poolKey, err := DiscoverPool(ctx, tx, leaf, claimScope)
+		poolKey, err := DiscoverPool(ctx, db, leaf, claimScope)
 		return poolKey, nil, err
 	}
 
 	// The root must be backed whether or not anything below it exists, so a
 	// class backed by nothing fails here rather than looking satisfiable.
-	if _, err := DiscoverPool(ctx, tx, levels[0].Class, claimScope); err != nil {
+	if _, err := DiscoverPool(ctx, db, levels[0].Class, claimScope); err != nil {
 		return "", nil, err
 	}
 
 	poolKey := ""
 	for i := range levels {
-		existing, err := lookupPoolIdentity(ctx, tx, levels[i].Class.Name, levels[i].ScopeDigest)
+		existing, err := lookupPoolIdentity(ctx, db, levels[i].Class.Name, levels[i].ScopeDigest)
 		if err != nil {
 			return "", nil, err
 		}
@@ -317,7 +314,7 @@ var ErrRangeUnplaced = errors.New("ipam: the range holding this address has not 
 // provisioning nothing: every level of the chain must exist, or the claim is
 // refused with ErrRangeUnplaced naming the ScopeRange claim that would place
 // the missing range around want.
-func existingChainFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, levels []CascadeLevel, want net.IPNet) (string, error) {
+func existingChainFor(ctx context.Context, db Querier, leaf *ResolvedClass, claimScope map[string]ipam.ScopeRef, levels []CascadeLevel, want net.IPNet) (string, error) {
 	poolKey, pending, err := ResolveExistingPool(ctx, db, leaf, claimScope)
 	if err != nil {
 		return "", err
@@ -349,26 +346,30 @@ func existingChainFor(ctx context.Context, db TxBeginner, leaf *ResolvedClass, c
 		ErrRangeUnplaced, pending[0].Class.Name, hint, want.String())
 }
 
-func discoverInTx(ctx context.Context, db TxBeginner, class *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
-	tx, err := db.Begin(ctx)
-	if err != nil {
-		return "", fmt.Errorf("begin pool discovery transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	return DiscoverPoolFor(ctx, tx, class, claimScope, want)
-}
-
-// ensureLevel finds or creates the pool for one level, in a transaction of its
-// own, reporting whether it was this caller that created it:
+// ensureLevel finds or creates the pool for one level, reporting whether it was
+// this caller that created it:
 //
-//  1. Read the identity table with no lock. Every claim after the first into a
-//     scope takes this path and must cost one indexed read.
-//  2. Upsert the identity tuple. This is the serialisation point, deliberately
-//     BEFORE any pool row is touched, so a loser waits here holding nothing.
+//  1. Read the identity table with no lock and no transaction. Every claim
+//     after the first into a scope takes this path and must cost one indexed
+//     read. A committed identity row never changes, so there is nothing for a
+//     transaction to hold.
+//  2. Only on a miss, in a transaction of the level's own: upsert the identity
+//     tuple. This is the serialisation point, deliberately BEFORE any pool row
+//     is touched, so a loser waits here holding nothing. A miss decides
+//     nothing; the upsert arbitrates whoever got there first.
 //  3. Only on winning: carve a block from the source and write the pool.
 func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourcePoolKey string) (poolKey string, provisioned bool, err error) {
 	outcome := levelError
 	defer func() { metrics.RecordCascadeLevel(ctx, level.Class.Name, outcome) }()
+
+	existing, err := lookupPoolIdentity(ctx, db, level.Class.Name, level.ScopeDigest)
+	if err != nil {
+		return "", false, err
+	}
+	if existing != "" {
+		outcome = levelReused
+		return existing, false, nil
+	}
 
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -380,19 +381,6 @@ func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourceP
 			_ = tx.Rollback(ctx)
 		}
 	}()
-
-	existing, err := lookupPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest)
-	if err != nil {
-		return "", false, err
-	}
-	if existing != "" {
-		if err := tx.Commit(ctx); err != nil {
-			return "", false, fmt.Errorf("commit identity lookup: %w", err)
-		}
-		committed = true
-		outcome = levelReused
-		return existing, false, nil
-	}
 
 	poolKey, won, err := claimPoolIdentity(ctx, tx, level.Class.Name, level.ScopeDigest, level.PoolKey)
 	if err != nil {
@@ -430,7 +418,7 @@ func ensureLevel(ctx context.Context, db TxBeginner, level CascadeLevel, sourceP
 // lookupPoolIdentity reads the pool a class has already provisioned for a
 // scope. It takes no lock: a committed identity row is immutable, because the
 // pool it names is never renumbered.
-func lookupPoolIdentity(ctx context.Context, tx pgx.Tx, className, scopeDigest string) (string, error) {
+func lookupPoolIdentity(ctx context.Context, tx Querier, className, scopeDigest string) (string, error) {
 	defer metrics.ObserveQuery("lookup_pool_identity", time.Now())
 	var poolKey string
 	err := tx.QueryRow(ctx,

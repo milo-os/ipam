@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"go.miloapis.com/ipam/internal/allocation"
 	"go.miloapis.com/ipam/internal/metrics"
 	"go.miloapis.com/ipam/pkg/apis/ipam"
@@ -26,7 +24,7 @@ var ErrNoOfferingPool = errors.New("ipam: no pool offers this class")
 // Pools offer the ROOT of the class's parent chain, not the leaf. A leaf binds
 // an allocation out of what its ancestry provisions, so an operator backs the
 // chain once at the top rather than once per class hanging off it.
-func DiscoverPool(ctx context.Context, tx pgx.Tx, class *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, error) {
+func DiscoverPool(ctx context.Context, tx Querier, class *ResolvedClass, claimScope map[string]ipam.ScopeRef) (string, error) {
 	return DiscoverPoolFor(ctx, tx, class, claimScope, nil)
 }
 
@@ -36,7 +34,7 @@ func DiscoverPool(ctx context.Context, tx pgx.Tx, class *ResolvedClass, claimSco
 // has to land in the pool that holds it, not in whichever pool the strategy
 // prefers. No offering pool containing it is ErrAddressOutsidePool, naming the
 // pools that were checked.
-func DiscoverPoolFor(ctx context.Context, tx pgx.Tx, class *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
+func DiscoverPoolFor(ctx context.Context, tx Querier, class *ResolvedClass, claimScope map[string]ipam.ScopeRef, want *net.IPNet) (string, error) {
 	defer metrics.ObserveQuery("discover_pool", time.Now())
 
 	root, err := chainRoot(ctx, tx, class)
@@ -100,7 +98,7 @@ func poolsContaining(candidates []offeringPool, want net.IPNet) ([]offeringPool,
 
 // chainRoot returns the class whose pools back the chain: the furthest ancestor,
 // or the class itself when it has no parent.
-func chainRoot(ctx context.Context, tx pgx.Tx, leaf *ResolvedClass) (*ResolvedClass, error) {
+func chainRoot(ctx context.Context, tx Querier, leaf *ResolvedClass) (*ResolvedClass, error) {
 	ancestry, err := LoadAncestry(ctx, tx, leaf)
 	if err != nil {
 		return nil, err
@@ -124,7 +122,7 @@ type offeringPool struct {
 // The offer table keys on class NAME alone, so without the project restriction
 // a pool in any project could publish itself to the name "backbone" and serve
 // claims of somebody else's class.
-func offeringPools(ctx context.Context, tx pgx.Tx, class *ResolvedClass) ([]offeringPool, error) {
+func offeringPools(ctx context.Context, tx Querier, class *ResolvedClass) ([]offeringPool, error) {
 	pattern := resourceKeyPrefixFor(class.Project, "ippools") + "%"
 
 	rows, err := tx.Query(ctx,

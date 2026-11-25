@@ -75,17 +75,13 @@ func ResolveScopeRange(ctx context.Context, db TxBeginner, leaf *ResolvedClass, 
 	result, provisioned := "error", false
 	defer func() { metrics.ObserveCascadeResolution(ctx, result, provisioned, start) }()
 
-	planTx, err := db.Begin(ctx)
-	if err != nil {
-		return "", fmt.Errorf("begin scope-range planning transaction: %w", err)
-	}
-	levels, err := PlanScopeRangeCascade(ctx, planTx, leaf, claimScope)
-	_ = planTx.Rollback(ctx)
+	// Read-only, so on db with no transaction (see ResolvePoolFor).
+	levels, err := PlanScopeRangeCascade(ctx, db, leaf, claimScope)
 	if err != nil {
 		return "", err
 	}
 
-	source, err := discoverInTx(ctx, db, levels[0].Class, claimScope, nil)
+	source, err := DiscoverPoolFor(ctx, db, levels[0].Class, claimScope, nil)
 	if err != nil {
 		return "", err
 	}

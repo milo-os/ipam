@@ -130,11 +130,14 @@ type AllocatingREST struct {
 
 // txBeginner is the minimal slice of *pgxpool.Pool the allocation handlers
 // depend on. Narrowing the field to this interface lets unit tests inject a
-// fake transaction without a live Postgres. QueryRow is the one read made
-// outside a transaction: the check for a retained allocation every create
-// makes, which is nearly always a miss.
+// fake transaction without a live Postgres. Query and QueryRow are the reads
+// made outside any transaction: the class, its ancestry, discovery, the pool
+// identities and the check for a retained allocation. None of them takes a
+// lock, and everything decided from them is decided again under the pool's
+// lock.
 type txBeginner interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
@@ -294,18 +297,14 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		return nil, fail(apierrors.NewBadRequest("spec.className or spec.ipFamily is required"), reasonInvalid)
 	}
 
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		failSpan(tracing.ReasonTxError)
-		return nil, fail(fmt.Errorf("begin allocation transaction: %w", err), reasonTxError)
-	}
-
 	// A claim names a CLASS. Resolution starts in the caller's own project and
 	// follows spec.source into the project holding the definition; discovery
 	// then finds the pool that project offers. Cross-project sharing is the
 	// reference, so there is no separate cross-project path here.
-	class, err := allocator.ResolveClass(ctx, tx, claim.Spec.ClassName, v1alpha1.IPFamily(claim.Spec.IPFamily))
-	_ = tx.Rollback(ctx)
+	//
+	// The read runs on the pool, outside any transaction: admission runs next,
+	// and nothing may hold a transaction or a connection across it.
+	class, err := allocator.ResolveClass(ctx, r.db, claim.Spec.ClassName, v1alpha1.IPFamily(claim.Spec.IPFamily))
 	if err != nil {
 		failSpan(tracing.ReasonPoolNotFound)
 		switch {
@@ -526,6 +525,7 @@ func (r *AllocatingREST) create(ctx context.Context, claim *ipam.IPClaim, create
 		return nil, fail(resolvePoolError(err), reasonTxError)
 	}
 
+	var tx pgx.Tx
 	if dryTx != nil {
 		tx = dryTx
 	} else if tx, err = r.db.Begin(ctx); err != nil {
