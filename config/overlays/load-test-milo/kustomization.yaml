@@ -27,7 +27,7 @@ resources:
 
 images:
   - name: ghcr.io/milo-os/milo
-    newTag: v0.36.26
+    newTag: v0.36.29
 
 patches:
   # argo-events is only for Milo's own event-driven e2e suites; the quota path

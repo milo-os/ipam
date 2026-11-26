@@ -15,7 +15,7 @@ require (
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	go.datum.net/datumctl v0.23.3
-	go.miloapis.com/milo v0.36.26
+	go.miloapis.com/milo v0.36.29
 	go.miloapis.com/service-catalog v0.16.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
