@@ -27,7 +27,7 @@ resources:
   # Milo's webhook configurations (defaulting/validation for Organization,
   # Project, ...), served by milo-controller-manager. `task dev:deploy` in the
   # milo repo installs them the same way. Same pin as ../load-test-milo.
-  - github.com/milo-os/milo/config/webhook?ref=v0.36.26
+  - github.com/milo-os/milo/config/webhook?ref=v0.36.29
   - users.yaml
   - resource-registration.yaml
   - grant-creation-policy.yaml
