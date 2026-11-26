@@ -19,11 +19,11 @@ kind: Kustomization
 namespace: milo-system
 
 resources:
-  - github.com/milo-os/milo/config/overlays/test-infra?ref=v0.36.26
+  - github.com/milo-os/milo/config/overlays/test-infra?ref=v0.36.29
   # ProjectControlPlane CRD. Milo keeps it in the *infrastructure* cluster, which
   # here is the kind host cluster; `task dev:deploy` in the milo repo applies it
   # the same way. Without it Projects never become Ready.
-  - github.com/milo-os/milo/config/crd/overlays/infra-control-plane?ref=v0.36.26
+  - github.com/milo-os/milo/config/crd/overlays/infra-control-plane?ref=v0.36.29
 
 images:
   - name: ghcr.io/milo-os/milo
