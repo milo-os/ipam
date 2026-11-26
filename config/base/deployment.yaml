@@ -207,12 +207,24 @@ spec:
             limits:
               cpu: 2000m
               memory: 4Gi
+          # The startup probe holds back the liveness and readiness probes
+          # until the server answers, so the pod is Ready as soon as it can
+          # serve. It restarts a start that fails 36 checks 5s apart, about
+          # 175s after start. That is at least the grace the liveness probe
+          # gave before: its 6th failure came at about 160s (60s delay +
+          # 5 x 20s).
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            periodSeconds: 5
+            failureThreshold: 36
           livenessProbe:
             httpGet:
               path: /healthz
               port: https
               scheme: HTTPS
-            initialDelaySeconds: 60
             periodSeconds: 20
             failureThreshold: 6
           readinessProbe:
@@ -220,7 +232,6 @@ spec:
               path: /readyz
               port: https
               scheme: HTTPS
-            initialDelaySeconds: 60
             periodSeconds: 10
             failureThreshold: 6
           volumeMounts:
