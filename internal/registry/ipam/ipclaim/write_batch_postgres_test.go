@@ -244,11 +244,12 @@ func TestADryRunFirstClaimProvisionsNothing(t *testing.T) {
 }
 
 // A create's changelog rows are one transaction's, in the order a watcher
-// replays them: the pool's capacity, then the IPAllocation, then the claim.
+// replays them: the IPAllocation, then the claim. The pool is not rewritten, so
+// it has no row.
 func TestACreatesChangelogRowsCommitTogetherInOrder(t *testing.T) {
 	r, db := newTenantREST(t)
 	id := tenant.FromContext(claimCtx(testProject))
-	warm := create(t, r, endpointClaim("warm", "net-a", "ams"))
+	create(t, r, endpointClaim("warm", "net-a", "ams"))
 	create(t, r, endpointClaim("watched", "net-a", "ams"))
 
 	claimKey := claimObjectKey(id, "default", "watched")
@@ -269,7 +270,6 @@ func TestACreatesChangelogRowsCommitTogetherInOrder(t *testing.T) {
 		got = append(got, event+" "+key)
 	}
 	want := []string{
-		"MODIFIED " + subnetPoolKey(warm),
 		"ADDED " + allocationObjectKey(id, "default", allocationNameFor("default", "watched")),
 		"ADDED " + claimKey,
 	}

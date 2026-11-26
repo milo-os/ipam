@@ -682,8 +682,5 @@ func carveFromPool(ctx context.Context, tx pgx.Tx, sourcePoolKey string, prefixL
 	if err := writeConsumed(ctx, tx, sourcePoolKey, consumed); err != nil {
 		return nil, err
 	}
-	if err := persistPoolCapacity(ctx, tx, pool, sourcePoolKey, parents, consumed); err != nil {
-		return nil, fmt.Errorf("update source pool capacity after carve: %w", err)
-	}
 	return block, nil
 }

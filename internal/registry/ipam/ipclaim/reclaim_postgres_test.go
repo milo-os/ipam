@@ -120,8 +120,7 @@ func poolAllocated(t *testing.T, db *pgxpool.Pool, pool string) string {
 	t.Helper()
 	var allocated string
 	if err := db.QueryRow(context.Background(),
-		`SELECT ipam_data_to_jsonb(data) -> 'status' -> 'capacity' ->> 'allocated'
-		   FROM ipam_objects WHERE key = $1`,
+		`SELECT COALESCE((SELECT consumed::text FROM ipam_pool_consumption WHERE pool_key = $1), '0')`,
 		tenant.Identity{Name: testProject}.ResourceKey("ippools", pool)).Scan(&allocated); err != nil {
 		t.Fatalf("read pool %s capacity: %v", pool, err)
 	}

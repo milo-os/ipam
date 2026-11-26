@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/registry/rest"
+	"k8s.io/klog/v2"
 
 	"go.miloapis.com/ipam/internal/allocator"
 	"go.miloapis.com/ipam/internal/tenant"
@@ -60,6 +61,11 @@ func (r *AllocatingIPPoolREST) Update(ctx context.Context, name string, objInfo 
 	if pool, ok := obj.(*ipam.IPPool); ok && pool.Spec.ParentPoolRef != nil &&
 		pool.Status.AllocatedCIDR == "" && (options == nil || len(options.DryRun) == 0) {
 		obj = r.carveStranded(ctx, pool)
+	}
+	// The update is committed; a failed read only leaves the stored figures in
+	// the response.
+	if err := r.applyCapacity(ctx, obj); err != nil {
+		klog.ErrorS(err, "Could not derive pool capacity for an update response", "pool", name)
 	}
 	return obj, created, nil
 }

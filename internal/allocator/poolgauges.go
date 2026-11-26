@@ -48,12 +48,15 @@ func LoadPoolGauges(ctx context.Context, db Querier) ([]metrics.PoolGauge, error
 		     SELECT key, ipam_data_to_jsonb(data) AS d
 		       FROM ipam_objects
 		      WHERE kind = 'IPPool')
-		 SELECT key,
+		 SELECT p.key,
 		        COALESCE(NULLIF(d -> 'status' ->> 'ipFamily', ''), d -> 'spec' ->> 'ipFamily', ''),
 		        COALESCE(d -> 'status' -> 'capacity' ->> 'total', ''),
-		        COALESCE(d -> 'status' -> 'capacity' ->> 'allocated', '')
-		   FROM pools
-		  ORDER BY key`)
+		        COALESCE(d -> 'status' -> 'capacity' ->> 'allocated', ''),
+		        COALESCE(NULLIF(d -> 'status' ->> 'allocatedCIDR', ''), d -> 'spec' ->> 'cidr', ''),
+		        c.consumed::text
+		   FROM pools p
+		   LEFT JOIN ipam_pool_consumption c ON c.pool_key = p.key
+		  ORDER BY p.key`)
 	if err != nil {
 		return nil, fmt.Errorf("load pool gauges: %w", err)
 	}
@@ -61,9 +64,19 @@ func LoadPoolGauges(ctx context.Context, db Querier) ([]metrics.PoolGauge, error
 
 	var out []metrics.PoolGauge
 	for rows.Next() {
-		var key, family, total, allocated string
-		if err := rows.Scan(&key, &family, &total, &allocated); err != nil {
+		var key, family, total, allocated, cidr string
+		var consumed *string
+		if err := rows.Scan(&key, &family, &total, &allocated, &cidr, &consumed); err != nil {
 			return nil, fmt.Errorf("scan pool gauge: %w", err)
+		}
+		// A pool that has been written to has a running total; its stored
+		// status does not track it (see PoolCapacityFromConsumed).
+		if consumed != nil {
+			if n, ok := new(big.Int).SetString(*consumed, 10); ok {
+				if t, a, _, _, ok := PoolCapacityFromConsumed(cidr, n); ok {
+					total, allocated = t, a
+				}
+			}
 		}
 		totalF, ok := decimalFloat(total)
 		if !ok {

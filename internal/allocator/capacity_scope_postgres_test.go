@@ -16,13 +16,25 @@ import (
 func poolStatus(t *testing.T, db *pgxpool.Pool, poolKey string) ipamv1alpha1.IPPoolStatus {
 	t.Helper()
 	var data []byte
+	var consumed *string
 	if err := db.QueryRow(context.Background(),
-		`SELECT data FROM ipam_objects WHERE key = $1`, poolKey).Scan(&data); err != nil {
+		`SELECT o.data, c.consumed::text
+		   FROM ipam_objects o
+		   LEFT JOIN ipam_pool_consumption c ON c.pool_key = o.key
+		  WHERE o.key = $1`, poolKey).Scan(&data, &consumed); err != nil {
 		t.Fatalf("read pool: %v", err)
 	}
 	var pool ipamv1alpha1.IPPool
 	if err := json.Unmarshal(data, &pool); err != nil {
 		t.Fatalf("decode pool: %v", err)
+	}
+	// The stored status does not track consumption; derive it as a read does.
+	if consumed != nil {
+		n, ok := new(big.Int).SetString(*consumed, 10)
+		if !ok {
+			t.Fatalf("consumption %q is not an integer", *consumed)
+		}
+		applyConsumed(&pool, n)
 	}
 	return pool.Status
 }

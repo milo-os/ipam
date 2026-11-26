@@ -212,14 +212,7 @@ func TestSharedAddressesAreCountedOnce(t *testing.T) {
 		t.Errorf("consumed = %s, want the 256 addresses of one /24", consumed)
 	}
 
-	var data []byte
-	if err := db.QueryRow(ctx, `SELECT data FROM ipam_objects WHERE key = $1`, poolKey).Scan(&data); err != nil {
-		t.Fatalf("read pool: %v", err)
-	}
-	var pool ipamv1alpha1.IPPool
-	if err := json.Unmarshal(data, &pool); err != nil {
-		t.Fatalf("decode pool: %v", err)
-	}
+	pool := ipamv1alpha1.IPPool{Status: poolStatus(t, db, poolKey)}
 	if pool.Status.Capacity.Allocated != "256" {
 		t.Errorf("status.capacity.allocated = %s, want 256", pool.Status.Capacity.Allocated)
 	}

@@ -618,8 +618,7 @@ func (s *Sweeper) release(ctx context.Context, held func() error, res *SweepResu
 }
 
 // releaseDue frees the rows of one pool, which tx holds locked, that were due
-// when read and still are, and republishes the pool's capacity once for all of
-// them. A row a reclaim bound, or something released, since it was read is not
+// when read and still are. A row a reclaim bound, or something released, since it was read is not
 // matched and is left alone.
 //
 // Each row is released under a savepoint, so one whose release fails (its
@@ -634,7 +633,6 @@ func releaseDue(ctx context.Context, tx pgx.Tx, poolKey string, pool *ipamv1alph
 	}
 	var (
 		released  []releasedAllocation
-		consumed  *big.Int
 		rowErrors int
 	)
 	for _, c := range due {
@@ -642,7 +640,7 @@ func releaseDue(ctx context.Context, tx pgx.Tx, poolKey string, pool *ipamv1alph
 		if err != nil {
 			return nil, 0, fmt.Errorf("open savepoint: %w", err)
 		}
-		r, total, err := releaseOne(ctx, sp, poolKey, parents, c.allocationKey)
+		r, _, err := releaseOne(ctx, sp, poolKey, parents, c.allocationKey)
 		if err == nil {
 			err = sp.Commit(ctx)
 		} else {
@@ -655,12 +653,6 @@ func releaseDue(ctx context.Context, tx pgx.Tx, poolKey string, pool *ipamv1alph
 		}
 		if r != nil {
 			released = append(released, *r)
-			consumed = total
-		}
-	}
-	if len(released) > 0 {
-		if err := persistPoolCapacity(ctx, tx, pool, poolKey, parents, consumed); err != nil {
-			return nil, 0, fmt.Errorf("update pool capacity after release: %w", err)
 		}
 	}
 	return released, rowErrors, nil

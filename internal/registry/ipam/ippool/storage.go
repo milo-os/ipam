@@ -35,13 +35,18 @@ import (
 // store is that the status strategy resets spec fields on update.
 type IPPoolStatusStorage struct {
 	store *genericregistry.Store
+	pools *AllocatingIPPoolREST
 }
 
 func (s *IPPoolStatusStorage) New() runtime.Object { return &ipam.IPPool{} }
 func (s *IPPoolStatusStorage) Destroy()            {}
 
 func (s *IPPoolStatusStorage) Get(ctx context.Context, name string, options *metav1.GetOptions) (runtime.Object, error) {
-	return s.store.Get(ctx, name, options)
+	obj, err := s.store.Get(ctx, name, options)
+	if err != nil {
+		return nil, err
+	}
+	return obj, s.pools.applyCapacity(ctx, obj)
 }
 
 func (s *IPPoolStatusStorage) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, _ bool, options *metav1.UpdateOptions) (runtime.Object, bool, error) {
@@ -100,13 +105,14 @@ func NewIPPoolStorage(scheme *runtime.Scheme, optsGetter generic.RESTOptionsGett
 	statusStore.UpdateStrategy = statusStrategy
 	statusStore.ResetFieldsStrategy = statusStrategy
 
-	return &AllocatingIPPoolREST{
+	pools := &AllocatingIPPoolREST{
 		Store:     store,
 		allocator: alloc,
 		db:        db,
 		strategy:  strategy,
 		codec:     codec,
-	}, &IPPoolStatusStorage{store: &statusStore}, nil
+	}
+	return pools, &IPPoolStatusStorage{store: &statusStore, pools: pools}, nil
 }
 
 // Create routes root pools through the embedded Store (no allocation

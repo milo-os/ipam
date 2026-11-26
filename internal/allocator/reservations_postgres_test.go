@@ -187,13 +187,7 @@ func TestAReservedPositionIsHeldAsAnAllocation(t *testing.T) {
 
 	// Reserved space is inventory: it counts as allocated, so a reader asking
 	// what is left does not count a block nobody may have.
-	var allocated string
-	if err := db.QueryRow(ctx,
-		`SELECT ipam_data_to_jsonb(data) -> 'status' -> 'capacity' ->> 'allocated'
-		   FROM ipam_objects WHERE key = $1`, poolKey).Scan(&allocated); err != nil {
-		t.Fatalf("read pool capacity: %v", err)
-	}
-	if allocated != "4294967296" {
+	if allocated := poolStatus(t, db, poolKey).Capacity.Allocated; allocated != "4294967296" {
 		t.Errorf("capacity.allocated = %s, want the 2^32 addresses of the withheld /96", allocated)
 	}
 }

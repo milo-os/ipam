@@ -210,3 +210,50 @@ func seedConsumption(ctx context.Context, tx pgx.Tx, poolKey string, parents []n
 	}
 	return m.Consumed, nil
 }
+
+// ReadConsumedTotals returns the running consumption totals of the given pools,
+// keyed by pool key. A pool with no total yet is absent.
+func ReadConsumedTotals(ctx context.Context, db Querier, poolKeys []string) (map[string]*big.Int, error) {
+	defer metrics.ObserveQuery("read_consumption_totals", time.Now())
+	out := make(map[string]*big.Int, len(poolKeys))
+	if len(poolKeys) == 0 {
+		return out, nil
+	}
+	rows, err := db.Query(ctx,
+		`SELECT pool_key, consumed::text FROM ipam_pool_consumption WHERE pool_key = ANY($1)`, poolKeys)
+	if err != nil {
+		return nil, fmt.Errorf("read consumption totals: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key, s string
+		if err := rows.Scan(&key, &s); err != nil {
+			return nil, fmt.Errorf("scan consumption total: %w", err)
+		}
+		n, ok := new(big.Int).SetString(s, 10)
+		if !ok {
+			return nil, fmt.Errorf("consumption for %q is not an integer: %q", key, s)
+		}
+		out[key] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate consumption totals: %w", err)
+	}
+	return out, nil
+}
+
+// PoolCapacityFromConsumed derives a pool's capacity figures from its address
+// range (status.allocatedCIDR for a carved pool, otherwise spec.cidr) and its
+// running consumption. ok is false when cidr does not parse.
+func PoolCapacityFromConsumed(cidr string, consumed *big.Int) (total, allocated, available string, utilization float64, ok bool) {
+	_, ipnet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return "", "", "", 0, false
+	}
+	t := totalAddresses([]net.IPNet{*ipnet})
+	free := new(big.Int).Sub(t, consumed)
+	if free.Sign() < 0 {
+		free = new(big.Int)
+	}
+	return t.String(), consumed.String(), free.String(), utilizationPercent(t, consumed), true
+}

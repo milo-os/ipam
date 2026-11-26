@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"strings"
 	"time"
@@ -134,9 +135,12 @@ func offeringPools(ctx context.Context, tx Querier, class *ResolvedClass) ([]off
 	return scanOfferingPools(rows, err, class)
 }
 
-const offeringPoolsSQL = `SELECT o.pool_key, obj.data
+// The consumption total is read alongside, because a pool's stored status does
+// not carry its current utilization (see PoolCapacityFromConsumed).
+const offeringPoolsSQL = `SELECT o.pool_key, obj.data, c.consumed::text
 	   FROM ipam_pool_class_offer o
 	   JOIN ipam_objects obj ON obj.key = o.pool_key
+	   LEFT JOIN ipam_pool_consumption c ON c.pool_key = o.pool_key
 	  WHERE o.class_name = $1
 	    AND ipam_data_to_jsonb(obj.data) ->> 'kind' = 'IPPool'
 	    AND obj.key LIKE $2
@@ -158,12 +162,18 @@ func scanOfferingPools(rows pgx.Rows, err error, class *ResolvedClass) ([]offeri
 	for rows.Next() {
 		var key string
 		var data []byte
-		if err := rows.Scan(&key, &data); err != nil {
+		var consumed *string
+		if err := rows.Scan(&key, &data, &consumed); err != nil {
 			return nil, fmt.Errorf("scan pool row: %w", err)
 		}
 		var pool ipamv1alpha1.IPPool
 		if err := json.Unmarshal(data, &pool); err != nil {
 			return nil, fmt.Errorf("decode pool %q: %w", key, err)
+		}
+		if consumed != nil {
+			if n, ok := new(big.Int).SetString(*consumed, 10); ok {
+				applyConsumed(&pool, n)
+			}
 		}
 		if effectivePoolFamily(&pool) != string(class.Spec.IPFamily) {
 			continue

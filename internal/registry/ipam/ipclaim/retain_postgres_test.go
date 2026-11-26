@@ -178,8 +178,8 @@ func TestDeleteUnderRetainHoldsTheAddress(t *testing.T) {
 
 	var poolBefore string
 	if err := db.QueryRow(context.Background(),
-		`SELECT ipam_data_to_jsonb(data) -> 'status' -> 'capacity' ->> 'allocated'
-		   FROM ipam_objects WHERE kind = 'IPPool'`).Scan(&poolBefore); err != nil {
+		`SELECT c.consumed::text FROM ipam_pool_consumption c
+		   JOIN ipam_objects o ON o.key = c.pool_key WHERE o.kind = 'IPPool'`).Scan(&poolBefore); err != nil {
 		t.Fatalf("read pool capacity: %v", err)
 	}
 
@@ -223,8 +223,8 @@ func TestDeleteUnderRetainHoldsTheAddress(t *testing.T) {
 
 	var poolAfter string
 	if err := db.QueryRow(context.Background(),
-		`SELECT ipam_data_to_jsonb(data) -> 'status' -> 'capacity' ->> 'allocated'
-		   FROM ipam_objects WHERE kind = 'IPPool'`).Scan(&poolAfter); err != nil {
+		`SELECT c.consumed::text FROM ipam_pool_consumption c
+		   JOIN ipam_objects o ON o.key = c.pool_key WHERE o.kind = 'IPPool'`).Scan(&poolAfter); err != nil {
 		t.Fatalf("read pool capacity: %v", err)
 	}
 	if poolAfter != poolBefore {

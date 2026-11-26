@@ -907,9 +907,9 @@ func TestARowThatCannotBeReleasedDoesNotHoldUpItsPool(t *testing.T) {
 	}
 }
 
-// Releasing a pool's due rows republishes its capacity once per chunk, not once
-// per row: 200 releases are a handful of pool writes, not 200.
-func TestReleasingAPoolsDueRowsRepublishesItsCapacityPerChunk(t *testing.T) {
+// Releasing a pool's due rows does not rewrite the pool: its capacity is
+// derived from the consumption total when it is read.
+func TestReleasingAPoolsDueRowsDoesNotRewriteThePool(t *testing.T) {
 	db := testdb.Pool(t)
 	ctx := context.Background()
 	const cidr = "10.101.0.0/16"
@@ -934,8 +934,8 @@ func TestReleasingAPoolsDueRowsRepublishesItsCapacityPerChunk(t *testing.T) {
 	if res.Released != 200 {
 		t.Fatalf("released %d, want 200", res.Released)
 	}
-	if writes, want := after-before, 200/defaultChunk; writes != want {
-		t.Errorf("the pool was rewritten %d times for 200 releases, want %d (once per chunk)", writes, want)
+	if writes := after - before; writes != 0 {
+		t.Errorf("the pool was rewritten %d times for 200 releases, want 0", writes)
 	}
 	if got := storedConsumption(t, db, poolKey); got != "0" || got != measureNow(t, db, poolKey, cidr) {
 		t.Errorf("consumption = %s after releasing everything, want 0", got)

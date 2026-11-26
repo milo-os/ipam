@@ -117,7 +117,7 @@ func (a *PostgresPrefixAllocator) AllocatePrefix(ctx context.Context, tx pgx.Tx,
 		return "", err
 	}
 
-	if err := writeAllocation(ctx, tx, req, pool, parents, cidr.String(), consumed, raise); err != nil {
+	if err := writeAllocation(ctx, tx, req, cidr.String(), consumed, raise); err != nil {
 		return "", err
 	}
 
@@ -180,26 +180,21 @@ func findClaimBlock(ctx context.Context, tx pgx.Tx, poolKey, scopeDigest string,
 }
 
 // writeAllocation records an allocation's writes in one round trip: the
-// allocation row, the pool's consumption total, the pool object with its
-// capacity (and its MODIFIED changelog row), and the search floor's raise.
+// allocation row, the pool's consumption total, and the search floor's raise.
+// The pool object is not rewritten: its capacity is derived from the
+// consumption total when the pool is read (see PoolCapacityFromConsumed), so a
+// claim does not write the pool row or publish a MODIFIED event for it.
 //
 // They keep the order they had as separate statements, except the floor
 // raise, which used to precede the reads before the insert. Moving it last
 // changes nothing another statement sees: this transaction holds the floor
 // row's lock, and the only trigger that writes floors fires on deleting an
 // allocation, which nothing here does.
-func writeAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, pool *ipamv1alpha1.IPPool, parents []net.IPNet, cidr string, consumed *big.Int, raise *floorRaise) error {
+func writeAllocation(ctx context.Context, tx pgx.Tx, req PrefixRequest, cidr string, consumed *big.Int, raise *floorRaise) error {
 	defer metrics.ObserveQuery("allocate_tail_batch", time.Now())
-	setPoolCapacityStatus(pool, parents, consumed)
-	poolData, err := json.Marshal(pool)
-	if err != nil {
-		return fmt.Errorf("update pool capacity after allocation: marshal pool: %w", err)
-	}
-
 	b := &pgx.Batch{}
 	b.Queue(insertAllocationSQL, insertAllocationArgs(req, cidr)...)
 	b.Queue(writeConsumedSQL, req.PoolKey, consumed.String())
-	b.Queue(updateObjectSQL, updateObjectArgs(req.PoolKey, poolData)...)
 	var raiseSQL string
 	var raiseArgs []any
 	raising := false
@@ -226,9 +221,6 @@ func readAllocationWrites(br pgx.BatchResults, req PrefixRequest, cidr string, r
 	}
 	if _, err := br.Exec(); err != nil {
 		return wrapWriteConsumed(err, req.PoolKey)
-	}
-	if _, err := scanUpdateObject(br.QueryRow(), req.PoolKey); err != nil {
-		return fmt.Errorf("update pool capacity after allocation: write pool: %w", err)
 	}
 	if raising {
 		if _, err := br.Exec(); err != nil {
@@ -708,38 +700,14 @@ func deleteLockedAllocations(ctx context.Context, tx pgx.Tx, pools map[string]*i
 		if perr := writeConsumed(ctx, tx, r.poolKey, consumed); perr != nil {
 			return nil, perr
 		}
-		if perr := persistPoolCapacity(ctx, tx, pool, r.poolKey, parents, consumed); perr != nil {
-			return nil, fmt.Errorf("update pool capacity after release: %w", perr)
-		}
 	}
 	return releases, nil
 }
 
-// persistPoolCapacity recomputes Total/Allocated/Available for the pool and
-// writes the updated pool object back to ipam_objects (+ MODIFIED changelog)
-// within the current transaction. Must be called inside the transaction that
-// inserted or deleted the allocation row so the capacity stays consistent.
-func persistPoolCapacity(ctx context.Context, tx pgx.Tx, pool *ipamv1alpha1.IPPool, poolKey string, parents []net.IPNet, consumed *big.Int) error {
-	setPoolCapacityStatus(pool, parents, consumed)
-	data, err := json.Marshal(pool)
-	if err != nil {
-		return fmt.Errorf("marshal pool: %w", err)
-	}
-	if _, err := updateObject(ctx, tx, poolKey, data); err != nil {
-		return fmt.Errorf("write pool: %w", err)
-	}
-	return nil
-}
-
-// setPoolCapacityStatus populates the pool's capacity and utilization from its
-// parent ranges and current allocations.
-//
-// Every figure comes from one Measure, so the counts and the percentage cannot
-// disagree. The counts are exact decimal strings: an IPv6 /20 holds 2^108
-// addresses, which no int64 can express.
 // setPoolCapacityStatus writes the capacity figures from the pool's running
 // consumption total. Every figure derives from that one number, so status and
-// the published metric cannot disagree.
+// the published metric cannot disagree. It seeds the stored status of a new
+// pool; afterwards PoolCapacityFromConsumed derives the figures on read.
 func setPoolCapacityStatus(pool *ipamv1alpha1.IPPool, parents []net.IPNet, consumed *big.Int) {
 	total := totalAddresses(parents)
 	free := new(big.Int).Sub(total, consumed)
@@ -753,6 +721,20 @@ func setPoolCapacityStatus(pool *ipamv1alpha1.IPPool, parents []net.IPNet, consu
 	}
 	pool.Status.UtilizationPercent = utilizationPercent(total, consumed)
 	pool.Status.IPFamily = ipamv1alpha1.IPFamily(effectivePoolFamily(pool))
+}
+
+// applyConsumed sets a pool's capacity figures from its running consumption.
+func applyConsumed(pool *ipamv1alpha1.IPPool, consumed *big.Int) {
+	cidr := pool.Spec.CIDR
+	if pool.Status.AllocatedCIDR != "" {
+		cidr = pool.Status.AllocatedCIDR
+	}
+	total, allocated, available, utilization, ok := PoolCapacityFromConsumed(cidr, consumed)
+	if !ok {
+		return
+	}
+	pool.Status.Capacity = ipamv1alpha1.PoolCapacity{Total: total, Allocated: allocated, Available: available}
+	pool.Status.UtilizationPercent = utilization
 }
 
 // effectivePoolFamily returns a pool's address family: spec.ipFamily on root

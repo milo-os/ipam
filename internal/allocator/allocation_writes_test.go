@@ -77,7 +77,7 @@ func TestAllocationWritesAreClassifiedByTheFirstFailure(t *testing.T) {
 	raise := &floorRaise{poolKey: "pools/p", scopeDigest: "d"}
 
 	t.Run("a named address losing an overlap race is AddressInUse", func(t *testing.T) {
-		err := readAllocationWrites(&fakeBatch{errs: repeat(overlap, 4)}, named, "10.0.0.16/28", raise, true)
+		err := readAllocationWrites(&fakeBatch{errs: repeat(overlap, 3)}, named, "10.0.0.16/28", raise, true)
 		var inUse *AddressInUseError
 		if !errors.As(err, &inUse) {
 			t.Fatalf("error = %v, want AddressInUseError", err)
@@ -85,7 +85,7 @@ func TestAllocationWritesAreClassifiedByTheFirstFailure(t *testing.T) {
 	})
 
 	t.Run("a searched block's overlap is not an address refusal", func(t *testing.T) {
-		err := readAllocationWrites(&fakeBatch{errs: repeat(overlap, 4)}, searched, "10.0.0.16/28", raise, true)
+		err := readAllocationWrites(&fakeBatch{errs: repeat(overlap, 3)}, searched, "10.0.0.16/28", raise, true)
 		var inUse *AddressInUseError
 		if errors.As(err, &inUse) || !strings.HasPrefix(err.Error(), "insert allocation:") {
 			t.Fatalf("error = %v, want the insert's own error", err)
@@ -93,17 +93,10 @@ func TestAllocationWritesAreClassifiedByTheFirstFailure(t *testing.T) {
 	})
 
 	t.Run("a holder collision is the insert's, not a later statement's", func(t *testing.T) {
-		err := readAllocationWrites(&fakeBatch{errs: repeat(holder, 4)}, searched, "10.0.0.16/28", raise, true)
+		err := readAllocationWrites(&fakeBatch{errs: repeat(holder, 3)}, searched, "10.0.0.16/28", raise, true)
 		var pgErr *pgconn.PgError
 		if !strings.HasPrefix(err.Error(), "insert allocation:") || !errors.As(err, &pgErr) || pgErr.ConstraintName != holder.ConstraintName {
 			t.Fatalf("error = %v, want the insert's unique violation, unwrappable", err)
-		}
-	})
-
-	t.Run("a pool update that finds no row is not found", func(t *testing.T) {
-		err := readAllocationWrites(&fakeBatch{noRow: map[int]bool{2: true}}, searched, "10.0.0.16/28", raise, true)
-		if err == nil || !strings.Contains(err.Error(), `update object "pools/p": not found`) {
-			t.Fatalf("error = %v, want the pool update's not found", err)
 		}
 	})
 
