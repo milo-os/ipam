@@ -106,7 +106,7 @@ jobs:
     needs:
       - publish-plugin
     if: github.event_name == 'release'
-    runs-on: ${{ vars.MILO_LINUX_RUNNER || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
     steps:
       - name: Mint catalog token from the milo-os GitHub App
         id: app-token
